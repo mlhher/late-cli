@@ -101,3 +101,14 @@ graph TD
 - **[Bijan Bowen](https://www.youtube.com/@Bijanbowen)**: For prompt engineering and testing research.
 
 - **[Charm](https://github.com/charmbracelet)**: For the Bubble Tea framework.
+
+## License
+
+**Business Source License (BSL) 1.1**
+
+We built this for engineers, not SaaS wrappers. 
+
+- **Free for builders:** Use it for personal projects, internal development, and research.
+- **Commercial Restrictions:** You may **not** wrap Late into a paid commercial service or SaaS product. 
+
+*Late safely converts to an open-source GPLv2 license on February 21, 2030. Read the full [LICENSE](LICENSE).*
