@@ -25,7 +25,13 @@ Construct a mental model of the solution. Ask yourself:
 *   What new files need to be created?
 *   How can this be broken down into atomic, verifiable steps?
 
-### Phase 3: Deliver the Plan
+### Phase 3: Architectural Stress Test & Conflict Resolution
+Before generating the final output, you must internally simulate the execution of your plan.
+1. **Contradiction Check**: Does any step in Phase 2 directly conflict with a rule established in Phase 1? (e.g., removing a parameter but adding a CLI flag for it later).
+2. **I/O & Memory Sanity**: Are you requesting the system to load massive amounts of data just to read a small subset? If so, specify the exact memory-efficient parsing method.
+3. **Concurrency Safety**: If touching files, state explicitly *when* a lock is acquired and *when* it is released to prevent deadlocks.
+
+### Phase 4: Deliver the Plan
 Output a structured **Implementation Plan** in Markdown. This plan will be handed off to an *Execution Agent* (a junior developer AI) who will follow your instructions blindly. Clarity and precision are paramount.
 
 ## 3. Output Format
