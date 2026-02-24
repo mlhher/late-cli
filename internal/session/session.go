@@ -7,7 +7,9 @@ import (
 	"late/internal/client"
 	"late/internal/common"
 	"late/internal/tool"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Session manages the chat state and interacts with the LLM client.
@@ -49,7 +51,7 @@ func (s *Session) AddToolResultMessage(toolCallID, content string) error {
 		ToolCallID: toolCallID,
 		Content:    content,
 	})
-	return SaveHistory(s.HistoryPath, s.History)
+	return s.saveAndNotify()
 }
 
 // AddAssistantMessageWithTools adds an assistant message with tool calls.
@@ -60,7 +62,7 @@ func (s *Session) AddAssistantMessageWithTools(content string, reasoning string,
 		ReasoningContent: reasoning,
 		ToolCalls:        toolCalls,
 	})
-	return SaveHistory(s.HistoryPath, s.History)
+	return s.saveAndNotify()
 }
 
 func (s *Session) GetToolDefinitions() []client.ToolDefinition {
@@ -82,7 +84,7 @@ func (s *Session) GetToolDefinitions() []client.ToolDefinition {
 // AddUserMessage adds a user message to history and persists it.
 func (s *Session) AddUserMessage(content string) error {
 	s.History = append(s.History, client.ChatMessage{Role: "user", Content: content})
-	return SaveHistory(s.HistoryPath, s.History)
+	return s.saveAndNotify()
 }
 
 // AddAssistantMessage adds an assistant message to history and persists it.
@@ -92,7 +94,7 @@ func (s *Session) AddAssistantMessage(content, reasoning string) error {
 		Content:          content,
 		ReasoningContent: reasoning,
 	})
-	return SaveHistory(s.HistoryPath, s.History)
+	return s.saveAndNotify()
 }
 
 // AppendToLastMessage appends content to the last message (continuation).
@@ -109,7 +111,7 @@ func (s *Session) AppendToLastMessage(content, reasoning string) error {
 			s.History[lastIdx].ReasoningContent = reasoning
 		}
 	}
-	return SaveHistory(s.HistoryPath, s.History)
+	return s.saveAndNotify()
 }
 
 // StartStream initiates a streaming response.
@@ -189,13 +191,13 @@ func (s *Session) StartStream(ctx context.Context, extraBody map[string]any) (<-
 func (s *Session) Impersonate(ctx context.Context) (string, error) {
 	var sb strings.Builder
 	for _, msg := range s.History {
-		sb.WriteString(fmt.Sprintf("<|im_start|>%s\n%s<|im_end|>\n", msg.Role, msg.Content))
+		sb.WriteString(fmt.Sprintf("%s\n%s\n", msg.Role, msg.Content))
 	}
-	prompt := sb.String() + "<|im_start|>user\n"
+	prompt := sb.String() + "user\n"
 
 	req := client.CompletionRequest{
 		Prompt:    prompt,
-		Stop:      []string{"<|im_end|>", "<|im_start|>"},
+		Stop:      []string{"\n", ""},
 		N_Predict: 50,
 	}
 
@@ -204,4 +206,63 @@ func (s *Session) Impersonate(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return resp.Content, nil
+}
+
+// GenerateSessionMeta creates metadata from session state
+func (s *Session) GenerateSessionMeta() SessionMeta {
+	title := "Untitled Session"
+	lastPrompt := ""
+
+	if len(s.History) > 0 {
+		// Find first user message for title
+		for _, msg := range s.History {
+			if msg.Role == "user" && title == "Untitled Session" {
+				truncated := msg.Content
+				if len(truncated) > 100 {
+					truncated = truncated[:97] + "..."
+				}
+				title = truncated
+				break
+			}
+		}
+		// Last user message for last prompt
+		for i := len(s.History) - 1; i >= 0; i-- {
+			if s.History[i].Role == "user" {
+				lastPrompt = s.History[i].Content
+				if len(lastPrompt) > 50 {
+					lastPrompt = lastPrompt[:47] + "..."
+				}
+				break
+			}
+		}
+	}
+
+	id := filepath.Base(s.HistoryPath)
+	id = strings.TrimSuffix(id, ".json")
+
+	return SessionMeta{
+		ID:             id,
+		Title:          title,
+		CreatedAt:      time.Now(),
+		LastUpdated:    time.Now(),
+		HistoryPath:    s.HistoryPath,
+		LastUserPrompt: lastPrompt,
+		MessageCount:   len(s.History),
+	}
+}
+
+// UpdateSessionMetadata updates the session metadata file
+func (s *Session) UpdateSessionMetadata() error {
+	meta := s.GenerateSessionMeta()
+	return SaveSessionMeta(meta)
+}
+
+func (s *Session) saveAndNotify() error {
+	if len(s.History) == 0 {
+		return nil
+	}
+	if err := SaveHistory(s.HistoryPath, s.History); err != nil {
+		return err
+	}
+	return s.UpdateSessionMetadata()
 }

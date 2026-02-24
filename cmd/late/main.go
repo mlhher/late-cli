@@ -10,6 +10,8 @@ import (
 	"late/internal/orchestrator"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"late/internal/assets"
 	"late/internal/client"
@@ -37,7 +39,12 @@ func main() {
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of late:\n")
-		fmt.Fprintf(os.Stderr, "  late [flags]\n\n")
+		fmt.Fprintf(os.Stderr, "  late [flags]\n")
+		fmt.Fprintf(os.Stderr, "  late session <command> [args]\n\n")
+		fmt.Fprintf(os.Stderr, "Commands:\n")
+		fmt.Fprintf(os.Stderr, "  session list     List all saved sessions\n")
+		fmt.Fprintf(os.Stderr, "  session load <id>  Load a session by ID\n")
+		fmt.Fprintf(os.Stderr, "  session delete <id>  Delete a session by ID\n\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -45,6 +52,15 @@ func main() {
 	if *helpReq {
 		flag.Usage()
 		return
+	}
+
+	var loadedHistoryPath string
+	if flag.NArg() > 0 && flag.Arg(0) == "session" {
+		path, shouldExit := handleSessionCommand(flag.Args()[1:])
+		if shouldExit {
+			return
+		}
+		loadedHistoryPath = path
 	}
 
 	// Determine system prompt
@@ -89,25 +105,36 @@ func main() {
 
 	fmt.Println("Starting late TUI...")
 
-	// Define history path
-	homeDir, err := os.UserHomeDir()
+	// Define history path with timestamp-based session ID
+	sessionsDir, err := session.SessionDir()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to get user home dir: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to get session directory: %v\n", err)
 		os.Exit(1)
 	}
-	historyPath := filepath.Join(homeDir, ".local", "share", "late", "history.json")
+	sessionID := fmt.Sprintf("session-%s", time.Now().Format("20060102-150405"))
+	historyPath := filepath.Join(sessionsDir, sessionID+".json")
+
+	if loadedHistoryPath != "" {
+		historyPath = loadedHistoryPath
+	}
 
 	// Delete prior session history if --new-session is set
 	if *enableNewSessionReq {
-		if err := os.Remove(historyPath); err != nil {
-			if os.IsNotExist(err) {
-				fmt.Fprintf(os.Stderr, "Note: No prior session history to delete at %s\n", historyPath)
-			} else {
-				fmt.Fprintf(os.Stderr, "Warning: Failed to delete prior session history at %s: %v\n", historyPath, err)
+		// Delete all session files
+		entries, _ := os.ReadDir(sessionsDir)
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+				os.Remove(filepath.Join(sessionsDir, entry.Name()))
 			}
-		} else {
-			fmt.Fprintf(os.Stderr, "Deleted prior session history at %s\n", historyPath)
 		}
+		// Also delete metadata files
+		entries, _ = os.ReadDir(sessionsDir)
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".meta.json") {
+				os.Remove(filepath.Join(sessionsDir, entry.Name()))
+			}
+		}
+		fmt.Fprintf(os.Stderr, "Deleted all session history\n")
 	}
 
 	// Load existing history
@@ -230,6 +257,142 @@ func main() {
 		fmt.Printf("Alas, there's been an error: %v", err)
 		os.Exit(1)
 	}
+}
+
+// handleSessionCommand processes session subcommands
+func handleSessionCommand(args []string) (string, bool) {
+	if len(args) == 0 {
+		fmt.Println("Usage: late session <list|load|delete> [args...]")
+		fmt.Println("")
+		fmt.Println("Commands:")
+		fmt.Println("  list           List all saved sessions")
+		fmt.Println("  load <id>      Load a session by ID (can use prefix)")
+		fmt.Println("  delete <id>    Delete a session by ID")
+		return "", true
+	}
+
+	switch args[0] {
+	case "list":
+		handleSessionList()
+		return "", true
+	case "load":
+		if len(args) < 2 {
+			fmt.Println("Error: session ID required")
+			fmt.Println("Usage: late session load <id>")
+			os.Exit(1)
+		}
+		return handleSessionLoad(args[1]), false
+	case "delete":
+		if len(args) < 2 {
+			fmt.Println("Error: session ID required")
+			fmt.Println("Usage: late session delete <id>")
+			os.Exit(1)
+		}
+		handleSessionDelete(args[1])
+		return "", true
+	default:
+		fmt.Printf("Unknown session command: %s\n", args[0])
+		handleSessionCommand([]string{})
+		return "", true
+	}
+}
+
+// handleSessionList displays all saved sessions
+func handleSessionList() {
+	metas, err := session.ListSessions()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error listing sessions: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(metas) == 0 {
+		fmt.Println("No sessions found.")
+		fmt.Println("")
+		fmt.Println("Use 'late session load <id>' to load a saved session or start a new session with 'late'.")
+		return
+	}
+
+	fmt.Println("Available sessions:")
+	fmt.Println("")
+	for _, meta := range metas {
+		// Use Blue for the ID to make it stand out
+		fmt.Printf("\033[36mID: %s\033[0m\n", strings.TrimSuffix(meta.ID, ".json"))
+		fmt.Printf("    Title:   %s\n", meta.Title)
+		fmt.Printf("    Created: %s\n", meta.CreatedAt.Format("2006-01-02 15:04:05"))
+		fmt.Printf("    Updated: %s\n", meta.LastUpdated.Format("2006-01-02 15:04:05"))
+		fmt.Printf("    Msg #:   %d\n", meta.MessageCount)
+		if meta.LastUserPrompt != "" {
+			last := meta.LastUserPrompt
+			if len(last) > 50 {
+				last = last[:47] + "..."
+			}
+			fmt.Printf("    Last:    %s\n", last)
+		}
+		fmt.Println("")
+	}
+	fmt.Println("To resume, use: \033[1mlate session load <id>\033[0m")
+}
+
+// handleSessionLoad returns the history path for the given session ID
+func handleSessionLoad(id string) string {
+	meta, err := session.LoadSessionMeta(id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading session: %v\n", err)
+		os.Exit(1)
+	}
+	if meta == nil {
+		fmt.Fprintf(os.Stderr, "Session not found: %s\n", id)
+		fmt.Println("")
+		fmt.Println("Use 'late session list' to see available sessions.")
+		os.Exit(1)
+	}
+
+	fmt.Printf("Resuming session: %s (%s)\n", meta.ID, meta.Title)
+	time.Sleep(500 * time.Millisecond) // Give user a moment to see what's happening
+	return meta.HistoryPath
+}
+
+// handleSessionDelete removes a session
+func handleSessionDelete(id string) {
+	meta, err := session.LoadSessionMeta(id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading session: %v\n", err)
+		os.Exit(1)
+	}
+	if meta == nil {
+		fmt.Fprintf(os.Stderr, "Session not found: %s\n", id)
+		fmt.Println("")
+		fmt.Println("Use 'late session list' to see available sessions.")
+		os.Exit(1)
+	}
+
+	// Delete metadata
+	metaPath := filepath.Join(filepath.Dir(meta.HistoryPath), "..", "sessions", meta.ID+".meta.json")
+	if err := os.Remove(metaPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Error deleting metadata: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Delete history file
+	if err := os.Remove(meta.HistoryPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Error deleting history: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Deleted session: %s\n", meta.Title)
+}
+
+// printUsage displays the complete usage information
+func printUsage() {
+	fmt.Fprintf(os.Stderr, "Usage of late:\n")
+	fmt.Fprintf(os.Stderr, "  late [flags]\n")
+	fmt.Fprintf(os.Stderr, "  late session <command> [args]\n\n")
+	fmt.Fprintf(os.Stderr, "Commands:\n")
+	fmt.Fprintf(os.Stderr, "  session list     List all saved sessions\n")
+	fmt.Fprintf(os.Stderr, "  session load <id>  Load a session by ID\n")
+	fmt.Fprintf(os.Stderr, "  session delete <id>  Delete a session by ID\n\n")
+	fmt.Fprintf(os.Stderr, "Flags:\n")
+	flag.PrintDefaults()
 }
 
 // ForwardOrchestratorEvents is a helper that recursively forwards all events from an orchestrator
