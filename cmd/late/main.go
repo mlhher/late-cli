@@ -121,17 +121,27 @@ func main() {
 	// Delete prior session history if --new-session is set
 	if *enableNewSessionReq {
 		// Delete all session files
-		entries, _ := os.ReadDir(sessionsDir)
+		entries, err := os.ReadDir(sessionsDir)
+		if err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to list sessions dir: %v\n", err)
+		}
 		for _, entry := range entries {
 			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
-				os.Remove(filepath.Join(sessionsDir, entry.Name()))
+				if err := os.Remove(filepath.Join(sessionsDir, entry.Name())); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: Failed to delete %s: %v\n", entry.Name(), err)
+				}
 			}
 		}
 		// Also delete metadata files
-		entries, _ = os.ReadDir(sessionsDir)
+		entries, err = os.ReadDir(sessionsDir)
+		if err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to list sessions dir: %v\n", err)
+		}
 		for _, entry := range entries {
 			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".meta.json") {
-				os.Remove(filepath.Join(sessionsDir, entry.Name()))
+				if err := os.Remove(filepath.Join(sessionsDir, entry.Name())); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: Failed to delete %s: %v\n", entry.Name(), err)
+				}
 			}
 		}
 		fmt.Fprintf(os.Stderr, "Deleted all session history\n")
@@ -315,22 +325,10 @@ func handleSessionList() {
 	fmt.Println("Available sessions:")
 	fmt.Println("")
 	for _, meta := range metas {
-		// Use Blue for the ID to make it stand out
-		fmt.Printf("\033[36mID: %s\033[0m\n", strings.TrimSuffix(meta.ID, ".json"))
-		fmt.Printf("    Title:   %s\n", meta.Title)
-		fmt.Printf("    Created: %s\n", meta.CreatedAt.Format("2006-01-02 15:04:05"))
-		fmt.Printf("    Updated: %s\n", meta.LastUpdated.Format("2006-01-02 15:04:05"))
-		fmt.Printf("    Msg #:   %d\n", meta.MessageCount)
-		if meta.LastUserPrompt != "" {
-			last := meta.LastUserPrompt
-			if len(last) > 50 {
-				last = last[:47] + "..."
-			}
-			fmt.Printf("    Last:    %s\n", last)
-		}
+		fmt.Println(session.FormatSessionDisplay(meta))
 		fmt.Println("")
 	}
-	fmt.Println("To resume, use: \033[1mlate session load <id>\033[0m")
+	fmt.Println(session.FormatResumePrompt())
 }
 
 // handleSessionLoad returns the history path for the given session ID
@@ -367,7 +365,12 @@ func handleSessionDelete(id string) {
 	}
 
 	// Delete metadata
-	metaPath := filepath.Join(filepath.Dir(meta.HistoryPath), "..", "sessions", meta.ID+".meta.json")
+	sessionsDir, err := session.SessionDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error getting session directory: %v\n", err)
+		os.Exit(1)
+	}
+	metaPath := filepath.Join(sessionsDir, meta.ID+".meta.json")
 	if err := os.Remove(metaPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Error deleting metadata: %v\n", err)
 		os.Exit(1)

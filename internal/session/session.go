@@ -34,7 +34,6 @@ func New(c *client.Client, historyPath string, history []client.ChatMessage, sys
 }
 
 // ExecuteTool executes a tool call and returns the response as a string.
-// ExecuteTool executes a tool call and returns the response as a string.
 func (s *Session) ExecuteTool(ctx context.Context, tc client.ToolCall) (string, error) {
 	// First check registry
 	t := s.Registry.Get(tc.Function.Name)
@@ -219,7 +218,7 @@ func (s *Session) GenerateSessionMeta() SessionMeta {
 			if msg.Role == "user" && title == "Untitled Session" {
 				truncated := msg.Content
 				if len(truncated) > 100 {
-					truncated = truncated[:97] + "..."
+					truncated = truncateUTF8(truncated, 100)
 				}
 				title = truncated
 				break
@@ -230,7 +229,7 @@ func (s *Session) GenerateSessionMeta() SessionMeta {
 			if s.History[i].Role == "user" {
 				lastPrompt = s.History[i].Content
 				if len(lastPrompt) > 50 {
-					lastPrompt = lastPrompt[:47] + "..."
+					lastPrompt = truncateUTF8(lastPrompt, 50)
 				}
 				break
 			}

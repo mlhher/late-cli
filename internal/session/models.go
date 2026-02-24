@@ -104,8 +104,10 @@ func LoadSessionMeta(id string) (*SessionMeta, error) {
 		return nil, fmt.Errorf("session ID %q is ambiguous, matches: %s", id, strings.Join(matches, ", "))
 	}
 
-	// Exactly one match
-	return LoadSessionMeta(matches[0])
+	// Exactly one match — use the matched name to build exact path
+	matchedName := matches[0]
+	exactPath = filepath.Join(sessionsDir, matchedName+".meta.json")
+	return loadMetaFile(exactPath)
 }
 
 // loadMetaFile handles the actual reading and unmarshaling
