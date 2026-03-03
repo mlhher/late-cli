@@ -4,7 +4,7 @@
 
 Whether you are mapping undocumented APIs, digesting complex repositories, or generating boilerplate, **Late** acts as a highly autonomous engineering partner instead of burning API credits, time, and money on bloated, hallucinated contexts.
 
-> **Built with Late:** As of today, the vast majority of Late is being built inside Late using Qwen3.5-35B-A3B.
+> **Built with Late:** As of today, the vast majority of Late is being built inside Late.
 
 ![Late Orchestrator planning a 4-phase implementation and spawning the first subagent](assets/late-subagent-handoff.png)
 *Late acting as Lead Architect: Orchestrating a 4-phase plan to fix an async state-management bug (CTRL+G interrupts), autonomously spawning the Phase 1 subagent to edit the core engine.*

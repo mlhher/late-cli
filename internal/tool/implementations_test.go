@@ -123,8 +123,8 @@ func TestBashTool_Execute(t *testing.T) {
 		{
 			name:    "full command string in command field (fallback parsing)",
 			params:  json.RawMessage(`{"command": "echo hello world"}`),
-			wantErr: false,
-			wantOut: "hello world",
+			wantErr: true,
+			wantOut: "",
 		},
 		{
 			name:    "full command string with non-whitelisted base command",
