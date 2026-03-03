@@ -24,6 +24,9 @@ type BaseOrchestrator struct {
 	acc    executor.StreamAccumulator
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// Stop mechanism
+	stopCh chan struct{}
 }
 
 func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.ToolMiddleware) *BaseOrchestrator {
@@ -33,6 +36,7 @@ func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.
 		middlewares: middlewares,
 		eventCh:     make(chan common.Event, 100),
 		ctx:         context.Background(),
+		stopCh:      make(chan struct{}),
 	}
 }
 
@@ -51,6 +55,15 @@ func (o *BaseOrchestrator) SetContext(ctx context.Context) {
 func (o *BaseOrchestrator) ID() string { return o.id }
 
 func (o *BaseOrchestrator) Submit(text string) error {
+	o.mu.Lock()
+	// Clear any old cancellation state so a new run isn't instantly aborted
+	o.cancel = nil
+	// Reset the base context if it was already cancelled
+	if o.ctx.Err() != nil {
+		o.ctx = context.Background()
+	}
+	o.mu.Unlock()
+
 	if err := o.sess.AddUserMessage(text); err != nil {
 		return err
 	}
@@ -62,11 +75,16 @@ func (o *BaseOrchestrator) Submit(text string) error {
 }
 
 func (o *BaseOrchestrator) Execute(text string) (string, error) {
-	ctx, cancel := context.WithCancel(o.ctx)
-
 	o.mu.Lock()
+	if o.ctx.Err() != nil {
+		o.ctx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(o.ctx)
 	o.cancel = cancel
+	o.ctx = ctx // Set the Context for this execution
 	o.mu.Unlock()
+
+	defer cancel()
 
 	// Inject orchestrator ID into context for tool interactions
 	ctx = context.WithValue(ctx, common.OrchestratorIDKey, o.id)
@@ -138,11 +156,16 @@ func (o *BaseOrchestrator) run() {
 		"cache_prompt": false,
 	}
 
-	ctx, cancel := context.WithCancel(o.ctx)
-
 	o.mu.Lock()
+	if o.ctx.Err() != nil {
+		o.ctx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(o.ctx)
 	o.cancel = cancel
+	o.ctx = ctx // Set the context so Execute/RunLoop can share the cancelable context safely
 	o.mu.Unlock()
+
+	defer cancel() // Ensure we don't leak the context when run() finishes
 
 	// Inject orchestrator ID into context for tool interactions
 	ctx = context.WithValue(ctx, common.OrchestratorIDKey, o.id)
@@ -194,6 +217,11 @@ func (o *BaseOrchestrator) run() {
 	} else {
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"}
 	}
+
+	// Check if stop was requested and send StopRequestedEvent
+	if o.IsStopRequested() {
+		o.eventCh <- common.StopRequestedEvent{ID: o.id}
+	}
 }
 
 func (o *BaseOrchestrator) Events() <-chan common.Event {
@@ -201,10 +229,27 @@ func (o *BaseOrchestrator) Events() <-chan common.Event {
 }
 
 func (o *BaseOrchestrator) Cancel() {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
 	if o.cancel != nil {
 		o.cancel()
+	}
+
+	select {
+	case o.stopCh <- struct{}{}:
+		// Signal sent
+	default:
+		// Already signaled, ignore
+	}
+}
+
+func (o *BaseOrchestrator) IsStopRequested() bool {
+	select {
+	case <-o.stopCh:
+		return true
+	default:
+		return false
 	}
 }
 

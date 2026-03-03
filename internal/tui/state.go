@@ -19,6 +19,7 @@ const (
 	StateStreaming
 	StateConfirmTool
 	StateConfirmSubagent
+	StateStopping
 )
 
 type ViewState int
@@ -45,6 +46,7 @@ type AppState struct {
 	StatusText      string
 	RenderedHistory []string // Cache for rendered messages
 	Closed          bool     // Whether the agent has finished its task
+	PendingStop     bool     // Whether a stop has been requested
 }
 
 type Model struct {
@@ -81,6 +83,7 @@ func (m *Model) GetAgentState(id string) *AppState {
 	s := &AppState{
 		State:      StateIdle,
 		StatusText: "Ready",
+		PendingStop: false,
 	}
 	m.AgentStates[id] = s
 	return s

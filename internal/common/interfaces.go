@@ -62,6 +62,13 @@ type StatusEvent struct {
 
 func (e StatusEvent) OrchestratorID() string { return e.ID }
 
+// StopRequestedEvent is sent when a stop is requested for an orchestrator.
+type StopRequestedEvent struct {
+	ID string
+}
+
+func (e StopRequestedEvent) OrchestratorID() string { return e.ID }
+
 // PromptRequest defines a generic requirement for user input.
 type PromptRequest struct {
 	ID          string

@@ -5,6 +5,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"late/internal/client"
 	"late/internal/common"
@@ -126,6 +127,15 @@ func ConsumeStream(
 		if onChunk != nil {
 			onChunk(res)
 		}
+
+		// Check for context cancellation (stop request)
+		select {
+		case <-ctx.Done():
+			// Context cancelled - stop streaming but return accumulated data
+			return acc, nil
+		default:
+			// Continue streaming
+		}
 	}
 
 	// Check for stream error
@@ -170,6 +180,20 @@ func RunLoop(
 			return "", err
 		}
 
+		// If stopped, the last tool call might be partially streamed and thus invalid JSON.
+		// We shouldn't save corrupted tool calls to the session history.
+		if ctx.Err() != nil {
+			var validCalls []client.ToolCall
+			for _, tc := range acc.ToolCalls {
+				// A simple check: if the arguments are valid JSON, keeping it is probably safe.
+				// Otherwise, it was cut off mid-stream.
+				if json.Valid([]byte(tc.Function.Arguments)) {
+					validCalls = append(validCalls, tc)
+				}
+			}
+			acc.ToolCalls = validCalls
+		}
+
 		if err := sess.AddAssistantMessageWithTools(acc.Content, acc.Reasoning, acc.ToolCalls); err != nil {
 			return "", fmt.Errorf("failed to save history: %w", err)
 		}
@@ -184,8 +208,22 @@ func RunLoop(
 
 		lastContent = acc.Content
 
+		// If a stop was requested, break the loop before executing tools
+		select {
+		case <-ctx.Done():
+			return lastContent + "\n\n(Stopped by user)", nil
+		default:
+		}
+
 		if err := ExecuteToolCalls(ctx, sess, acc.ToolCalls, middlewares); err != nil {
 			return "", err
+		}
+
+		// Also check after tool execution in case user requested stop during a long tool
+		select {
+		case <-ctx.Done():
+			return lastContent + "\n\n(Stopped by user)", nil
+		default:
 		}
 	}
 

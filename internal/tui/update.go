@@ -160,9 +160,22 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 
 		case "ctrl+g":
-			if focusedState.State == StateThinking || focusedState.State == StateStreaming {
+			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil {
+				focusedState.PendingConfirm.ResultCh <- false
+				focusedState.PendingConfirm = nil
+				focusedState.PendingStop = true
+				focusedState.State = StateStopping
+				focusedState.StatusText = "Stopping..."
 				m.Focused.Cancel()
-				// State will be updated to 'idle' or 'error' automatically by the orchestrator event stream
+				m.updateViewport()
+				return m, nil
+			}
+			if focusedState.State == StateThinking || focusedState.State == StateStreaming {
+				focusedState.PendingStop = true
+				focusedState.State = StateStopping
+				focusedState.StatusText = "Stopping..."
+				m.Focused.Cancel()
+				m.updateViewport()
 				return m, nil
 			}
 		}
@@ -214,6 +227,14 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 		case common.ChildAddedEvent:
 			s.StatusText = fmt.Sprintf("Subagent '%s' Spawned (Tab to switch)", event.Child.ID())
 			m.updateViewport()
+		case common.StopRequestedEvent:
+			s.PendingStop = false
+			s.State = StateIdle
+			s.StatusText = "Stopped"
+			s.RenderedHistory = nil
+			if event.ID == m.Focused.ID() {
+				m.updateViewport()
+			}
 		}
 
 	case ConfirmRequestMsg:
