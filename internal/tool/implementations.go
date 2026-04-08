@@ -230,8 +230,33 @@ func isMaliciousCatCommand(command string) (bool, error) {
 	return false, nil
 }
 
+// isCdCommand detects when a bash command contains `cd` to change directories.
+// Returns true if the command attempts to change directories, false if safe.
+// Returns an error with instructions on using the `cwd` parameter instead.
+func isCdCommand(command string) (bool, error) {
+	// First, strip comments to avoid false positives
+	cleanCmd := command
+	if idx := strings.Index(cleanCmd, "#"); idx != -1 {
+		cleanCmd = cleanCmd[:idx]
+	}
+	
+	// Pattern explanation:
+	// - Optional leading whitespace
+	// - "cd" as a standalone word (not part of another word like cd_log or mkdir)
+	// - Followed by optional space and any arguments
+	// - The \b word boundary ensures we match "cd" but not "cd_log" or "mkdir"
+	pattern := `^\s*cd\s+`
+	re := regexp.MustCompile(pattern)
+	
+	if re.MatchString(cleanCmd) {
+		return true, fmt.Errorf("Do not use `cd` to change directories. Use the `cwd` parameter in the bash tool instead.")
+	}
+	
+	return false, nil
+}
+
 // ValidateBashCommand validates bash commands before execution.
-// Returns an error if the command uses malicious patterns like cat shenanigans.
+// Returns an error if the command uses malicious patterns like cat shenanigans or cd commands.
 func (t *BashTool) ValidateBashCommand(command string) error {
 	// Check for malicious cat commands
 	isMalicious, err := isMaliciousCatCommand(command)
@@ -239,7 +264,31 @@ func (t *BashTool) ValidateBashCommand(command string) error {
 		return err
 	}
 	
+	// Check for cd commands
+	isCd, err := isCdCommand(command)
+	if isCd {
+		return err
+	}
+	
 	return nil
+}
+
+// IsCommandBlocked checks if a bash command should be blocked entirely (not asked for confirmation).
+// Returns true and an error if the command is blocked (e.g., cd commands).
+func (t *BashTool) IsCommandBlocked(command string) (bool, error) {
+	// Block cd commands immediately - they should never be confirmed, only rejected
+	isCd, err := isCdCommand(command)
+	if isCd {
+		return true, err
+	}
+	
+	// Block cat with output redirection immediately
+	isMalicious, err := isMaliciousCatCommand(command)
+	if isMalicious {
+		return true, err
+	}
+	
+	return false, nil
 }
 
 // BashTool executes a bash command with security restrictions.
@@ -254,7 +303,7 @@ func (t BashTool) Parameters() json.RawMessage {
 		"type": "object",
 		"properties": {
 			"command": { "type": "string", "description": "The full command to execute." },
-			"cwd": { "type": "string", "description": "Working directory for execution." }
+			"cwd": { "type": "string", "description": "Working directory for execution. Use this instead of 'cd' commands to change directories." }
 		},
 		"required": ["command"]
 	}`)

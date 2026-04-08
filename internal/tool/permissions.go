@@ -66,5 +66,11 @@ func IsSafePath(path string) bool {
 		return true
 	}
 
+	// Also ensure absPath has a trailing separator so that an exact match
+	// with the CWD returns true
+	if !strings.HasSuffix(absPath, string(filepath.Separator)) {
+		absPath += string(filepath.Separator)
+	}
+
 	return strings.HasPrefix(absPath, absCwd)
 }

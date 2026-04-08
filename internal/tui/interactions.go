@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"late/internal/client"
 	"late/internal/common"
+	"late/internal/tool"
 )
 
 // TUIInputProvider implements common.InputProvider by sending messages to the TUI.
@@ -58,24 +59,30 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 				return next(ctx, tc)
 			}
 
-			// Skip confirmation if the tool doesn't require it
+			// Check if the tool requires confirmation
 			if reg != nil {
 				if t := reg.Get(tc.Function.Name); t != nil {
+					// Skip confirmation if the tool doesn't require it
 					if !t.RequiresConfirmation(json.RawMessage(tc.Function.Arguments)) {
 						return next(ctx, tc)
+					}
+
+					// For BashTool, check if the command is blocked (e.g., cd commands)
+					// Blocked commands should be rejected immediately without asking for confirmation
+					if bashTool, ok := t.(*tool.BashTool); ok {
+						var params struct {
+							Command string `json:"command"`
+						}
+						if err := json.Unmarshal([]byte(tc.Function.Arguments), &params); err == nil {
+							if blocked, err := bashTool.IsCommandBlocked(params.Command); blocked {
+								return "", err // Reject immediately, don't ask for confirmation
+							}
+						}
 					}
 				}
 			}
 
-			// For now, we assume all tools needing confirmation are handled here.
-			// The executor handles checking RequiresConfirmation before calling the runner,
-			// BUT if we want to confirm HERE, we need to know if it's required.
-			// Actually, ExecuteToolCalls in executor.go just runs the runner.
-			// So we should check RequiresConfirmation here if we want to intercept.
-
-			// For simplicity in this PR, let's assume the Orchestrator provides
-			// the middleware only if it wants confirmation.
-
+			// Ask for confirmation for tools that require it
 			resultCh := make(chan bool, 1)
 			errCh := make(chan error, 1)
 
