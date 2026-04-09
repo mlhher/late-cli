@@ -7,8 +7,10 @@ import (
 	"late/internal/agent"
 	"late/internal/common"
 	"late/internal/executor"
+	"late/internal/git"
 	"late/internal/orchestrator"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -40,11 +42,16 @@ func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of late:\n")
 		fmt.Fprintf(os.Stderr, "  late [flags]\n")
-		fmt.Fprintf(os.Stderr, "  late session <command> [args]\n\n")
+		fmt.Fprintf(os.Stderr, "  late session <command> [args]\n")
+		fmt.Fprintf(os.Stderr, "  late worktree <command> [args]\n\n")
 		fmt.Fprintf(os.Stderr, "Commands:\n")
 		fmt.Fprintf(os.Stderr, "  session list [-v]      List all saved sessions (use -v for verbose/detailed view)\n")
-		fmt.Fprintf(os.Stderr, "  session load <id>  Load a session by ID\n")
-		fmt.Fprintf(os.Stderr, "  session delete <id>  Delete a session by ID\n\n")
+		fmt.Fprintf(os.Stderr, "  session load <id>      Load a session by ID\n")
+		fmt.Fprintf(os.Stderr, "  session delete <id>    Delete a session by ID\n")
+		fmt.Fprintf(os.Stderr, "  worktree list          List all worktrees\n")
+		fmt.Fprintf(os.Stderr, "  worktree create <path> [branch]  Create a new worktree\n")
+		fmt.Fprintf(os.Stderr, "  worktree remove <path>           Remove a worktree\n")
+		fmt.Fprintf(os.Stderr, "  worktree active        Show current worktree\n\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -61,6 +68,13 @@ func main() {
 			return
 		}
 		loadedHistoryPath = path
+	}
+
+	if flag.NArg() > 0 && flag.Arg(0) == "worktree" {
+		shouldExit := handleWorktreeCommand(flag.Args()[1:])
+		if shouldExit {
+			return
+		}
 	}
 
 	// Determine system prompt
@@ -372,6 +386,161 @@ func handleSessionDelete(id string) {
 	}
 
 	fmt.Printf("Deleted session: %s\n", meta.Title)
+}
+
+// handleWorktreeCommand processes worktree subcommands
+// Returns: true if a valid command was handled, false otherwise
+func handleWorktreeCommand(args []string) bool {
+	if len(args) == 0 {
+		fmt.Println("Usage: late worktree <command> [args...]")
+		fmt.Println("")
+		fmt.Println("Commands:")
+		fmt.Println("  list              List all worktrees")
+		fmt.Println("  create <path> [branch]  Create a new worktree at given path (defaults to current branch)")
+		fmt.Println("  remove <path>     Remove a worktree")
+		fmt.Println("  active            Show current worktree")
+		return false
+	}
+
+	switch args[0] {
+	case "list":
+		handleWorktreeList()
+		return true
+	case "create":
+		if len(args) < 2 {
+			fmt.Println("Error: path required for create command")
+			fmt.Println("Usage: late worktree create <path> [branch]")
+			return true
+		}
+		path := args[1]
+		branch := ""
+		if len(args) >= 3 {
+			branch = args[2]
+		}
+		if branch == "" {
+			// Get current branch
+			cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+			output, err := cmd.Output()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting current branch: %v\n", err)
+				return true
+			}
+			branch = strings.TrimSpace(string(output))
+		}
+		if err := git.CreateWorktree(path, branch); err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating worktree: %v\n", err)
+			return true
+		}
+		fmt.Printf("Created worktree at %s (branch: %s)\n", path, branch)
+		return true
+	case "remove":
+		if len(args) < 2 {
+			fmt.Println("Error: path required for remove command")
+			fmt.Println("Usage: late worktree remove <path>")
+			return true
+		}
+		path := args[1]
+		if err := git.RemoveWorktree(path); err != nil {
+			fmt.Fprintf(os.Stderr, "Error removing worktree: %v\n", err)
+			return true
+		}
+		fmt.Printf("Removed worktree at %s\n", path)
+		return true
+	case "active":
+		path, err := git.GetActiveWorktree()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error getting active worktree: %v\n", err)
+			return true
+		}
+		fmt.Println(path)
+		return true
+	default:
+		fmt.Printf("Unknown worktree command: %s\n", args[0])
+		fmt.Println("")
+		fmt.Println("Usage: late worktree <command> [args...]")
+		fmt.Println("")
+		fmt.Println("Commands:")
+		fmt.Println("  list              List all worktrees")
+		fmt.Println("  create <path> [branch]  Create a new worktree at given path (defaults to current branch)")
+		fmt.Println("  remove <path>     Remove a worktree")
+		fmt.Println("  active            Show current worktree")
+		return false
+	}
+}
+
+// handleWorktreeList displays all git worktrees
+func handleWorktreeList() {
+	worktrees, err := git.ListWorktrees()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error listing worktrees: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(worktrees) == 0 {
+		fmt.Println("No worktrees found.")
+		return
+	}
+
+	fmt.Println("Git worktrees:")
+	for _, wt := range worktrees {
+		fmt.Printf("  %s", wt.Path)
+		if wt.IsDetached {
+			fmt.Printf(" (detached from %s)", wt.Branch)
+		} else {
+			fmt.Printf(" (%s)", wt.Branch)
+		}
+		if wt.Status != "" {
+			fmt.Printf(" - %s", wt.Status)
+		}
+		fmt.Println()
+	}
+}
+
+// handleWorktreeCreate creates a new worktree at the specified path
+func handleWorktreeCreate(path string, branch string) {
+	// If branch not specified, use current branch
+	if branch == "" {
+		cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+		output, err := cmd.Output()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error getting current branch: %v\n", err)
+			os.Exit(1)
+		}
+		branch = strings.TrimSpace(string(output))
+	}
+
+	// Create the worktree
+	if err := git.CreateWorktree(path, branch); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating worktree: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Created worktree at %s (branch: %s)\n", path, branch)
+}
+
+// handleWorktreeRemove removes an existing worktree
+func handleWorktreeRemove(path string) {
+	if err := git.RemoveWorktree(path); err != nil {
+		fmt.Fprintf(os.Stderr, "Error removing worktree: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Removed worktree at %s\n", path)
+}
+
+// handleWorktreeActive shows the currently active worktree
+func handleWorktreeActive() {
+	path, err := git.GetActiveWorktree()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error getting active worktree: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Check if this is the main worktree (path is empty or indicates main)
+	if path == "" || path == "." {
+		fmt.Println("Currently in main worktree")
+	} else {
+		fmt.Printf("Currently in worktree: %s\n", path)
+	}
 }
 
 // ForwardOrchestratorEvents is a helper that recursively forwards all events from an orchestrator
