@@ -29,12 +29,12 @@ You shouldn't have to give an LLM blanket `sudo` access to your machine. Late in
 A statically compiled engine. No `node_modules`, no virtual environments. Drop the binary in your path and go.
 
 ### 5. Local-First & Model Agnostic
-Requires any OpenAI-compatible endpoint. Late's ephemeral subagent architecture is ruthlessly efficient. It successfully orchestrates its own codebase development using only a local ~30B MoE (specifically, `Qwen3.5-35B-A3B`).
-Highly optimized to run locally on consumer hardware (e.g., `llama.cpp`), natively supports both thinking and non-thinking models (including additional support for `Gemma 4` models), or can be pointed at heavy-compute cloud endpoints for complex architectural tasks.
+Requires any OpenAI-compatible endpoint. Late's ephemeral subagent architecture is designed for consumer hardware: subagent contexts are destroyed on completion and never pollute the planner's window, keeping VRAM and context usage flat regardless of task complexity. Late orchestrates its own codebase development on **5GB VRAM** using a local `Qwen3.5-35B-A3B` (~25-30 tokens/sec through `llama.cpp`, 65k context, remaining layers offloaded to system RAM). Two simultaneous agent instances run comfortably at ~15-20 t/s.
+Natively supports both thinking and non-thinking models (including `Gemma 4`), or can be pointed at heavy-compute cloud endpoints for complex architectural tasks.
 
 ### How Is This Different?
 
-Tools like Cursor, Claude Code or OpenCode feed your entire session into a single, growing context window. Late takes the opposite approach: a lean orchestrator delegates to ephemeral subagents with fresh, minimal context. This mirrors how real engineering teams operate — and it runs on consumer hardware with local models.
+Tools like Cursor, Claude Code or OpenCode feed your entire session into a single, growing context window. Late takes the opposite approach: a lean orchestrator delegates to ephemeral subagents with fresh, minimal context. Subagent history is destroyed on completion and never pollutes the planner's context. This mirrors how real engineering teams operate — and it runs on 5GB VRAM with local models.
 
 ## 🚀 Quick Start (Zero Dependencies)
 
