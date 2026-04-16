@@ -19,11 +19,11 @@ Standard AI coding assistants dump massive contexts into a single window, leadin
 ### 2. Zero Silently Broken Code (Exact-Match Diffs)
 Standard agents use fragile diff formats that frequently hallucinate and corrupt files. Late forces subagents to use strict exact-match `search`/`replace` string blocks. If the model fails the match, the edit fails loudly, and the Agent initiates an **autonomous self-healing loop** until it gets it right.
 
-### 3. Sandboxed Execution & Deterministic Safety
-You shouldn't have to give an LLM blanket `sudo` access to your machine. Late introduces strict terminal guardrails:
-* **Command Whitelisting:** Dangerous operations are blocked by default. Standard writes outside the CWD require explicit permission, while safe reads (`find`, `cat`) are securely parsed to block malicious pipes and redirects.
-* **CWD Jailing:** The agent is locked to the current working directory (`cd` is blocked). It cannot wander into your system files.
-* **Turn Limits:** Configurable limits prevent runaway LLM loops.
+### 3. Zero-Surprise Execution (Human-in-the-Loop)
+You shouldn't have to blindly give a generative model the keys to your terminal. Rather than making false promises about impenetrable shell-parsing "sandboxes" (which are easily bypassed without a native kernel lock), Late relies on a highly transparent, **trust-but-verify** guardrail system:
+* **Heuristic Fast-Path:** Late parses compound chains (`|`, `&&`, `;`) to fast-track known-safe reads (`ls`, `grep`) at agent-speed. Any mutating, unrecognized, or ambiguous command instantly slams the brakes and demands your explicit `[y/N]` approval. Shell parsing is a velocity optimization; *you* are the ultimate security layer.
+* **CWD Jailing:** The agent is algorithmically locked to your project directory (`cd` is blocked), preventing it from wandering into system folders.
+* **Turn Limits:** Hard configurable caps cleanly cut off infinite hallucinations and prevent runaway token burning.
 
 ### 4. Pure Go & No Dependencies
 A statically compiled engine. No `node_modules`, no virtual environments. Drop the binary in your path and go.
