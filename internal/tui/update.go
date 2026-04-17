@@ -46,12 +46,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Snapshot state before updateChat processes the key and potentially changes it
+	var stateBefore ValidationState
+	if _, ok := msg.(tea.KeyMsg); ok {
+		stateBefore = m.GetAgentState(m.Focused.ID()).State
+	}
+
 	// Main Chat Update Logic
 	newM, cmd := m.updateChat(msg)
 	m = newM
 
+	// Filter key events that were consumed by updateChat during confirmation
+	forwardToInput := true
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.String() {
+		case "y", "Y", "n", "N":
+			if stateBefore == StateConfirmTool {
+				forwardToInput = false
+			}
+		}
+	}
+
 	// Update Sub-models
-	m.Input, tiCmd = m.Input.Update(msg)
+	if forwardToInput {
+		m.Input, tiCmd = m.Input.Update(msg)
+	}
 	var spCmd tea.Cmd
 	m.Spinner, spCmd = m.Spinner.Update(msg)
 
