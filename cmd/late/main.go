@@ -148,8 +148,9 @@ func main() {
 	if baseURL == "" {
 		baseURL = "http://localhost:8080"
 	}
+	apiKey := os.Getenv("OPENAI_API_KEY")
 	modelName := os.Getenv("OPENAI_MODEL")
-	cfg := client.Config{BaseURL: baseURL, Model: modelName}
+	cfg := client.Config{BaseURL: baseURL, APIKey: apiKey, Model: modelName}
 	c := client.NewClient(cfg)
 
 	// Initialize MCP client

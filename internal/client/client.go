@@ -13,6 +13,7 @@ import (
 
 type Config struct {
 	BaseURL string
+	APIKey  string
 	Model   string
 	Timeout time.Duration
 }
@@ -51,6 +52,10 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+
+	if c.cfg.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -97,6 +102,10 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", "text/event-stream")
+
+		if c.cfg.APIKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+		}
 
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
@@ -149,6 +158,10 @@ func (c *Client) Completion(ctx context.Context, req CompletionRequest) (*Comple
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+
+	if c.cfg.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
