@@ -76,7 +76,7 @@ make install
 
 ## 🛠️ Advanced Features
 
-* **Native MCP Integration:** Dynamically map external MCP servers (databases, APIs) directly into Late's tool interface via standard I/O, bypassing massive token bloat.
+* **Native MCP Integration:** Dynamically map external MCP servers directly into Late via standard I/O. Supports `mcp_config.json` at `~/.config/late/` (global) or `.late/` (project-local) using the standard `mcpServers` JSON format.
 * **Stateful Resilience:** The Orchestrator maintains continuous, newest-first session history on disk (`~/.local/share/late`), ensuring perfect context retention across runs.
 * **Git Worktree Support:** Run independent, parallel Late instances across multiple Git worktrees for isolated feature development without context switching.
 
