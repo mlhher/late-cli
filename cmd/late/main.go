@@ -40,7 +40,7 @@ func main() {
 	subagentMaxTurns := flag.Int("subagent-max-turns", 500, "Maximum number of turns for subagents (default: 500)")
 	appendSystemPromptReq := flag.String("append-system-prompt", "", "Append text to the system prompt after processing")
 	versionReq := flag.Bool("version", false, "Show version")
-	unsupervisedReq := flag.Bool("i-promise-i-have-backups-and-will-not-file-issues", false, "Execute all tools without supervision")
+	unsupervisedReq := flag.Bool("i-promise-i-have-backups-and-will-not-file-issues", false, "Unsupported: Execute all tools without supervision. Do not use this, bad things will happen. You have been warned.")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of late:\n")

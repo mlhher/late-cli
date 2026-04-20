@@ -68,6 +68,8 @@ export OPENAI_BASE_URL="http://localhost:8080"
 late
 ```
 
+📖 **New to Late?** See the **[Quickstart Guide](docs/quickstart.md)** for features, keybindings, agent tabs, sessions, and tips.
+
 ## 🔨 Build from Source
 
 If you prefer to compile Late yourself (requires Go):
