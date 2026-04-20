@@ -40,6 +40,7 @@ func main() {
 	subagentMaxTurns := flag.Int("subagent-max-turns", 500, "Maximum number of turns for subagents (default: 500)")
 	appendSystemPromptReq := flag.String("append-system-prompt", "", "Append text to the system prompt after processing")
 	versionReq := flag.Bool("version", false, "Show version")
+	unsupervisedReq := flag.Bool("i-promise-i-have-backups-and-will-not-file-issues", false, "Execute all tools without supervision")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of late:\n")
@@ -226,6 +227,9 @@ func main() {
 
 		// Create context with InputProvider
 		ctx := context.WithValue(context.Background(), common.InputProviderKey, tui.NewTUIInputProvider(p))
+		if *unsupervisedReq {
+			ctx = context.WithValue(ctx, common.SkipConfirmationKey, true)
+		}
 		rootAgent.SetContext(ctx)
 
 		// Set middlewares (e.g. TUI confirmation)

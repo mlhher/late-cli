@@ -91,6 +91,7 @@ type contextKey string
 const (
 	InputProviderKey  contextKey = "input_provider"
 	OrchestratorIDKey contextKey = "orchestrator_id"
+	SkipConfirmationKey contextKey = "skip_confirmation"
 )
 
 // GetInputProvider returns the InputProvider from the context.

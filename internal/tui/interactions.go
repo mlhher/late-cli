@@ -59,6 +59,11 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 				return next(ctx, tc)
 			}
 
+			// Check for unsupervised execution flag in context
+			if skip, ok := ctx.Value(common.SkipConfirmationKey).(bool); ok && skip {
+				return next(ctx, tc)
+			}
+
 			// Check if the tool requires confirmation
 			if reg != nil {
 				if t := reg.Get(tc.Function.Name); t != nil {
@@ -75,7 +80,7 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 						}
 						if err := json.Unmarshal([]byte(tc.Function.Arguments), &params); err == nil {
 							if blocked, err := bashTool.IsCommandBlocked(params.Command); blocked {
-								return "", err // Reject immediately, don't ask for confirmation
+								return "", bashTool.WrapError(ctx, err) // Reject immediately with descriptive guidance
 							}
 						}
 					}

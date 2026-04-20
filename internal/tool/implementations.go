@@ -315,6 +315,24 @@ func (t *BashTool) ValidateBashCommand(command string) error {
 	return nil
 }
 
+// WrapError wraps a validation error with descriptive guidance based on the orchestrator ID.
+func (t *BashTool) WrapError(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	orchestratorID := common.GetOrchestratorID(ctx)
+	
+	var errorMsg string
+	if strings.Contains(strings.ToLower(orchestratorID), "coder") {
+		errorMsg = fmt.Sprintf("Do not use bash commands like `cat > file` or `echo > file` to write files. Use the native `write_file` or `target_edit` tools instead. %s", err.Error())
+	} else {
+		errorMsg = fmt.Sprintf("You are an architect/planner agent. You cannot write files. To modify files, you must spawn a coder subagent using `spawn_subagent` tool. %s", err.Error())
+	}
+	
+	return fmt.Errorf("%s", errorMsg)
+}
+
 // IsCommandBlocked checks if a bash command should be blocked entirely (not asked for confirmation).
 // Returns true and an error if the command is blocked (e.g., cd commands).
 func (t *BashTool) IsCommandBlocked(command string) (bool, error) {
@@ -402,17 +420,7 @@ func (t BashTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 
 	// Validate command before any execution
 	if err := t.ValidateBashCommand(params.Command); err != nil {
-		// Generate appropriate error message based on agent type
-		orchestratorID := common.GetOrchestratorID(ctx)
-		
-		var errorMsg string
-		if strings.Contains(strings.ToLower(orchestratorID), "coder") {
-			errorMsg = fmt.Sprintf("Do not use bash commands like `cat > file` or `echo > file` to write files. Use the native `write_file` or `target_edit` tools instead. %s", err.Error())
-		} else {
-			errorMsg = fmt.Sprintf("You are an architect/planner agent. You cannot write files. To modify files, you must spawn a coder subagent using `spawn_subagent` tool. %s", err.Error())
-		}
-		
-		return "", fmt.Errorf("%s", errorMsg)
+		return "", t.WrapError(ctx, err)
 	}
 
 	// Validate and set working directory
