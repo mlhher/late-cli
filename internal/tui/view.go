@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"strings"
 	"time"
 
@@ -248,7 +249,11 @@ func (m *Model) updateViewport() {
 	// Render Interactions
 	if s.State == StateConfirmTool && s.PendingConfirm != nil {
 		tc := s.PendingConfirm.ToolCall
-		prompt := fmt.Sprintf("The agent wants to execute **%s**.\n\n```json\n%s\n```\n\n> Press **[ y ]** to Approve  |  **[ n ]** to Deny", tc.Function.Name, tc.Function.Arguments)
+		displayName := tc.Function.Name
+		if runtime.GOOS == "windows" && displayName == "bash" {
+			displayName = "PowerShell"
+		}
+		prompt := fmt.Sprintf("The agent wants to execute a **%s** command.\n\n```json\n%s\n```\n\n> Press **[ y ]** to Approve  |  **[ n ]** to Deny", displayName, tc.Function.Arguments)
 		md, _ := m.Renderer.Render(prompt)
 		blocks = append(blocks, aiMsgStyle.Width(msgWidth).Border(lipgloss.DoubleBorder()).BorderForeground(lipgloss.Color("#FFD700")).Render(md))
 	}

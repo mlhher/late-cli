@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -432,6 +433,15 @@ func (t ShellTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		return "", t.WrapError(ctx, err)
 	}
 
+	// Enforce approval in the execution path so shell commands fail closed
+	// even if middleware wiring is missing.
+	if t.RequiresConfirmation(args) {
+		approved, ok := ctx.Value(common.ToolApprovalKey).(bool)
+		if !ok || !approved {
+			return "", fmt.Errorf("shell command requires explicit approval before execution")
+		}
+	}
+
 	// Validate and set working directory
 	if params.Cwd != "" {
 		if !IsSafePath(params.Cwd) {
@@ -475,6 +485,11 @@ func (t ShellTool) RequiresConfirmation(args json.RawMessage) bool {
 		return true // Default to requiring confirmation if we can't parse
 	}
 
+	// Conservative Windows policy: always require confirmation.
+	if runtime.GOOS == "windows" {
+		return true
+	}
+
 	// If the command contains any shell metacharacters that could embed
 	// sub-commands or disguise intent, always require confirmation.
 	// This is the primary defense: we don't try to parse complex shell
@@ -500,11 +515,19 @@ func (t ShellTool) CallString(args json.RawMessage) string {
 		Cwd     string `json:"cwd"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
+		if runtime.GOOS == "windows" {
+			return "Executing in PowerShell: (invalid args)"
+		}
 		return "Executing: (invalid args)"
 	}
 
 	// Build the display string
-	result := fmt.Sprintf("Executing: %s", params.Command)
+	var result string
+	if runtime.GOOS == "windows" {
+		result = fmt.Sprintf("Executing in PowerShell: %s", params.Command)
+	} else {
+		result = fmt.Sprintf("Executing: %s", params.Command)
+	}
 	if params.Cwd != "" {
 		result += " in dir: " + params.Cwd
 	}

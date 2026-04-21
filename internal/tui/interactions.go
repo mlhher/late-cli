@@ -7,6 +7,7 @@ import (
 	"late/internal/client"
 	"late/internal/common"
 	"late/internal/tool"
+	"runtime"
 )
 
 // TUIInputProvider implements common.InputProvider by sending messages to the TUI.
@@ -61,7 +62,11 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 
 			// Check for unsupervised execution flag in context
 			if skip, ok := ctx.Value(common.SkipConfirmationKey).(bool); ok && skip {
-				return next(ctx, tc)
+				// On Windows, never bypass shell command confirmation.
+				if !(runtime.GOOS == "windows" && tc.Function.Name == "bash") {
+					approvedCtx := context.WithValue(ctx, common.ToolApprovalKey, true)
+					return next(approvedCtx, tc)
+				}
 			}
 
 			// Check if the tool requires confirmation
@@ -103,7 +108,8 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 				if !confirmed {
 					return "Tool execution cancelled by user", nil
 				}
-				return next(ctx, tc)
+				approvedCtx := context.WithValue(ctx, common.ToolApprovalKey, true)
+				return next(approvedCtx, tc)
 			case err := <-errCh:
 				return "", err
 			case <-ctx.Done():

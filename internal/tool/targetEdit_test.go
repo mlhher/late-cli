@@ -21,6 +21,8 @@ func TestTargetEditTool(t *testing.T) {
 	file1 := "test.txt"
 	content := "line 1\nline 2\nline 3\n"
 	filePath := filepath.Join(tmpDir, file1)
+		// Use forward slashes so the path is valid JSON on all platforms (including Windows).
+		filePath = filepath.ToSlash(filePath)
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}

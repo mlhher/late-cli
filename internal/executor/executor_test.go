@@ -6,6 +6,7 @@ import (
 	"late/internal/common"
 	"late/internal/session"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -175,6 +176,33 @@ func TestExecuteToolCalls_Denied(t *testing.T) {
 	}
 	if sess.History[0].Content != "Tool execution cancelled by user" {
 		t.Errorf("expected cancel message, got '%s'", sess.History[0].Content)
+	}
+}
+
+// TestExecuteToolCalls_NoMiddlewareFailsClosed verifies shell commands cannot
+// run when confirmation middleware is missing.
+func TestExecuteToolCalls_NoMiddlewareFailsClosed(t *testing.T) {
+	c := client.NewClient(client.Config{BaseURL: "http://localhost:0"})
+	histPath := filepath.Join(t.TempDir(), "history.json")
+	sess := session.New(c, histPath, nil, "", true)
+
+	RegisterTools(sess.Registry, map[string]bool{"bash": true}, false)
+
+	toolCalls := []client.ToolCall{
+		{ID: "tc_1", Function: client.FunctionCall{Name: "bash", Arguments: `{"command":"echo hi"}`}},
+	}
+
+	err := ExecuteToolCalls(context.Background(), sess, toolCalls, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(sess.History) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(sess.History))
+	}
+
+	if !strings.Contains(sess.History[0].Content, "requires explicit approval") {
+		t.Fatalf("expected fail-closed approval message, got %q", sess.History[0].Content)
 	}
 }
 

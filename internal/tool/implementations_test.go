@@ -4,16 +4,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"late/internal/common"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+func approvedContext() context.Context {
+	return context.WithValue(context.Background(), common.ToolApprovalKey, true)
+}
 
 func TestReadFileTool_PartialRead(t *testing.T) {
 	// constant setup
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "test.txt")
+		filePath = filepath.ToSlash(filePath)
 	content := "line1\nline2\nline3\nline4\nline5\n"
 	err := os.WriteFile(filePath, []byte(content), 0644)
 	if err != nil {
@@ -48,6 +55,7 @@ func TestReadFileTool_PartialRead(t *testing.T) {
 func TestReadFileTool_NoCaching(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "test.txt")
+	filePath = filepath.ToSlash(filePath)
 	content := "unchanged content"
 	os.WriteFile(filePath, []byte(content), 0644)
 
@@ -92,6 +100,7 @@ func TestReadFileTool_NoCaching(t *testing.T) {
 func TestReadFileTool_OutputTruncation(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "large_test.txt")
+	filePath = filepath.ToSlash(filePath)
 
 	// Generate a file that exceeds maxReadFileChars
 	var sb strings.Builder
@@ -120,6 +129,9 @@ func TestReadFileTool_OutputTruncation(t *testing.T) {
 }
 
 func TestBashTool_Execute(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Unix echo/pwd behavior tests skipped on Windows; see TestPSShellTool_* in implementations_cmd_test.go")
+		}
 	tests := []struct {
 		name    string
 		params  json.RawMessage
@@ -167,7 +179,7 @@ func TestBashTool_Execute(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tool := ShellTool{}
-			out, err := tool.Execute(context.Background(), tt.params)
+			out, err := tool.Execute(approvedContext(), tt.params)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Execute() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -186,6 +198,9 @@ func TestBashTool_Execute(t *testing.T) {
 }
 
 func TestBashTool_CWDParameter(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Unix pwd/path tests skipped on Windows")
+		}
 	// Create a subdirectory within the current working directory
 	// Use a subdirectory of the package directory to ensure it's within allowed paths
 	tmpDir := filepath.Join("internal", "tool", "test_cwd")
@@ -199,7 +214,7 @@ func TestBashTool_CWDParameter(t *testing.T) {
 
 	// Test with custom cwd
 	params := json.RawMessage(fmt.Sprintf(`{"command": "pwd", "cwd": "%s"}`, tmpDir))
-	out, err := tool.Execute(context.Background(), params)
+	out, err := tool.Execute(approvedContext(), params)
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -209,11 +224,14 @@ func TestBashTool_CWDParameter(t *testing.T) {
 }
 
 func TestBashTool_MultipleArgs(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Unix echo multi-arg test skipped on Windows; see TestPSShellTool_* in implementations_cmd_test.go")
+		}
 	tool := ShellTool{}
 
 	// Test with multiple arguments
 	params := json.RawMessage(`{"command": "echo arg1 arg2 arg3"}`)
-	out, err := tool.Execute(context.Background(), params)
+	out, err := tool.Execute(approvedContext(), params)
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -227,12 +245,15 @@ func TestBashTool_MultipleArgs(t *testing.T) {
 }
 
 func TestBashTool_OutputTruncation(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("seq command not available on Windows")
+		}
 	tool := ShellTool{}
 
 	// Create a command that outputs more than 1024 lines
 	// Using seq to generate numbers 1-2000
 	params := json.RawMessage(`{"command": "seq 1 2000"}`)
-	out, err := tool.Execute(context.Background(), params)
+	out, err := tool.Execute(approvedContext(), params)
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -250,12 +271,15 @@ func TestBashTool_OutputTruncation(t *testing.T) {
 }
 
 func TestBashTool_UnsafeCWD(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Unix /tmp path test skipped on Windows")
+		}
 	tool := ShellTool{}
 
 	// Try to use an unsafe cwd (outside CWD)
 	// This should fail if we're not running from root
 	params := json.RawMessage(`{"command": "pwd", "cwd": "/tmp"}`)
-	out, err := tool.Execute(context.Background(), params)
+	out, err := tool.Execute(approvedContext(), params)
 
 	// The test depends on where we're running from
 	// If /tmp is within CWD, this should succeed
@@ -281,7 +305,7 @@ func TestBashTool_DefaultCWD(t *testing.T) {
 
 	// Execute without cwd parameter - should use current directory
 	params := json.RawMessage(`{"command": "pwd"}`)
-	out, err := tool.Execute(context.Background(), params)
+	out, err := tool.Execute(approvedContext(), params)
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -298,6 +322,9 @@ func TestBashTool_DefaultCWD(t *testing.T) {
 }
 
 func TestBashTool_CallString(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix CallString prefix tested on Windows via TestPSShellTool_CallString in implementations_cmd_test.go")
+	}
 	tests := []struct {
 		name     string
 		params   json.RawMessage
@@ -486,6 +513,28 @@ func TestBashTool_ValidationMessages(t *testing.T) {
 	}
 }
 
+func TestBashTool_ExecuteRequiresApproval(t *testing.T) {
+	tool := ShellTool{}
+	params := json.RawMessage(`{"command": "echo hello"}`)
+
+	_, err := tool.Execute(context.Background(), params)
+	if err == nil {
+		t.Fatal("expected missing-approval error, got nil")
+	}
+	if !strings.Contains(err.Error(), "requires explicit approval") {
+		t.Fatalf("expected approval error message, got %q", err.Error())
+	}
+
+	// Approved execution should proceed.
+	out, err := tool.Execute(approvedContext(), params)
+	if err != nil {
+		t.Fatalf("approved execution failed: %v", err)
+	}
+	if !strings.Contains(out, "hello") {
+		t.Fatalf("expected output to contain hello, got %q", out)
+	}
+}
+
 func TestBashTool_RequiresConfirmation(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -626,9 +675,32 @@ func TestBashTool_RequiresConfirmation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tool := ShellTool{}
 			result := tool.RequiresConfirmation(tt.params)
-			if result != tt.expected {
-				t.Errorf("RequiresConfirmation(%s) = %v, want %v", string(tt.params), result, tt.expected)
+			expected := tt.expected
+			if runtime.GOOS == "windows" {
+				expected = true
+			}
+			if result != expected {
+				t.Errorf("RequiresConfirmation(%s) = %v, want %v", string(tt.params), result, expected)
 			}
 		})
+	}
+}
+
+func TestBashTool_RequiresConfirmation_WindowsAlwaysPrompt(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only safety policy")
+	}
+
+	tool := ShellTool{}
+	commands := []json.RawMessage{
+		json.RawMessage(`{"command": "pwd"}`),
+		json.RawMessage(`{"command": "cat file.txt | grep hello"}`),
+		json.RawMessage(`{"command": "ls"}`),
+	}
+
+	for _, args := range commands {
+		if !tool.RequiresConfirmation(args) {
+			t.Fatalf("expected RequiresConfirmation=true on Windows for %s", string(args))
+		}
 	}
 }
