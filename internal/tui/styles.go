@@ -36,6 +36,7 @@ var (
 	// User Bubble
 	userMsgStyle = lipgloss.NewStyle().
 			Background(userMsgBg).
+			Foreground(textColor).
 			Padding(0, 2).
 			Margin(0, 1).
 			Align(lipgloss.Left).

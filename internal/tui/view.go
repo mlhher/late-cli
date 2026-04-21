@@ -14,15 +14,24 @@ func (m Model) View() string {
 		return ""
 	}
 
-	// Avoid expensive appStyle.Width().Height().Render() which forces lipgloss
-	// to parse every ANSI sequence in the output for width/height calculation.
-	// Each component already handles its own sizing and colors.
-	return lipgloss.JoinVertical(
+	content := lipgloss.JoinVertical(
 		lipgloss.Left,
 		m.Viewport.View(),
 		m.inputView(),
 		m.statusBarView(),
 	)
+
+	// Fill each line's remaining width with our dark background using the
+	// terminal's Erase-in-Line sequence. This only processes ~40-50 lines
+	// (terminal height) so it's negligible — unlike the old appStyle.Render
+	// which parsed ANSI codes in the entire viewport content.
+	bg := "\x1b[48;2;25;25;25m"
+	eolFill := "\x1b[48;2;25;25;25m\x1b[K"
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lines[i] = bg + line + eolFill
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *Model) inputView() string {
@@ -276,6 +285,9 @@ func (m *Model) renderMarkdownBlock(content string, innerWidth int) string {
 	colorRestore := "\x1b[0;38;2;85;85;85;48;2;25;25;25m"
 	md = strings.ReplaceAll(md, "\x1b[0m", colorRestore)
 	md = strings.ReplaceAll(md, "\x1b[m", colorRestore)
+	// Catch bg-only and fg-only resets that glamour/chroma use for tables and links
+	md = strings.ReplaceAll(md, "\x1b[49m", "\x1b[48;2;25;25;25m")
+	md = strings.ReplaceAll(md, "\x1b[39m", "\x1b[38;2;85;85;85m")
 
 	// Use direct ANSI codes + manual padding instead of per-line lipgloss.Render().
 	// lipgloss.Render() per line is expensive: it parses all ANSI codes, restructures
@@ -284,10 +296,13 @@ func (m *Model) renderMarkdownBlock(content string, innerWidth int) string {
 	fullWidth := m.Viewport.Width - AIMsgOverhead
 	bgPrefix := "\x1b[48;2;25;25;25;38;2;85;85;85m"
 
+	// Remove trailing empty lines from glamour output. Without this, empty
+	// strings stay in the array unstyled and create transparent ghost lines.
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+
 	for i, line := range lines {
-		if strings.TrimSpace(line) == "" && i == len(lines)-1 {
-			continue
-		}
 		pad := fullWidth - lipgloss.Width(line)
 		if pad < 0 {
 			pad = 0
@@ -336,10 +351,12 @@ func (m *Model) renderPlainBlock(content string) string {
 	wrapped := wordWrap(content, fullWidth)
 	lines := strings.Split(wrapped, "\n")
 
+	// Remove trailing empty lines
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+
 	for i, line := range lines {
-		if strings.TrimSpace(line) == "" && i == len(lines)-1 {
-			continue
-		}
 		pad := fullWidth - len(line)
 		if pad < 0 {
 			pad = 0

@@ -70,6 +70,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Update Sub-models
 	if forwardToInput {
 		m.Input, tiCmd = m.Input.Update(msg)
+
+		if !strings.HasPrefix(m.Input.Value(), "> ") {
+			val := m.Input.Value()
+			if strings.HasPrefix(val, ">") {
+				m.Input.SetValue("> " + strings.TrimPrefix(val, ">"))
+			} else {
+				m.Input.SetValue("> " + val)
+			}
+			m.Input.CursorEnd()
+		}
 	}
 	var spCmd tea.Cmd
 	m.Spinner, spCmd = m.Spinner.Update(msg)
@@ -296,7 +306,6 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 		m.updateViewport()
 		return m, nil
 
-	
 	}
 
 	return m, nil
