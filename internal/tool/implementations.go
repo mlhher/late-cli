@@ -241,42 +241,42 @@ func isMaliciousCatCommand(command string) (bool, error) {
 	// Pattern to detect cat with output redirection (>)
 	// Matches: cat > file, cat >> file, cat 2> file, echo | cat > file, etc.
 	// Does NOT match: cat file.txt (reading), cat < file.txt (input redirection), cat file | grep (piping)
-	
+
 	// First, strip comments and quotes to avoid false positives
 	cleanCmd := command
 	// Remove single-line comments
 	if idx := strings.Index(cleanCmd, "#"); idx != -1 {
 		cleanCmd = cleanCmd[:idx]
 	}
-	
+
 	// Pattern explanation:
 	// - Match "cat" command (possibly with whitespace before it)
 	// - Followed by output redirection (>, >>, 2>)
 	// - The redirection must be a standalone redirection, not part of a pipe
-	
+
 	// This regex matches:
 	// - cat followed by whitespace and > (output redirection)
 	// - cat followed by whitespace and >> (append redirection)
 	// - cat followed by 2> (stderr redirection)
 	// - | cat followed by whitespace and > (pipe to cat with output redirection)
 	maliciousPatterns := []string{
-		`(?i)\bcat\s+>>\s+`,            // cat >> file
-		`(?i)\bcat\s+>\s+`,             // cat > file
-		`(?i)\bcat\s+2>\s+`,            // cat 2> file
-		`(?i)\|\s*cat\s+>\s+`,          // | cat > file
-		`(?i)\|\s*cat\s+>>\s+`,         // | cat >> file
-		`(?i)\|\s*cat\s+2>\s+`,         // | cat 2> file
-		`(?i)cat\s+\d+\s*>`,            // cat 0> file, cat 1> file, cat 1 > file, etc.
-		`(?i)\|\s*cat\s+\d+\s*>`,       // | cat 1> file
+		`(?i)\bcat\s+>>\s+`,      // cat >> file
+		`(?i)\bcat\s+>\s+`,       // cat > file
+		`(?i)\bcat\s+2>\s+`,      // cat 2> file
+		`(?i)\|\s*cat\s+>\s+`,    // | cat > file
+		`(?i)\|\s*cat\s+>>\s+`,   // | cat >> file
+		`(?i)\|\s*cat\s+2>\s+`,   // | cat 2> file
+		`(?i)cat\s+\d+\s*>`,      // cat 0> file, cat 1> file, cat 1 > file, etc.
+		`(?i)\|\s*cat\s+\d+\s*>`, // | cat 1> file
 	}
-	
+
 	for _, pattern := range maliciousPatterns {
 		re := regexp.MustCompile(pattern)
 		if re.MatchString(cleanCmd) {
 			return true, fmt.Errorf("cat cannot be used with output redirection (>) to write files")
 		}
 	}
-	
+
 	return false, nil
 }
 
@@ -289,7 +289,7 @@ func isCdCommand(command string) (bool, error) {
 	if idx := strings.Index(cleanCmd, "#"); idx != -1 {
 		cleanCmd = cleanCmd[:idx]
 	}
-	
+
 	// Pattern explanation:
 	// - Optional leading whitespace
 	// - "cd" as a standalone word (not part of another word like cd_log or mkdir)
@@ -297,11 +297,11 @@ func isCdCommand(command string) (bool, error) {
 	// - The \b word boundary ensures we match "cd" but not "cd_log" or "mkdir"
 	pattern := `^\s*cd\s+`
 	re := regexp.MustCompile(pattern)
-	
+
 	if re.MatchString(cleanCmd) {
 		return true, fmt.Errorf("Do not use `cd` to change directories. Use the `cwd` parameter in the bash tool instead.")
 	}
-	
+
 	return false, nil
 }
 
@@ -313,13 +313,13 @@ func (t *BashTool) ValidateBashCommand(command string) error {
 	if isMalicious {
 		return err
 	}
-	
+
 	// Check for cd commands
 	isCd, err := isCdCommand(command)
 	if isCd {
 		return err
 	}
-	
+
 	return nil
 }
 
@@ -330,14 +330,14 @@ func (t *BashTool) WrapError(ctx context.Context, err error) error {
 	}
 
 	orchestratorID := common.GetOrchestratorID(ctx)
-	
+
 	var errorMsg string
 	if strings.Contains(strings.ToLower(orchestratorID), "coder") {
 		errorMsg = fmt.Sprintf("Do not use bash commands like `cat > file` or `echo > file` to write files. Use the native `write_file` or `target_edit` tools instead. %s", err.Error())
 	} else {
 		errorMsg = fmt.Sprintf("You are an architect/planner agent. You cannot write files. To modify files, you must spawn a coder subagent using `spawn_subagent` tool. %s", err.Error())
 	}
-	
+
 	return fmt.Errorf("%s", errorMsg)
 }
 
@@ -349,13 +349,13 @@ func (t *BashTool) IsCommandBlocked(command string) (bool, error) {
 	if isCd {
 		return true, err
 	}
-	
+
 	// Block cat with output redirection immediately
 	isMalicious, err := isMaliciousCatCommand(command)
 	if isMalicious {
 		return true, err
 	}
-	
+
 	return false, nil
 }
 
@@ -365,7 +365,9 @@ func (t *BashTool) IsCommandBlocked(command string) (bool, error) {
 //
 // Note: This function does NOT handle quoted strings or subshells.
 // For example: echo 'hello && goodbye' ; ls  → ["echo", "goodbye'", "ls"]
-//              echo foo; (cd /tmp && ls)      → ["echo", "(cd", "ls"]
+//
+//	echo foo; (cd /tmp && ls)      → ["echo", "(cd", "ls"]
+//
 // These edge cases currently cause over-confirmation (safer than under-confirmation).
 func getAllBaseCommands(command string) []string {
 	var commands = []string{}
@@ -445,8 +447,8 @@ func (t BashTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 		params.Cwd = cwd
 	}
 
-	// Execute the command using bash -c to handle parsing correctly
-	cmd := exec.CommandContext(ctx, "bash", "-c", params.Command)
+	// Execute command using a platform-specific shell wrapper.
+	cmd := newShellCommand(ctx, params.Command)
 	cmd.Dir = params.Cwd
 
 	output, err := cmd.CombinedOutput()

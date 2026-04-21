@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"late/internal/common"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -30,13 +31,11 @@ func LoadMCPConfig() (*MCPConfig, error) {
 	}
 
 	if configPath == "" {
-		// Define default paths
-		configDir, err := os.UserConfigDir()
+		lateConfigDir, err := common.LateConfigDir()
 		if err != nil {
 			return &MCPConfig{McpServers: make(map[string]MCPServer)}, nil
 		}
 
-		lateConfigDir := filepath.Join(configDir, "late")
 		defaultUserPath := filepath.Join(lateConfigDir, "mcp_config.json")
 
 		// Pre-populate with a default config
@@ -57,18 +56,17 @@ func LoadMCPConfig() (*MCPConfig, error) {
 // findConfigPath searches for config files in order of precedence
 func findConfigPath() (string, error) {
 	// 1. Project-level: .late/mcp_config.json in current directory
-	projectPath := filepath.Join(".late", "mcp_config.json")
+	projectPath := common.LateProjectMCPConfigPath()
 	if _, err := os.Stat(projectPath); err == nil {
 		return projectPath, nil
 	}
 
-	// 2. User-level: ~/.config/late/mcp_config.json (using XDG UserConfigDir)
-	configDir, err := os.UserConfigDir()
+	// 2. User-level config path
+	userPath, err := common.LateUserMCPConfigPath()
 	if err != nil {
 		return "", fmt.Errorf("failed to get config directory: %w", err)
 	}
 
-	userPath := filepath.Join(configDir, "late", "mcp_config.json")
 	if _, err := os.Stat(userPath); err == nil {
 		return userPath, nil
 	}

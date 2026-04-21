@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"late/internal/common"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,11 +24,7 @@ type SessionMeta struct {
 
 // SessionDir returns the directory where session metadata and histories are stored
 var SessionDir = func() (string, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(homeDir, ".local", "share", "late", "sessions"), nil
+	return common.LateSessionDir()
 }
 
 // SaveSessionMeta saves session metadata to the sessions directory

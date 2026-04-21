@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"late/internal/common"
 	"os"
 	"path/filepath"
 )
@@ -12,12 +13,10 @@ type Config struct {
 }
 
 func LoadConfig() (*Config, error) {
-	configDir, err := os.UserConfigDir()
+	lateConfigDir, err := common.LateConfigDir()
 	if err != nil {
 		return nil, err
 	}
-
-	lateConfigDir := filepath.Join(configDir, "late")
 	configPath := filepath.Join(lateConfigDir, "config.json")
 
 	content, err := os.ReadFile(configPath)
