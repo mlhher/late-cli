@@ -21,15 +21,22 @@ func (m Model) View() string {
 		m.statusBarView(),
 	)
 
-	// Fill each line's remaining width with our dark background using the
-	// terminal's Erase-in-Line sequence. This only processes ~40-50 lines
-	// (terminal height) so it's negligible — unlike the old appStyle.Render
-	// which parsed ANSI codes in the entire viewport content.
+	// Fill each line's remaining width with dark background.
+	// Background color is inserted AFTER reset sequences (\x1b[0m / \x1b[m)
+	// so it isn't wiped out by lipgloss-generated resets within the same line.
 	bg := "\x1b[48;2;25;25;25m"
-	eolFill := "\x1b[48;2;25;25;25m\x1b[K"
+	eolFill := "\x1b[K"
 	lines := strings.Split(content, "\n")
 	for i, line := range lines {
-		lines[i] = bg + line + eolFill
+		// Insert background color after any full reset so it survives
+		line = strings.ReplaceAll(line, "\x1b[0m", "\x1b[0m"+bg)
+		line = strings.ReplaceAll(line, "\x1b[m", "\x1b[m"+bg)
+
+		pad := m.Width - lipgloss.Width(line)
+		if pad < 0 {
+			pad = 0
+		}
+		lines[i] = line + strings.Repeat(" ", pad) + eolFill
 	}
 	return strings.Join(lines, "\n")
 }
