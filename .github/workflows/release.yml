@@ -21,6 +21,10 @@ jobs:
             arch: amd64
           - os: darwin
             arch: arm64
+          - os: windows
+            arch: amd64
+          - os: windows
+            arch: arm64
 
     steps:
       - uses: actions/checkout@v4
@@ -36,9 +40,12 @@ jobs:
           GOARCH: ${{ matrix.arch }}
         run: |
           OUTPUT_NAME=late-${{ matrix.os }}-${{ matrix.arch }}
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            OUTPUT_NAME="${OUTPUT_NAME}.exe"
+          fi
           go build -ldflags "-X late/internal/common.Version=${{ github.ref_name }}" -o $OUTPUT_NAME ./cmd/late
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
         with:
-          files: late-${{ matrix.os }}-${{ matrix.arch }}
+          files: late-${{ matrix.os }}-${{ matrix.arch }}*
