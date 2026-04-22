@@ -142,14 +142,14 @@ MCP tools are automatically available to the agent after connecting.
 
 By default, Late uses the same model for both the Lead Architect (orchestrator) and ephemeral workers (subagents). You can mix and match models by setting separate environment variables for subagents:
 
-- **`SUBAGENT_MODEL`** — The model to use for subagents (e.g., a faster, specialized model).
-- **`SUBAGENT_BASE_URL`** — (Optional) Different endpoint for subagents. Defaults to `OPENAI_BASE_URL`.
-- **`SUBAGENT_API_KEY`** — (Optional) Different API key for subagents. Defaults to `OPENAI_API_KEY`.
+- **`LATE_SUBAGENT_MODEL`** — The model to use for subagents (e.g., a faster, specialized model).
+- **`LATE_SUBAGENT_BASE_URL`** — (Optional) Different endpoint for subagents. Defaults to `OPENAI_BASE_URL`.
+- **`LATE_SUBAGENT_API_KEY`** — (Optional) Different API key for subagents. Defaults to `OPENAI_API_KEY`.
 
 **Example:** Using a large model for planning and a fast model for execution:
 
 ```bash
 export OPENAI_MODEL="o3-mini"
-export SUBAGENT_MODEL="qwen-32b"
+export LATE_SUBAGENT_MODEL="qwen-32b"
 late
 ```

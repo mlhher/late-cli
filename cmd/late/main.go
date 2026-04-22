@@ -161,12 +161,12 @@ func main() {
 	c.DiscoverBackend(context.Background())
 
 	// Initialize Subagent Client
-	subModelName := os.Getenv("SUBAGENT_MODEL")
-	subBaseURL := os.Getenv("SUBAGENT_BASE_URL")
+	subModelName := os.Getenv("LATE_SUBAGENT_MODEL")
+	subBaseURL := os.Getenv("LATE_SUBAGENT_BASE_URL")
 	if subBaseURL == "" {
 		subBaseURL = baseURL
 	}
-	subAPIKey := os.Getenv("SUBAGENT_API_KEY")
+	subAPIKey := os.Getenv("LATE_SUBAGENT_API_KEY")
 	if subAPIKey == "" {
 		subAPIKey = apiKey
 	}
