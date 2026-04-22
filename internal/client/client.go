@@ -51,7 +51,7 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 		req.Model = c.cfg.Model
 	}
 
-	body, err := json.Marshal(req)
+	body, err := c.marshalFlattened(req)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +98,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 			req.Model = c.cfg.Model
 		}
 
-		body, err := json.Marshal(req)
+		body, err := c.marshalFlattened(req)
 		if err != nil {
 			errCh <- err
 			return
@@ -239,4 +239,29 @@ func (c *Client) DiscoverBackend(ctx context.Context) BackendType {
 
 func (c *Client) IsLlamaCPP() bool {
 	return c.backend == BackendLlamaCPP
+}
+
+func (c *Client) marshalFlattened(req ChatCompletionRequest) ([]byte, error) {
+	// Marshal the request normally first
+	raw, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Unmarshal into a map
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+
+	// Move everything from extra_body to the root
+	if extra, ok := m["extra_body"].(map[string]any); ok {
+		for k, v := range extra {
+			m[k] = v
+		}
+		// Remove the extra_body field
+		delete(m, "extra_body")
+	}
+
+	return json.Marshal(m)
 }
