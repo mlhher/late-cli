@@ -150,6 +150,6 @@ By default, Late uses the same model for both the Lead Architect (orchestrator) 
 
 ```bash
 export OPENAI_MODEL="o3-mini"
-export OPENAI_SUBAGENT_MODEL="qwen-32b"
+export SUBAGENT_MODEL="qwen-32b"
 late
 ```
