@@ -286,6 +286,7 @@ func (m *Model) renderMarkdownBlock(content string, innerWidth int) string {
 	fullWidth := m.Viewport.Width - AIMsgOverhead
 	bgPrefix := "\x1b[48;2;25;25;25;38;2;85;85;85m"
 
+
 	for i, line := range lines {
 		pad := fullWidth - lipgloss.Width(line)
 		if pad < 0 {
@@ -334,6 +335,7 @@ func (m *Model) renderPlainBlock(content string) string {
 	// we can use simple rune counting for wrapping — essentially free.
 	wrapped := wordWrap(content, fullWidth)
 	lines := strings.Split(wrapped, "\n")
+
 
 	for i, line := range lines {
 		pad := fullWidth - len(line)
