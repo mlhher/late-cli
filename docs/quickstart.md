@@ -12,7 +12,7 @@ export OPENAI_BASE_URL="http://localhost:8080"
 
 # Cloud (e.g. Google)
 export OPENAI_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai/"
-export OPENAI_API_KEY="your-key"
+export OPENAI_API_KEY="your-api-key"
 export OPENAI_MODEL="your-model"
 ```
 
@@ -31,6 +31,7 @@ late
 
 **3. Hybrid Routing (Optional):**
 By default, Late uses the same model for both the Lead Architect (orchestrator) and the ephemeral workers (subagents). You can mix and match models by setting separate environment variables.
+Check the [Configuration](#configuration) section to find out how to persist these settings.
 
 This is useful for using a large, smart model for planning and a fast, cheap model for execution:
 
@@ -98,6 +99,8 @@ The agent wants to execute bash.
 - **Read-only commands** (`ls`, `cat`, `grep`, etc.) are auto-approved for speed (Note: the listed commands can still require permission if Late deems the agents activity suspicious)
 - **Everything else** requires your explicit `y` / `n`.
 
+> **Note:** On Windows currently, every command will require your explicit `y` / `n` approval. This will be resolved in a future release.
+
 ## Common Flags
 
 | Flag | Description |
@@ -132,6 +135,30 @@ late worktree remove <path>      # Remove a worktree
 
 > **Tip:** Use worktrees when you want Late to work on a feature in the background while you continue working on another branch.
 
+## Configuration
+
+You can set your preferred model selection (orchestrator, subagents) and their respective configuration (host, keys) permanently inside the `config.json`.
+
+**File Locations:**
+* **Linux/macOS:** `~/.config/late/config.json`
+* **Windows:** `%APPDATA%\late\config.json`
+
+**Setting Precedence:**
+1. Non-empty environment variables
+2. `config.json`
+3. Defaults
+
+
+```json
+{
+  "openai_base_url": "http://localhost:8080",
+  "openai_api_key": "your-api-key",
+  "openai_model": "qwen3.6-35b-a3b",
+  "subagent_base_url": "http://10.8.0.2:8080",
+  "subagent_api_key": "your-other-api-key",
+  "subagent_model": "gemma-4-e4b"
+}
+```
 
 ## MCP Integration
 
@@ -149,34 +176,3 @@ Late supports the Model Context Protocol. Add your MCP servers to `~/.config/lat
 ```
 
 MCP tools are automatically available to the agent after connecting.
-
-## Separate Subagent Models
-
-By default, Late uses the same model for both the Lead Architect (orchestrator) and ephemeral workers (subagents). You can mix and match models by setting separate environment variables for subagents:
-
-- **`LATE_SUBAGENT_MODEL`** — The model to use for subagents (e.g., a faster, specialized model).
-- **`LATE_SUBAGENT_BASE_URL`** — (Optional) Different endpoint for subagents. Defaults to `OPENAI_BASE_URL`.
-- **`LATE_SUBAGENT_API_KEY`** — (Optional) Different API key for subagents. Defaults to `OPENAI_API_KEY`.
-
-**Example:** Using a large model for planning and a fast model for execution:
-
-```bash
-export OPENAI_MODEL="o3-mini"
-export LATE_SUBAGENT_MODEL="qwen-32b"
-late
-```
-
-You can also set these in `%APPDATA%\late\config.json` (or your platform's config path). Precedence is: non-empty environment variables > `config.json` > defaults. Empty environment variables fall back to `config.json` values.
-
-```json
-{
-  "openai_base_url": "http://localhost:8080",
-  "openai_api_key": "your-key",
-  "openai_model": "o3-mini",
-  "subagent_base_url": "http://10.8.0.2:8080",
-  "subagent_api_key": "your-other-key",
-  "subagent_model": "qwen-32b"
-}
-```
-
-If `subagent_base_url` or `subagent_api_key` are omitted, they automatically fall back to resolved OpenAI settings.
