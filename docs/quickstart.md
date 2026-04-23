@@ -15,7 +15,7 @@ export OPENAI_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai/
 export OPENAI_API_KEY="your-api-key"
 export OPENAI_MODEL="your-model-name"
 ```
-> **Windows:** Use your preferred shell's syntax for all environment variables (e.g., `$env:OPENAI_BASE_URL="http://localhost:8080"` for PowerShell).
+> **Windows:** Use your preferred shell's syntax for all environment variables for example `$env:OPENAI_BASE_URL="http://localhost:8080"` in PowerShell.
 
 **2. Launch Late:**
 Late operates within your current working directory. Always launch it from the root of the project you want to work on.
@@ -35,7 +35,6 @@ By default, Late uses the same model for both the Lead Architect (orchestrator) 
 This is useful for using a large, smart model for planning and a fast, cheap model for execution:
 
 ```bash
-# Example: Local Architect with a Cloud Subagent
 export LATE_SUBAGENT_MODEL="gemma-4-e4b"
 export LATE_SUBAGENT_BASE_URL="http://10.8.0.2:8080" # (Optional) falls back to OPENAI_BASE_URL
 export LATE_SUBAGENT_API_KEY="your-other-key"        # (Optional) falls back to OPENAI_API_KEY
