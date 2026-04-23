@@ -19,12 +19,17 @@ type StreamAccumulator struct {
 	Content   string
 	Reasoning string
 	ToolCalls []client.ToolCall
+	Usage     client.Usage
 }
 
 // Append merges a single streaming delta into the accumulated state.
 func (a *StreamAccumulator) Append(res common.StreamResult) {
 	a.Content += res.Content
 	a.Reasoning += res.ReasoningContent
+
+	if res.Usage.TotalTokens > 0 {
+		a.Usage = res.Usage
+	}
 
 	for _, delta := range res.ToolCalls {
 		index := delta.Index

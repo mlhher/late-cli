@@ -159,6 +159,7 @@ func (s *Session) StartStream(ctx context.Context, extraBody map[string]any) (<-
 					Content:          content,
 					ReasoningContent: reasoning,
 					ToolCalls:        toolCalls,
+					Usage:            chunk.Usage,
 				}
 
 				select {

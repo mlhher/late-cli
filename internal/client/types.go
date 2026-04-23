@@ -64,6 +64,7 @@ type ChatCompletionResponse struct {
 	Object  string                 `json:"object"`
 	Created int64                  `json:"created"`
 	Choices []ChatCompletionChoice `json:"choices"`
+	Usage   Usage                  `json:"usage,omitempty"`
 }
 
 type ChatCompletionChoice struct {
@@ -78,6 +79,7 @@ type ChatCompletionChunk struct {
 	Object  string                      `json:"object"`
 	Created int64                       `json:"created"`
 	Choices []ChatCompletionChunkChoice `json:"choices"`
+	Usage   Usage                       `json:"usage,omitempty"`
 	Timings Timings                     `json:"timings,omitempty"`
 }
 
@@ -90,6 +92,12 @@ type ChatCompletionChunkChoice struct {
 type Timings struct {
 	PredictedPerSecond float64 `json:"predicted_per_second"`
 	PromptPerSecond    float64 `json:"prompt_per_second"`
+}
+
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 type PropsResponse struct {

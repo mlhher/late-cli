@@ -8,4 +8,5 @@ type StreamResult struct {
 	Content          string
 	ReasoningContent string
 	ToolCalls        []client.ToolCall
+	Usage            client.Usage
 }
