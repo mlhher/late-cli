@@ -49,7 +49,6 @@ var (
 
 	// AI Bubble
 	aiMsgStyle = baseStyle.Copy().
-			Foreground(textColor). // Without this during streaming the text is invisible
 			Padding(0, 2).
 			MarginLeft(1).
 			PaddingLeft(4).

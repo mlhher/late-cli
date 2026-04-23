@@ -219,7 +219,7 @@ func (m *Model) updateViewport() {
 			// Render tail as plain text (no glamour — too expensive per frame)
 			var tailStyled string
 			if tail != "" {
-				tailStyled = aiMsgStyle.Width(msgWidth + 1).Render(tail)
+				tailStyled = aiMsgStyle.Copy().Foreground(textColor).Width(msgWidth + 1).Render(tail)
 			}
 
 			// Combine: simple string concat, NO lipgloss processing
