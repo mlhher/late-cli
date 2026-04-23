@@ -13,12 +13,12 @@ export OPENAI_BASE_URL="http://localhost:8080"
 # Cloud (e.g. Google)
 export OPENAI_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai/"
 export OPENAI_API_KEY="your-api-key"
-export OPENAI_MODEL="your-model-name"
+export OPENAI_MODEL="your-model"
 ```
-> **Windows:** Use your preferred shell's syntax for all environment variables (e.g., `$env:OPENAI_BASE_URL="http://localhost:8080"` for PowerShell).
 
-**2. Launch Late:**
-Late operates within your current working directory. Always launch it from the root of the project you want to work on.
+> **Windows:** Use your preferred shell's syntax for all environment variables for example `$env:OPENAI_BASE_URL="http://localhost:8080"` in PowerShell.
+
+**2. Launch Late from your project directory:**
 
 ```bash
 cd your-project
@@ -31,11 +31,11 @@ late
 
 **3. Hybrid Routing (Optional):**
 By default, Late uses the same model for both the Lead Architect (orchestrator) and the ephemeral workers (subagents). You can mix and match models by setting separate environment variables.
+Check the [Configuration](#configuration) section to find out how to persist these settings.
 
 This is useful for using a large, smart model for planning and a fast, cheap model for execution:
 
 ```bash
-# Example: Local Architect with a Cloud Subagent
 export LATE_SUBAGENT_MODEL="gemma-4-e4b"
 export LATE_SUBAGENT_BASE_URL="http://10.8.0.2:8080" # (Optional) falls back to OPENAI_BASE_URL
 export LATE_SUBAGENT_API_KEY="your-other-key"        # (Optional) falls back to OPENAI_API_KEY
@@ -134,6 +134,31 @@ late worktree remove <path>      # Remove a worktree
 ```
 
 > **Tip:** Use worktrees when you want Late to work on a feature in the background while you continue working on another branch.
+
+## Configuration
+
+You can set your preferred model selection (orchestrator, subagents) and their respective configuration (host, keys) permanently inside the `config.json`.
+
+**File Locations:**
+* **Linux/macOS:** `~/.config/late/config.json`
+* **Windows:** `%APPDATA%\late\config.json`
+
+**Setting Precedence:**
+1. Non-empty environment variables
+2. `config.json`
+3. Defaults
+
+
+```json
+{
+  "openai_base_url": "http://localhost:8080",
+  "openai_api_key": "your-api-key",
+  "openai_model": "qwen3.6-35b-a3b",
+  "subagent_base_url": "http://10.8.0.2:8080",
+  "subagent_api_key": "your-other-api-key",
+  "subagent_model": "gemma-4-e4b"
+}
+```
 
 ## MCP Integration
 

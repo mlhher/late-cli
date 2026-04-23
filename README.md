@@ -73,7 +73,7 @@ export OPENAI_BASE_URL="http://localhost:8080"
 late
 ```
 
-📖 Next Steps: See the **[Quickstart Guide](docs/quickstart.md)** for advanced setup (e.g. API keys, subagent models), keyboard shortcuts, and core features.
+📖 Next Steps: See the **[Quickstart Guide](docs/quickstart.md)** for advanced setup (e.g. API keys, subagent models, persistent configuration), keyboard shortcuts, and more features (including MCP integration).
 
 ## 🔨 Build from Source
 
