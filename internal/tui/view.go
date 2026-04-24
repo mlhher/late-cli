@@ -16,11 +16,20 @@ func (m Model) View() tea.View {
 		return tea.NewView("")
 	}
 
+	// Force each component to its strict allocated height to prevent layout shifts
+	vStr := lipgloss.NewStyle().
+		Height(m.Viewport.Height()).
+		Width(m.Width).
+		Render(m.Viewport.View())
+
+	iStr := m.inputView()
+	sStr := m.statusBarView()
+
 	content := lipgloss.JoinVertical(
 		lipgloss.Left,
-		m.Viewport.View(),
-		m.inputView(),
-		m.statusBarView(),
+		vStr,
+		iStr,
+		sStr,
 	)
 
 	// Use lipgloss natively to pad and format the final visible viewport exactly to terminal bounds, eliminating "transparent" padding bugs.
@@ -38,7 +47,9 @@ func (m *Model) inputView() string {
 
 	// Render textarea directly — its styles already set background via FocusedStyle/BlurredStyle
 	textareaView := m.Input.View()
-	content := inputStyle.Width(w - 2).Render(textareaView)
+	// Sync width precisely: inputStyle (border 2 + padding 2) + w (m.Width - 4) = m.Width
+	// Internal width of inputStyle becomes m.Width - 8, matching m.Input.SetWidth()
+	content := inputStyle.Width(w).Render(textareaView)
 
 	// Wrap in a fixed-size container that fills the background
 	return baseStyle.Copy().
