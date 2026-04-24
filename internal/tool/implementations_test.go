@@ -20,7 +20,7 @@ func TestReadFileTool_PartialRead(t *testing.T) {
 	// constant setup
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "test.txt")
-		filePath = filepath.ToSlash(filePath)
+	filePath = filepath.ToSlash(filePath)
 	content := "line1\nline2\nline3\nline4\nline5\n"
 	err := os.WriteFile(filePath, []byte(content), 0644)
 	if err != nil {
@@ -129,9 +129,9 @@ func TestReadFileTool_OutputTruncation(t *testing.T) {
 }
 
 func TestBashTool_Execute(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("Unix echo/pwd behavior tests skipped on Windows; see TestPSShellTool_* in implementations_cmd_test.go")
-		}
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix echo/pwd behavior tests skipped on Windows; see TestPSShellTool_* in implementations_cmd_test.go")
+	}
 	tests := []struct {
 		name    string
 		params  json.RawMessage
@@ -198,9 +198,9 @@ func TestBashTool_Execute(t *testing.T) {
 }
 
 func TestBashTool_CWDParameter(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("Unix pwd/path tests skipped on Windows")
-		}
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix pwd/path tests skipped on Windows")
+	}
 	// Create a subdirectory within the current working directory
 	// Use a subdirectory of the package directory to ensure it's within allowed paths
 	tmpDir := filepath.Join("internal", "tool", "test_cwd")
@@ -224,9 +224,9 @@ func TestBashTool_CWDParameter(t *testing.T) {
 }
 
 func TestBashTool_MultipleArgs(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("Unix echo multi-arg test skipped on Windows; see TestPSShellTool_* in implementations_cmd_test.go")
-		}
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix echo multi-arg test skipped on Windows; see TestPSShellTool_* in implementations_cmd_test.go")
+	}
 	tool := ShellTool{}
 
 	// Test with multiple arguments
@@ -245,9 +245,9 @@ func TestBashTool_MultipleArgs(t *testing.T) {
 }
 
 func TestBashTool_OutputTruncation(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("seq command not available on Windows")
-		}
+	if runtime.GOOS == "windows" {
+		t.Skip("seq command not available on Windows")
+	}
 	tool := ShellTool{}
 
 	// Create a command that outputs more than 1024 lines
@@ -271,9 +271,9 @@ func TestBashTool_OutputTruncation(t *testing.T) {
 }
 
 func TestBashTool_UnsafeCWD(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("Unix /tmp path test skipped on Windows")
-		}
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix /tmp path test skipped on Windows")
+	}
 	tool := ShellTool{}
 
 	// Try to use an unsafe cwd (outside CWD)
@@ -594,13 +594,13 @@ func TestBashTool_RequiresConfirmation(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "non-whitelisted command mkdir (removed from whitelist)",
-			params:   json.RawMessage(`{"command": "mkdir test"}`),
+			name:     "existing mkdir target still prompts",
+			params:   json.RawMessage(`{"command": "mkdir ."}`),
 			expected: true,
 		},
 		{
-			name:     "non-whitelisted command touch (removed from whitelist)",
-			params:   json.RawMessage(`{"command": "touch file.txt"}`),
+			name:     "existing touch target still prompts",
+			params:   json.RawMessage(`{"command": "touch implementations.go"}`),
 			expected: true,
 		},
 		// Invalid input

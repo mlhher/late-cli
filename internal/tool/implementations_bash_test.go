@@ -1,7 +1,11 @@
 package tool
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -607,4 +611,153 @@ func TestContainsShellMetacharacters(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExtractTargetPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{name: "mkdir simple", command: "mkdir src/components", want: "src/components"},
+		{name: "touch simple", command: "touch src/index.go", want: "src/index.go"},
+		{name: "mkdir flagged", command: "mkdir -p src/a/b", want: ""},
+		{name: "compound", command: "mkdir src && cd src", want: ""},
+		{name: "whitespace only", command: "   ", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractTargetPath(tt.command); got != tt.want {
+				t.Fatalf("extractTargetPath(%q) = %q, want %q", tt.command, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShellToolRequiresConfirmation_NewPathCreationWithinProject(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows always requires confirmation")
+	}
+
+	projectDir, err := os.MkdirTemp(".", "shell-create-")
+	if err != nil {
+		t.Fatalf("mkdirtemp: %v", err)
+	}
+	defer os.RemoveAll(projectDir)
+
+	tool := ShellTool{}
+	tests := []struct {
+		name string
+		args string
+		want bool
+	}{
+		{
+			name: "new mkdir inside cwd auto approves",
+			args: `{"command":"mkdir scaffold","cwd":"` + filepath.ToSlash(projectDir) + `"}`,
+			want: false,
+		},
+		{
+			name: "new touch inside cwd auto approves",
+			args: `{"command":"touch scaffold.txt","cwd":"` + filepath.ToSlash(projectDir) + `"}`,
+			want: false,
+		},
+		{
+			name: "existing path prompts",
+			args: `{"command":"mkdir existing","cwd":"` + filepath.ToSlash(projectDir) + `"}`,
+			want: true,
+		},
+		{
+			name: "outside cwd prompts",
+			args: `{"command":"touch ../outside.txt","cwd":"` + filepath.ToSlash(projectDir) + `"}`,
+			want: true,
+		},
+		{
+			name: "flagged mkdir prompts",
+			args: `{"command":"mkdir -p nested/path","cwd":"` + filepath.ToSlash(projectDir) + `"}`,
+			want: true,
+		},
+		{
+			name: "compound command prompts",
+			args: `{"command":"mkdir scaffold && ls","cwd":"` + filepath.ToSlash(projectDir) + `"}`,
+			want: true,
+		},
+	}
+
+	if err := os.Mkdir(filepath.Join(projectDir, "existing"), 0755); err != nil {
+		t.Fatalf("prepare existing dir: %v", err)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := json.RawMessage(tt.args)
+			got := tool.RequiresConfirmation(args)
+			if got != tt.want {
+				t.Fatalf("RequiresConfirmation(%s) = %v, want %v", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShellToolRequiresConfirmation_ReducesPromptedCallsForScaffoldTask(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows always requires confirmation")
+	}
+
+	projectDir, err := os.MkdirTemp(".", "shell-task-")
+	if err != nil {
+		t.Fatalf("mkdirtemp: %v", err)
+	}
+	defer os.RemoveAll(projectDir)
+
+	tool := ShellTool{}
+	task := []json.RawMessage{
+		json.RawMessage(`{"command":"mkdir scaffold","cwd":"` + filepath.ToSlash(projectDir) + `"}`),
+		json.RawMessage(`{"command":"touch scaffold/main.go","cwd":"` + filepath.ToSlash(projectDir) + `"}`),
+		json.RawMessage(`{"command":"touch scaffold/README.md","cwd":"` + filepath.ToSlash(projectDir) + `"}`),
+		json.RawMessage(`{"command":"ls scaffold","cwd":"` + filepath.ToSlash(projectDir) + `"}`),
+	}
+
+	baselinePrompts := 0
+	currentPrompts := 0
+	for _, args := range task {
+		if oldShellRequiresConfirmation(args) {
+			baselinePrompts++
+		}
+		if tool.RequiresConfirmation(args) {
+			currentPrompts++
+		}
+	}
+
+	if baselinePrompts != 3 {
+		t.Fatalf("expected old behavior to prompt 3 times, got %d", baselinePrompts)
+	}
+	if currentPrompts != 0 {
+		t.Fatalf("expected new behavior to prompt 0 times for the same task, got %d", currentPrompts)
+	}
+	if currentPrompts >= baselinePrompts {
+		t.Fatalf("expected fewer prompted calls after change, baseline=%d current=%d", baselinePrompts, currentPrompts)
+	}
+}
+
+func oldShellRequiresConfirmation(args json.RawMessage) bool {
+	var params struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return true
+	}
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	if containsShellMetacharacters(params.Command) {
+		return true
+	}
+	baseCommands := getAllBaseCommands(params.Command)
+	for _, cmd := range baseCommands {
+		if !whitelistedCommands[cmd] {
+			return true
+		}
+	}
+	return false
 }

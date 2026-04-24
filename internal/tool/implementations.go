@@ -230,6 +230,26 @@ func containsShellMetacharacters(command string) bool {
 	return false
 }
 
+// extractTargetPath returns the target path argument for simple creation
+// commands. It intentionally refuses flags, chaining, and other ambiguous
+// forms so they continue through the normal confirmation path.
+func extractTargetPath(command string) string {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) != 2 {
+		return ""
+	}
+	if strings.HasPrefix(fields[1], "-") {
+		return ""
+	}
+
+	switch strings.ToLower(fields[0]) {
+	case "mkdir", "touch", "new-item":
+		return fields[1]
+	default:
+		return ""
+	}
+}
+
 // Maximum number of output lines to prevent memory exhaustion
 const maxBashOutputLines = 1024
 
@@ -487,6 +507,7 @@ func (t ShellTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 func (t ShellTool) RequiresConfirmation(args json.RawMessage) bool {
 	var params struct {
 		Command string `json:"command"`
+		Cwd     string `json:"cwd"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return true // Default to requiring confirmation if we can't parse
@@ -503,6 +524,10 @@ func (t ShellTool) RequiresConfirmation(args json.RawMessage) bool {
 	// syntax, we just punt to the human.
 	if containsShellMetacharacters(params.Command) {
 		return true
+	}
+
+	if target := extractTargetPath(params.Command); target != "" && isNewPath(target, params.Cwd) {
+		return false
 	}
 
 	// Get all base commands from potentially compound commands

@@ -6,6 +6,57 @@ import (
 	"strings"
 )
 
+// isNewPath returns true when the resolved target path does not yet exist,
+// falls within the project root, and stays within the provided session cwd.
+// Creation outside the project root or outside the active cwd always prompts.
+func isNewPath(path string, cwd string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+
+	baseDir := strings.TrimSpace(cwd)
+	if baseDir == "" {
+		var err error
+		baseDir, err = os.Getwd()
+		if err != nil {
+			return false
+		}
+	}
+
+	absBaseDir, err := filepath.Abs(baseDir)
+	if err != nil {
+		return false
+	}
+	if evalBaseDir, err := filepath.EvalSymlinks(absBaseDir); err == nil {
+		absBaseDir = evalBaseDir
+	}
+
+	resolvedPath := path
+	if !filepath.IsAbs(resolvedPath) {
+		resolvedPath = filepath.Join(absBaseDir, resolvedPath)
+	}
+	absPath, err := filepath.Abs(resolvedPath)
+	if err != nil {
+		return false
+	}
+
+	if !IsSafePath(absPath) {
+		return false
+	}
+
+	relToBase, err := filepath.Rel(absBaseDir, absPath)
+	if err != nil {
+		return false
+	}
+	if relToBase == ".." || strings.HasPrefix(relToBase, ".."+string(filepath.Separator)) {
+		return false
+	}
+
+	_, err = os.Stat(absPath)
+	return os.IsNotExist(err)
+}
+
 // IsSafePath checks if a path is within the current working directory.
 func IsSafePath(path string) bool {
 	// Shortcut: If the path is relative and does not contain ".." components,
