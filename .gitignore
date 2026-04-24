@@ -2,3 +2,4 @@ bin/
 build/
 implementation_plan.md
 pr_review_report.md
+.late/*
