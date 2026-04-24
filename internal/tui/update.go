@@ -105,7 +105,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// AND showing a spinner inside the viewport. Status bar spinner animates via View().
 		s := m.GetAgentState(m.Focused.ID())
 		if s.State == StateThinking || s.State == StateStreaming {
-			if len(s.StreamingState.ToolCalls) > 0 {
+			if s.State == StateThinking || len(s.StreamingState.ToolCalls) > 0 {
 				m.updateViewport()
 			}
 		}

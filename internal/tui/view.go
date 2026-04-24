@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"runtime"
 	"strings"
 	"time"
@@ -201,7 +202,7 @@ func (m *Model) updateViewport() {
 	if (s.State == StateStreaming || s.State == StateThinking) && s.State != StateConfirmTool {
 		var activeParts []string
 		if s.StreamingState.ReasoningContent != "" {
-			activeParts = append(activeParts, tagStyle.Width(msgWidth+1).Render("Thinking Process:"))
+			activeParts = append(activeParts, tagStyle.Width(msgWidth+1).Render("Thoughts:"))
 			activeParts = append(activeParts, thinkingStyle.Width(msgWidth-2).Render(s.StreamingState.ReasoningContent))
 		}
 		if s.StreamingState.Content != "" {
@@ -272,7 +273,7 @@ func (m *Model) updateViewport() {
 		if len(activeParts) > 0 {
 			blocks = append(blocks, strings.Join(activeParts, "\n"))
 		} else if s.State == StateThinking {
-			blocks = append(blocks, thinkingStyle.Width(msgWidth-2).Render("Thinking..."))
+			blocks = append(blocks, m.renderAnimatedThinking(msgWidth-2))
 		}
 	}
 
@@ -303,6 +304,47 @@ func (m *Model) updateViewport() {
 	if atBottom {
 		m.Viewport.GotoBottom()
 	}
+}
+
+func (m *Model) renderAnimatedThinking(width int) string {
+	text := "Thinking..."
+	// Use millisecond timestamp for smooth movement
+	ms := float64(time.Now().UnixNano()) / 1e6
+
+	// waveWidth: how many characters are "in the highlight"
+	waveWidth := 4.0
+	// speed: lower is faster (ms per unit of movement)
+	speed := 100.0
+
+	grad := lipgloss.Blend1D(100, subtextColor, textColor)
+	var sb strings.Builder
+	for i, r := range text {
+		pos := float64(i)
+		// cycle: the center point of the highlight wave, moving across the text
+		cycle := math.Mod(ms/speed, float64(len(text)+int(waveWidth))) - waveWidth/2
+
+		// dist: distance of this char from wave center
+		dist := math.Abs(pos - cycle)
+
+		factor := 0.0
+		if dist < waveWidth {
+			// factor 1.0 at center, 0.0 at edges of waveWidth
+			factor = 1.0 - (dist / waveWidth)
+			// Apply a smooth curve (sine squared) for a softer look
+			factor = math.Pow(math.Sin(factor*math.Pi/2), 2)
+		}
+
+		step := int(factor * 99)
+		// Important: We must apply the background color to the inner style as well,
+		// because Lipgloss.Render() appends a reset code that would otherwise
+		// clear the background applied by the outer thinkingStyle.
+		charStyle := lipgloss.NewStyle().
+			Foreground(grad[step]).
+			Background(thoughtBgColor)
+		sb.WriteString(charStyle.Render(string(r)))
+	}
+
+	return thinkingStyle.Width(width).Render(sb.String())
 }
 
 func (m *Model) renderMarkdownBlock(content string, innerWidth int) string {
