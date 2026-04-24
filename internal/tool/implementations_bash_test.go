@@ -621,6 +621,11 @@ func TestExtractTargetPath(t *testing.T) {
 	}{
 		{name: "mkdir simple", command: "mkdir src/components", want: "src/components"},
 		{name: "touch simple", command: "touch src/index.go", want: "src/index.go"},
+		{name: "reject tilde expansion", command: "touch ~/out.txt", want: ""},
+		{name: "reject env expansion", command: "touch $HOME/out.txt", want: ""},
+		{name: "reject glob star", command: "touch *.txt", want: ""},
+		{name: "reject glob question", command: "touch file?.txt", want: ""},
+		{name: "reject glob bracket", command: "touch [ab].txt", want: ""},
 		{name: "mkdir flagged", command: "mkdir -p src/a/b", want: ""},
 		{name: "compound", command: "mkdir src && cd src", want: ""},
 		{name: "whitespace only", command: "   ", want: ""},
@@ -670,6 +675,16 @@ func TestShellToolRequiresConfirmation_NewPathCreationWithinProject(t *testing.T
 		{
 			name: "outside cwd prompts",
 			args: `{"command":"touch ../outside.txt","cwd":"` + filepath.ToSlash(projectDir) + `"}`,
+			want: true,
+		},
+		{
+			name: "tilde expansion prompts",
+			args: `{"command":"touch ~/x.txt","cwd":"` + filepath.ToSlash(projectDir) + `"}`,
+			want: true,
+		},
+		{
+			name: "env expansion prompts",
+			args: `{"command":"touch $HOME/x.txt","cwd":"` + filepath.ToSlash(projectDir) + `"}`,
 			want: true,
 		},
 		{
@@ -737,6 +752,34 @@ func TestShellToolRequiresConfirmation_ReducesPromptedCallsForScaffoldTask(t *te
 	}
 	if currentPrompts >= baselinePrompts {
 		t.Fatalf("expected fewer prompted calls after change, baseline=%d current=%d", baselinePrompts, currentPrompts)
+	}
+}
+
+func TestShellToolRequiresConfirmation_SymlinkEscapeFromCwdPrompts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows always requires confirmation")
+	}
+
+	projectDir, err := os.MkdirTemp(".", "shell-symlink-")
+	if err != nil {
+		t.Fatalf("mkdirtemp project: %v", err)
+	}
+	defer os.RemoveAll(projectDir)
+
+	outsideDir, err := os.MkdirTemp(".", "shell-outside-")
+	if err != nil {
+		t.Fatalf("mkdirtemp outside: %v", err)
+	}
+	defer os.RemoveAll(outsideDir)
+
+	if err := os.Symlink(filepath.ToSlash(outsideDir), filepath.Join(projectDir, "link")); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	tool := ShellTool{}
+	args := json.RawMessage(`{"command":"touch link/newfile.txt","cwd":"` + filepath.ToSlash(projectDir) + `"}`)
+	if got := tool.RequiresConfirmation(args); !got {
+		t.Fatalf("expected RequiresConfirmation to prompt for symlink escape path")
 	}
 }
 

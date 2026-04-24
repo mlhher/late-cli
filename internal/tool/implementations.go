@@ -238,13 +238,19 @@ func extractTargetPath(command string) string {
 	if len(fields) != 2 {
 		return ""
 	}
-	if strings.HasPrefix(fields[1], "-") {
+	target := fields[1]
+	if strings.HasPrefix(target, "-") {
+		return ""
+	}
+	// Reject shell-expanded targets so auto-approval remains conservative
+	// when execution runs through bash -c.
+	if strings.HasPrefix(target, "~") || strings.Contains(target, "$") || strings.ContainsAny(target, "*?[") {
 		return ""
 	}
 
 	switch strings.ToLower(fields[0]) {
 	case "mkdir", "touch", "new-item":
-		return fields[1]
+		return target
 	default:
 		return ""
 	}

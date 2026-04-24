@@ -6,6 +6,41 @@ import (
 	"strings"
 )
 
+// canonicalizePath resolves symlinks for the nearest existing ancestor of absPath
+// and then reapplies the non-existing suffix. This gives a canonical target path
+// even when the leaf does not exist yet.
+func canonicalizePath(absPath string) (string, error) {
+	absPath = filepath.Clean(absPath)
+	current := absPath
+
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			resolvedCurrent, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", err
+			}
+
+			suffix, err := filepath.Rel(current, absPath)
+			if err != nil {
+				return "", err
+			}
+			if suffix == "." {
+				return filepath.Clean(resolvedCurrent), nil
+			}
+
+			return filepath.Clean(filepath.Join(resolvedCurrent, suffix)), nil
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+
+	return filepath.Clean(absPath), nil
+}
+
 // isNewPath returns true when the resolved target path does not yet exist,
 // falls within the project root, and stays within the provided session cwd.
 // Creation outside the project root or outside the active cwd always prompts.
@@ -40,12 +75,16 @@ func isNewPath(path string, cwd string) bool {
 	if err != nil {
 		return false
 	}
-
-	if !IsSafePath(absPath) {
+	canonicalPath, err := canonicalizePath(absPath)
+	if err != nil {
 		return false
 	}
 
-	relToBase, err := filepath.Rel(absBaseDir, absPath)
+	if !IsSafePath(canonicalPath) {
+		return false
+	}
+
+	relToBase, err := filepath.Rel(absBaseDir, canonicalPath)
 	if err != nil {
 		return false
 	}
