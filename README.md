@@ -56,7 +56,6 @@ Grab the latest single-binary release for your OS (Linux/macOS/Windows) from the
 chmod +x late-linux-amd64  # (Adjust for your downloaded filename)
 mv late-linux-amd64 ~/.local/bin/late # Ensure ~/.local/bin is in your system's $PATH
 ```
-> **Note for Windows users:** Native Windows binaries (`.exe`) are now available but are **experimental**. Alternatively, Late also works on Windows via WSL.
 
 **2. Point to Your Model**
 Point Late to any OpenAI-compatible API endpoint (local or cloud).

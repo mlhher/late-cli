@@ -27,8 +27,6 @@ late
 
 > **macOS:** If macOS blocks the binary, run this command in your terminal (adjust the path if needed): `xattr -d com.apple.quarantine ~/.local/bin/late`
 
-> **Windows (Experimental):** Native Windows binaries (`.exe`) are currently experimental. If you hit a bug, please check the issue tracker.
-
 **3. Hybrid Routing (Optional):**
 By default, Late uses the same model for both the Lead Architect (orchestrator) and the ephemeral workers (subagents). You can mix and match models by setting separate environment variables.
 Check the [Configuration](#configuration) section to find out how to persist these settings.
@@ -99,42 +97,6 @@ The agent wants to execute bash.
 - **Read-only commands** (`ls`, `cat`, `grep`, etc.) are auto-approved for speed (Note: the listed commands can still require permission if Late deems the agents activity suspicious)
 - **Everything else** requires your explicit `y` / `n`.
 
-> **Note:** On Windows currently, every command will require your explicit `y` / `n` approval. This will be resolved in a future release.
-
-## Common Flags
-
-| Flag | Description |
-| --- | --- |
-| `--help` | Show all flags and commands |
-| `--version` | Show version information |
-| `--gemma-thinking` | Inject thinking tokens for Gemma 4 models |
-| `--subagent-max-turns <n>` | Set max turns per subagent (default: 500) |
-| `--append-system-prompt "..."` | Append text to the system prompt (e.g. further instructions) |
-
-## Sessions
-
-Late automatically saves your session history. Resume or manage sessions:
-
-```bash
-late session list          # List all saved sessions
-late session list -v       # Verbose listing with details
-late session load <id>     # Resume a previous session
-late session delete <id>   # Delete a session
-```
-
-## Git Worktrees
-
-Late is designed for parallel development. You can manage Git worktrees directly to run separate agent instances in isolated environments:
-
-```bash
-late worktree list               # List all worktrees
-late worktree active             # Show current worktree
-late worktree create <path> [br] # Create a new worktree at <path>
-late worktree remove <path>      # Remove a worktree
-```
-
-> **Tip:** Use worktrees when you want Late to work on a feature in the background while you continue working on another branch.
-
 ## Configuration
 
 You can set your preferred model selection (orchestrator, subagents) and their respective configuration (host, keys) permanently inside the `config.json`.
@@ -175,4 +137,44 @@ Late supports the Model Context Protocol. Add your MCP servers to `~/.config/lat
 }
 ```
 
-MCP tools are automatically available to the agent after connecting.
+## Agent Skills
+
+[Skills](https://agentskills.io/) are reusable sets of instructions. They are discovered automatically from:
+* **Global:** `~/.config/late/skills/`
+* **Project:** `.late/skills/`
+
+There is no further setup required. Just add your skills to the directories and they will be discovered automatically.
+
+## Common Flags
+
+| Flag | Description |
+| --- | --- |
+| `--help` | Show all flags and commands |
+| `--version` | Show version information |
+| `--gemma-thinking` | Inject thinking tokens for Gemma 4 models |
+| `--subagent-max-turns <n>` | Set max turns per subagent (default: 500) |
+| `--append-system-prompt "..."` | Append text to the system prompt (e.g. further instructions) |
+
+## Sessions
+
+Late automatically saves your session history. Resume or manage sessions:
+
+```bash
+late session list          # List all saved sessions
+late session list -v       # Verbose listing with details
+late session load <id>     # Resume a previous session
+late session delete <id>   # Delete a session
+```
+
+## Git Worktrees
+
+Late is designed for parallel development. You can manage Git worktrees directly to run separate agent instances in isolated environments:
+
+```bash
+late worktree list               # List all worktrees
+late worktree active             # Show current worktree
+late worktree create <path> [br] # Create a new worktree at <path>
+late worktree remove <path>      # Remove a worktree
+```
+
+> **Tip:** Use worktrees when you want Late to work on a feature in the background while you continue working on another branch.
