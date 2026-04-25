@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,6 +28,7 @@ const (
 )
 
 type Client struct {
+	mu         sync.RWMutex
 	cfg        Config
 	httpClient *http.Client
 	backend    BackendType
@@ -49,6 +51,10 @@ func NewClient(cfg Config) *Client {
 
 // ChatCompletion sends a chat prompt to the OpenAI-compatible endpoint.
 func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) (*ChatCompletionResponse, error) {
+	if c.getBackend() == BackendUnknown || (c.getBackend() == BackendLlamaCPP && c.ContextSize() == -1) {
+		_ = c.DiscoverBackend(ctx)
+	}
+
 	if req.Model == "" && c.cfg.Model != "" {
 		req.Model = c.cfg.Model
 	}
@@ -95,6 +101,10 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 	go func() {
 		defer close(out)
 		defer close(errCh)
+
+		if c.getBackend() == BackendUnknown || (c.getBackend() == BackendLlamaCPP && c.ContextSize() == -1) {
+			_ = c.DiscoverBackend(ctx)
+		}
 
 		if req.Model == "" && c.cfg.Model != "" {
 			req.Model = c.cfg.Model
@@ -190,7 +200,7 @@ func (c *Client) Completion(ctx context.Context, req CompletionRequest) (*Comple
 
 // HealthCheck asserts that the server is reachable and identifies its type.
 func (c *Client) HealthCheck(ctx context.Context) error {
-	if c.backend == BackendUnknown {
+	if c.getBackend() == BackendUnknown {
 		_ = c.DiscoverBackend(ctx)
 	}
 
@@ -212,6 +222,22 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 
 // DiscoverBackend probes certain endpoints to identify the inference engine.
 func (c *Client) DiscoverBackend(ctx context.Context) BackendType {
+	c.mu.RLock()
+	if c.backend == BackendLlamaCPP && c.ctxSize != -1 {
+		b := c.backend
+		c.mu.RUnlock()
+		return b
+	}
+	c.mu.RUnlock()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Double-check
+	if c.backend == BackendLlamaCPP && c.ctxSize != -1 {
+		return c.backend
+	}
+
 	url := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/props"
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -225,7 +251,7 @@ func (c *Client) DiscoverBackend(ctx context.Context) BackendType {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		c.backend = BackendGenericOpenAI
+		// Connection error: remain unknown to allow retry
 		return c.backend
 	}
 	defer resp.Body.Close()
@@ -237,17 +263,28 @@ func (c *Client) DiscoverBackend(ctx context.Context) BackendType {
 			c.ctxSize = props.DefaultGenerationSettings.NCtx
 		}
 	} else {
+		// If we got a response but it's not OK, it's likely a standard OpenAI endpoint
 		c.backend = BackendGenericOpenAI
 	}
 
 	return c.backend
 }
 
+func (c *Client) getBackend() BackendType {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.backend
+}
+
 func (c *Client) ContextSize() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.ctxSize
 }
 
 func (c *Client) IsLlamaCPP() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.backend == BackendLlamaCPP
 }
 
