@@ -90,6 +90,7 @@ make install
 * **Native MCP Integration:** Dynamically map external MCP servers directly into Late via standard I/O.
 * **Stateful Resilience:** The Orchestrator maintains continuous, newest-first session history on disk (`~/.local/share/late`), ensuring perfect context retention across runs.
 * **Git Worktree Support:** Run independent, parallel Late instances across multiple Git worktrees for isolated feature development without context switching.
+* **Agent Skills:** Full support for [Agent Skills](https://agentskills.io/) for reusable sets of instructions and scripts.
 
 For more information, check out the [quickstart guide](docs/quickstart.md).
 
