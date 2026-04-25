@@ -807,5 +807,5 @@ func (t WriteImplementationPlanTool) Execute(ctx context.Context, args json.RawM
 func (t WriteImplementationPlanTool) RequiresConfirmation(args json.RawMessage) bool { return false }
 
 func (t WriteImplementationPlanTool) CallString(args json.RawMessage) string {
-	return "Writing implementation plan to ./implementation_plan.md"
+	return "Writing implementation plan to ./implementation_plan.md..."
 }

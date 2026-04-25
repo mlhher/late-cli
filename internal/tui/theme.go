@@ -75,7 +75,7 @@ var LateTheme = []byte(`
       },
       "error": {
         "color": "#F1F1F1",
-        "background_color": "#F05252"
+        "background_color": "#191919"
       },
       "comment": {
         "color": "#7F8C8D"

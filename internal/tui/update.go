@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
 )
 
 // StreamMsg is the TUI-wrapper for session stream events
@@ -102,9 +102,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		forwardToViewport = true
 	case spinner.TickMsg:
 		// Only redraw on tick to animate tool calls/thinking if an agent is actually active
+		// AND showing a spinner inside the viewport. Status bar spinner animates via View().
 		s := m.GetAgentState(m.Focused.ID())
 		if s.State == StateThinking || s.State == StateStreaming {
-			m.updateViewport()
+			if s.State == StateThinking || len(s.StreamingState.ToolCalls) > 0 {
+				m.updateViewport()
+			}
 		}
 		forwardToViewport = false
 	default:
@@ -323,12 +326,13 @@ func (m *Model) updateLayout() {
 	availableWidth := m.Width
 	m.Input.SetWidth(availableWidth - 8)
 
-	m.Viewport.Width = availableWidth
-	m.Viewport.Height = m.Height - InputHeight - StatusBarHeight - AppPadding
+	m.Viewport.SetWidth(availableWidth)
+	vHeight := m.Height - InputHeight - StatusBarHeight - AppPadding
 
-	if m.Viewport.Height < 1 {
-		m.Viewport.Height = 1
+	if vHeight < 1 {
+		vHeight = 1
 	}
+	m.Viewport.SetHeight(vHeight)
 
 	m.updateViewport()
 }

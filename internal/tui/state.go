@@ -4,11 +4,11 @@ import (
 	"late/internal/client"
 	"late/internal/common"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/glamour/v2"
 )
 
 // ValidationState represents the current state of the TUI interaction.
@@ -35,7 +35,7 @@ const (
 // Fixed layout heights (crush-style)
 const (
 	InputHeight     = 9
-	StatusBarHeight = 1
+	StatusBarHeight = 2
 	AppPadding      = 0
 )
 
@@ -60,6 +60,12 @@ type AppState struct {
 	// History token cache
 	CachedHistoryTokens int // Cached total token count for completed history
 	CachedHistoryLen    int // History length when tokens were last computed
+
+	// Performance caches
+	LastStreamingContent string   // To avoid re-splitting if content hasn't changed
+	LastChunks           []string // Cached result of splitMarkdownChunks
+	LastTail             string   // Cached result of splitMarkdownChunks
+	LastTotalContent     string   // To avoid redundant Viewport.SetContent calls
 }
 
 type Model struct {
@@ -85,9 +91,10 @@ type Model struct {
 	// Active spinner animation
 	Spinner spinner.Model
 
-	// Cached glamour renderer (avoids re-allocation on every render call)
+	// Performance caches
 	cachedRenderer      *glamour.TermRenderer
 	cachedRendererWidth int
+	LastFocusedID       string // To detect context switches and force viewport refresh
 }
 
 func (m *Model) GetAgentState(id string) *AppState {

@@ -24,8 +24,8 @@ import (
 	"late/internal/tool"
 	"late/internal/tui"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/glamour/v2"
 )
 
 func main() {
@@ -235,7 +235,7 @@ func main() {
 	rootAgent := orchestrator.NewBaseOrchestrator("main", sess, nil, 0)
 
 	model := tui.NewModel(rootAgent, renderer)
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	p := tea.NewProgram(model)
 
 	// Wire TUI integration
 	go func() {

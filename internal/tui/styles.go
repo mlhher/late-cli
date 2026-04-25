@@ -1,7 +1,7 @@
 package tui
 
 import (
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 var (
@@ -13,32 +13,37 @@ var (
 	warningColor   = lipgloss.Color("#F1C40F") // Sunflower/Yellow
 
 	// Message Backgrounds
+	appBgColor     = lipgloss.Color("#191919")
 	userMsgBg      = lipgloss.Color("#16222A") // Very dark blue/black
-	aiMsgBg        = lipgloss.Color("#191919") // Almost black, slightly lighter than terminal
+	aiMsgBg        = appBgColor                // Keep alias for AI msgs
 	thoughtBgColor = lipgloss.Color("#101010") // Near black
 
+	// Base Style for inheritance
+	baseStyle = lipgloss.NewStyle().Background(appBgColor)
+
 	// Layout Constants
-	UserMsgOverhead = 7 // Margin(1)*2 + Border(1) + Padding(2)*2 = 7
-	AIMsgOverhead   = 9 // Margin(1)*2 + Border(1) + PaddingL(4) + PaddingR(2) = 9
+	UserMsgOverhead = 6 // MarginL(1) + Border(1) + Padding(2)*2 = 6
+	AIMsgOverhead   = 8 // MarginL(1) + Border(1) + PaddingL(4) + PaddingR(2) = 8
 
 	// Styles
-	appStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("#191919")).
+	appStyle = baseStyle.Copy().
 			Foreground(textColor)
 
-	inputStyle = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder()).
-			BorderForeground(primaryColor).
-			BorderBackground(aiMsgBg).
+	inputStyle = baseStyle.Copy().
+			Border(lipgloss.NormalBorder(), true, false, false, false).
+			BorderForeground(lipgloss.Color("#252525")).
+			BorderBackground(appBgColor).
+			MarginBackground(appBgColor).
 			Padding(0, 1).
-			Background(aiMsgBg)
+			Height(InputHeight - 1)
 
 	// User Bubble
 	userMsgStyle = lipgloss.NewStyle().
 			Background(userMsgBg).
 			Foreground(textColor).
 			Padding(0, 2).
-			Margin(0, 1).
+			MarginLeft(1).
+			MarginBackground(appBgColor).
 			Align(lipgloss.Left).
 			Border(lipgloss.NormalBorder(), false, false, false, true).
 			BorderLeftForeground(secondaryColor).
@@ -46,14 +51,14 @@ var (
 			PaddingLeft(2)
 
 	// AI Bubble
-	aiMsgStyle = lipgloss.NewStyle().
-			Background(aiMsgBg).
+	aiMsgStyle = baseStyle.Copy().
 			Padding(0, 2).
-			Margin(0, 1).
+			MarginLeft(1).
+			MarginBackground(appBgColor).
 			PaddingLeft(4).
 			Border(lipgloss.NormalBorder(), false, false, false, true).
 			BorderLeftForeground(primaryColor).
-			BorderBackground(aiMsgBg)
+			BorderBackground(appBgColor)
 
 	// Thinking Block
 	thinkingStyle = lipgloss.NewStyle().
@@ -71,32 +76,46 @@ var (
 			Foreground(primaryColor).
 			Bold(true).
 			Background(thoughtBgColor).
+			MarginBackground(appBgColor).
 			MarginLeft(1).
 			PaddingLeft(1)
 
+	thoughtHeaderStyle = tagStyle.Copy().
+				Foreground(subtextColor)
+
 	statusBarBaseStyle = lipgloss.NewStyle().
-				Height(StatusBarHeight).
-				Background(lipgloss.Color("#121212")).
-				Foreground(textColor)
+				Background(appBgColor).
+				MarginBackground(appBgColor).
+				Border(lipgloss.NormalBorder(), true, false, false, false).
+				BorderForeground(lipgloss.Color("#444444")).
+				BorderBackground(appBgColor).
+				Foreground(textColor).
+				Height(StatusBarHeight - 1)
 
 	statusModeStyle = lipgloss.NewStyle().
 			Background(primaryColor).
 			Foreground(textColor).
 			Padding(0, 1).
 			Bold(true).
-			MarginRight(1)
+			MarginRight(1).
+			MarginBackground(appBgColor)
 
 	statusKeyStyle = lipgloss.NewStyle().
 			Foreground(primaryColor).
+			Background(appBgColor).
+			MarginBackground(appBgColor).
 			Bold(true)
 
 	statusTextStyle = lipgloss.NewStyle().
 			Foreground(subtextColor).
+			Background(appBgColor).
+			MarginBackground(appBgColor).
 			MarginLeft(1)
 
 	statusWarningStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#121212")).
 				Background(warningColor).
+				MarginBackground(appBgColor).
 				Bold(true).
 				Padding(0, 1).
 				MarginLeft(1)

@@ -3,12 +3,12 @@ package tui
 import (
 	"late/internal/common"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/glamour/v2"
+	"charm.land/lipgloss/v2"
 )
 
 func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer) Model {
@@ -25,21 +25,23 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer) Model {
 
 	// Set opaque background for textarea content
 	bgStyle := lipgloss.NewStyle().Background(lipgloss.Color("#191919")).Foreground(textColor)
-	ti.FocusedStyle.Base = bgStyle
-	ti.FocusedStyle.Text = bgStyle
-	ti.FocusedStyle.Placeholder = bgStyle.Foreground(lipgloss.Color("#666666"))
-	ti.FocusedStyle.CursorLine = bgStyle
-	ti.FocusedStyle.Prompt = bgStyle
+	styles := ti.Styles()
+	styles.Focused.Base = bgStyle
+	styles.Focused.Text = bgStyle
+	styles.Focused.Placeholder = bgStyle.Foreground(lipgloss.Color("#666666"))
+	styles.Focused.CursorLine = bgStyle
+	styles.Focused.Prompt = bgStyle
 
-	ti.BlurredStyle.Base = bgStyle
-	ti.BlurredStyle.Text = bgStyle
-	ti.BlurredStyle.Placeholder = bgStyle.Foreground(lipgloss.Color("#666666"))
-	ti.BlurredStyle.CursorLine = bgStyle
-	ti.BlurredStyle.Prompt = bgStyle
+	styles.Blurred.Base = bgStyle
+	styles.Blurred.Text = bgStyle
+	styles.Blurred.Placeholder = bgStyle.Foreground(lipgloss.Color("#666666"))
+	styles.Blurred.CursorLine = bgStyle
+	styles.Blurred.Prompt = bgStyle
+	ti.SetStyles(styles)
 
 	// Initialize with 0, so that the first WindowSizeMsg sets correct dimensions
 	// This prevents the "50% width" issue if the default 60 is too small for a large terminal
-	vp := viewport.New(0, 0)
+	vp := viewport.New(viewport.WithWidth(0), viewport.WithHeight(0))
 	vp.SetContent("Welcome to Late. Type your prompt below.")
 
 	// Determine active state
@@ -53,17 +55,17 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer) Model {
 	}
 
 	m := Model{
-		Mode:           ViewChat,
-		Root:           root,
-		Focused:        root,
-		Input:          ti,
-		Viewport:       vp,
-		Renderer:       renderer,
-		Width:          80,
-		Height:         24, // Default start height
-		AgentStates:    make(map[string]*AppState),
-		InspectingTool: false,
-		Spinner:        spinner.New(spinner.WithSpinner(spinner.Dot)),
+		Mode:                ViewChat,
+		Root:                root,
+		Focused:             root,
+		Input:               ti,
+		Viewport:            vp,
+		Renderer:            renderer,
+		Width:               80,
+		Height:              24, // Default start height
+		AgentStates:         make(map[string]*AppState),
+		InspectingTool:      false,
+		Spinner:             spinner.New(spinner.WithSpinner(spinner.Dot)),
 		cachedRendererWidth: -1, // Force first creation
 	}
 	// Initialize root state
@@ -73,9 +75,9 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer) Model {
 		cumulativeTokens = common.CalculateHistoryTokens(history)
 	}
 	m.AgentStates[root.ID()] = &AppState{
-		State:                  initialState,
-		StatusText:             "Ready",
-		CumulativeTokenCount:   cumulativeTokens,
+		State:                initialState,
+		StatusText:           "Ready",
+		CumulativeTokenCount: cumulativeTokens,
 	}
 
 	return m

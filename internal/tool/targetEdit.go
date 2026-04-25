@@ -104,5 +104,5 @@ func (t *TargetEditTool) CallString(args json.RawMessage) string {
 
 	// Use just the filename for display, with truncated path if needed
 	filename := filepath.Base(file)
-	return fmt.Sprintf("Editing file %s", truncate(filename, 50))
+	return fmt.Sprintf("Editing file %s...", truncate(filename, 50))
 }
