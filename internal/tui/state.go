@@ -91,9 +91,10 @@ type Model struct {
 	// Active spinner animation
 	Spinner spinner.Model
 
-	// Cached glamour renderer (avoids re-allocation on every render call)
+	// Performance caches
 	cachedRenderer      *glamour.TermRenderer
 	cachedRendererWidth int
+	LastFocusedID       string // To detect context switches and force viewport refresh
 }
 
 func (m *Model) GetAgentState(id string) *AppState {

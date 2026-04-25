@@ -321,10 +321,11 @@ func (m *Model) updateViewport() {
 	}
 
 	fullContent := strings.Join(blocks, "\n")
-	if fullContent == s.LastTotalContent {
+	if fullContent == s.LastTotalContent && m.LastFocusedID == m.Focused.ID() {
 		return
 	}
 	s.LastTotalContent = fullContent
+	m.LastFocusedID = m.Focused.ID()
 
 	atBottom := m.Viewport.AtBottom()
 	m.Viewport.SetContent(fullContent)
