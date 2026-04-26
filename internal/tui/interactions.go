@@ -112,7 +112,7 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 			select {
 			case choice := <-resultCh:
 				switch choice {
-				case "y", "s", "S", "p", "P", "g", "G", "a", "A":
+				case "y", "s", "S", "p", "P", "g", "G":
 					if t := reg.Get(tc.Function.Name); t != nil {
 						if _, ok := t.(*tool.ShellTool); ok {
 							var params struct {
@@ -122,9 +122,9 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 								switch choice {
 								case "s", "S":
 									tool.SaveSessionAllowedCommand(params.Command)
-								case "p", "P", "a":
+								case "p", "P":
 									_ = tool.SaveAllowedCommand(params.Command, false)
-								case "g", "G", "A":
+								case "g", "G":
 									_ = tool.SaveAllowedCommand(params.Command, true)
 								}
 							}
@@ -132,9 +132,9 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 							switch choice {
 							case "s", "S":
 								tool.SaveSessionAllowedTool(tc.Function.Name)
-							case "p", "P", "a":
+							case "p", "P":
 								_ = tool.SaveAllowedTool(tc.Function.Name, false)
-							case "g", "G", "A":
+							case "g", "G":
 								_ = tool.SaveAllowedTool(tc.Function.Name, true)
 							}
 						}

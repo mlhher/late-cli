@@ -215,15 +215,15 @@ var (
 	nowFunc                  = time.Now
 )
 
-func parseRFC3339OrZero(s string) time.Time {
+func parseRFC3339OrZero(s string) (time.Time, bool) {
 	if strings.TrimSpace(s) == "" {
-		return time.Time{}
+		return time.Time{}, true
 	}
 	t, err := time.Parse(time.RFC3339, s)
 	if err != nil {
-		return time.Time{}
+		return time.Time{}, false
 	}
-	return t
+	return t, true
 }
 
 func isEntryValid(expiresAt time.Time, version string) bool {
@@ -309,6 +309,48 @@ func getFilePath(localPath string, fileName string, global bool) string {
 	return localPath
 }
 
+func loadPersistedCommandsFile(path string) (persistedCommandsFile, error) {
+	file := persistedCommandsFile{Entries: make(map[string]persistedCommandEntry)}
+	if path == "" {
+		return file, nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return file, nil
+		}
+		return file, err
+	}
+
+	if err := json.Unmarshal(data, &file); err != nil || file.Entries == nil {
+		return persistedCommandsFile{Entries: make(map[string]persistedCommandEntry)}, nil
+	}
+
+	return file, nil
+}
+
+func loadPersistedToolsFile(path string) (persistedToolsFile, error) {
+	file := persistedToolsFile{Entries: make(map[string]persistedToolEntry)}
+	if path == "" {
+		return file, nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return file, nil
+		}
+		return file, err
+	}
+
+	if err := json.Unmarshal(data, &file); err != nil || file.Entries == nil {
+		return persistedToolsFile{Entries: make(map[string]persistedToolEntry)}, nil
+	}
+
+	return file, nil
+}
+
 // LoadAllowedCommands loads allowed commands from either local or global allow-list.
 func LoadAllowedCommands(global bool) (map[string]map[string]bool, error) {
 	allowed := make(map[string]map[string]bool)
@@ -348,7 +390,8 @@ func LoadAllowedCommands(global bool) (map[string]map[string]bool, error) {
 		if entryVersion == "" {
 			entryVersion = file.Version
 		}
-		if !isEntryValid(parseRFC3339OrZero(entry.ExpiresAt), entryVersion) {
+		expiresAt, ok := parseRFC3339OrZero(entry.ExpiresAt)
+		if !ok || !isEntryValid(expiresAt, entryVersion) {
 			continue
 		}
 		if _, ok := allowed[cmd]; !ok {
@@ -395,6 +438,9 @@ func LoadAllAllowedCommands() (map[string]map[string]bool, error) {
 			merged[cmd] = make(map[string]bool)
 		}
 		for flag := range flags {
+			if flag == sessionBaseMarker {
+				continue
+			}
 			merged[cmd][flag] = true
 		}
 	}
@@ -409,16 +455,30 @@ func SaveAllowedCommand(command string, global bool) error {
 		return nil
 	}
 
-	allowed, err := LoadAllowedCommands(global)
+	path := getFilePath(localAllowedCommandsFile, commandsFileName, global)
+	existingFile, err := loadPersistedCommandsFile(path)
 	if err != nil {
 		return err
 	}
 
+	allowed, err := LoadAllowedCommands(global)
+	if err != nil {
+		return err
+	}
+	touched := make(map[string]bool)
+
 	for key, flags := range commands {
-		if _, exists := allowed[key]; !exists {
+		existingFlags, exists := allowed[key]
+		if !exists {
 			allowed[key] = make(map[string]bool)
+			touched[key] = true
+		} else if len(flags) == 0 && !touched[key] {
+			touched[key] = false
 		}
 		for _, flag := range flags {
+			if !exists || !existingFlags[flag] {
+				touched[key] = true
+			}
 			allowed[key][flag] = true
 		}
 	}
@@ -436,12 +496,18 @@ func SaveAllowedCommand(command string, global bool) error {
 		for flag := range flagMap {
 			flagList = append(flagList, flag)
 		}
-		file.Entries[cmd] = persistedCommandEntry{
+		entry := persistedCommandEntry{
 			Flags:     flagList,
 			SavedAt:   nowFunc().UTC().Format(time.RFC3339),
 			ExpiresAt: expiresAt.UTC().Format(time.RFC3339),
 			Version:   common.Version,
 		}
+		if existingEntry, ok := existingFile.Entries[cmd]; ok && !touched[cmd] {
+			entry.SavedAt = existingEntry.SavedAt
+			entry.ExpiresAt = existingEntry.ExpiresAt
+			entry.Version = existingEntry.Version
+		}
+		file.Entries[cmd] = entry
 	}
 
 	data, err := json.MarshalIndent(file, "", "  ")
@@ -449,7 +515,6 @@ func SaveAllowedCommand(command string, global bool) error {
 		return err
 	}
 
-	path := getFilePath(localAllowedCommandsFile, commandsFileName, global)
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -494,7 +559,8 @@ func LoadAllowedTools(global bool) (map[string]bool, error) {
 		if entryVersion == "" {
 			entryVersion = file.Version
 		}
-		if !isEntryValid(parseRFC3339OrZero(entry.ExpiresAt), entryVersion) {
+		expiresAt, ok := parseRFC3339OrZero(entry.ExpiresAt)
+		if !ok || !isEntryValid(expiresAt, entryVersion) {
 			continue
 		}
 		allowed[toolName] = true
@@ -533,11 +599,18 @@ func LoadAllAllowedTools() (map[string]bool, error) {
 
 // SaveAllowedTool adds a tool name to the specified always-allowed list (local or global).
 func SaveAllowedTool(name string, global bool) error {
+	path := getFilePath(localAllowedToolsFile, toolsFileName, global)
+	existingFile, err := loadPersistedToolsFile(path)
+	if err != nil {
+		return err
+	}
+
 	allowed, err := LoadAllowedTools(global)
 	if err != nil {
 		return err
 	}
 
+	_, alreadyAllowed := allowed[name]
 	allowed[name] = true
 
 	file := persistedToolsFile{
@@ -549,11 +622,17 @@ func SaveAllowedTool(name string, global bool) error {
 		expiresAt = nowFunc().Add(globalApprovalTTL)
 	}
 	for toolName := range allowed {
-		file.Entries[toolName] = persistedToolEntry{
+		entry := persistedToolEntry{
 			SavedAt:   nowFunc().UTC().Format(time.RFC3339),
 			ExpiresAt: expiresAt.UTC().Format(time.RFC3339),
 			Version:   common.Version,
 		}
+		if existingEntry, ok := existingFile.Entries[toolName]; ok && (toolName != name || alreadyAllowed) {
+			entry.SavedAt = existingEntry.SavedAt
+			entry.ExpiresAt = existingEntry.ExpiresAt
+			entry.Version = existingEntry.Version
+		}
+		file.Entries[toolName] = entry
 	}
 
 	data, err := json.MarshalIndent(file, "", "  ")
@@ -561,7 +640,6 @@ func SaveAllowedTool(name string, global bool) error {
 		return err
 	}
 
-	path := getFilePath(localAllowedToolsFile, toolsFileName, global)
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
