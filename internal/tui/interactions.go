@@ -72,7 +72,13 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 			// Check if the tool requires confirmation
 			if reg != nil {
 				if t := reg.Get(tc.Function.Name); t != nil {
-					// Skip confirmation if the tool doesn't require it
+					// Check project-allowed tools (e.g. MCP tools that the user "Always Allowed")
+					if allowed, _ := tool.LoadAllowedTools(); allowed[tc.Function.Name] {
+						approvedCtx := context.WithValue(ctx, common.ToolApprovalKey, true)
+						return next(approvedCtx, tc)
+					}
+
+					// Skip confirmation if the tool doesn't require it based on its own logic
 					if !t.RequiresConfirmation(json.RawMessage(tc.Function.Arguments)) {
 						return next(ctx, tc)
 					}
@@ -109,15 +115,18 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 				switch choice {
 				case "y", "a":
 					if choice == "a" {
-						// For ShellTool, save the command to the project-specific allow-list
 						if t := reg.Get(tc.Function.Name); t != nil {
 							if bashTool, ok := t.(*tool.ShellTool); ok {
+								// For ShellTool, save the specific command/flags pattern
 								var params struct {
 									Command string `json:"command"`
 								}
 								if err := json.Unmarshal([]byte(tc.Function.Arguments), &params); err == nil {
 									_ = bashTool.SaveToAllowList(params.Command)
 								}
+							} else {
+								// For other tools (MCP, etc.), save the tool name globally for the project
+								_ = tool.SaveAllowedTool(tc.Function.Name)
 							}
 						}
 					}

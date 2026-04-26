@@ -166,7 +166,10 @@ func IsSafePath(path string) bool {
 	return strings.HasPrefix(absPath, absCwd)
 }
 
-const allowedCommandsFile = ".late/allowed_commands.json"
+const (
+	allowedCommandsFile = ".late/allowed_commands.json"
+	allowedToolsFile    = ".late/allowed_tools.json"
+)
 
 // LoadAllowedCommands loads the project-specific allow-list from .late/allowed_commands.json.
 // The returned map structure is: Command (normalized) -> map of allowed Flags.
@@ -249,6 +252,57 @@ func SaveAllowedCommand(command string) error {
 	}
 
 	return os.WriteFile(allowedCommandsFile, data, 0644)
+}
+
+// LoadAllowedTools loads the project-specific list of tools that are always allowed.
+func LoadAllowedTools() (map[string]bool, error) {
+	allowed := make(map[string]bool)
+
+	data, err := os.ReadFile(allowedToolsFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return allowed, nil
+		}
+		return nil, err
+	}
+
+	var list []string
+	if err := json.Unmarshal(data, &list); err != nil {
+		return nil, err
+	}
+
+	for _, tool := range list {
+		allowed[tool] = true
+	}
+
+	return allowed, nil
+}
+
+// SaveAllowedTool adds a tool name to the project-specific always-allowed list.
+func SaveAllowedTool(name string) error {
+	allowed, err := LoadAllowedTools()
+	if err != nil {
+		return err
+	}
+
+	allowed[name] = true
+
+	var list []string
+	for tool := range allowed {
+		list = append(list, tool)
+	}
+
+	data, err := json.MarshalIndent(list, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	dir := filepath.Dir(allowedToolsFile)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	return os.WriteFile(allowedToolsFile, data, 0644)
 }
 
 // NormalizeCommandForAllowList is now a legacy helper that returns the first command key found.
