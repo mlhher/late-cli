@@ -112,19 +112,30 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 			select {
 			case choice := <-resultCh:
 				switch choice {
-				case "y", "a", "A":
-					if choice == "a" || choice == "A" {
-						global := (choice == "A")
-						if t := reg.Get(tc.Function.Name); t != nil {
-							if _, ok := t.(*tool.ShellTool); ok {
-								var params struct {
-									Command string `json:"command"`
+				case "y", "s", "S", "p", "P", "g", "G", "a", "A":
+					if t := reg.Get(tc.Function.Name); t != nil {
+						if _, ok := t.(*tool.ShellTool); ok {
+							var params struct {
+								Command string `json:"command"`
+							}
+							if err := json.Unmarshal([]byte(tc.Function.Arguments), &params); err == nil {
+								switch choice {
+								case "s", "S":
+									tool.SaveSessionAllowedCommand(params.Command)
+								case "p", "P", "a":
+									_ = tool.SaveAllowedCommand(params.Command, false)
+								case "g", "G", "A":
+									_ = tool.SaveAllowedCommand(params.Command, true)
 								}
-								if err := json.Unmarshal([]byte(tc.Function.Arguments), &params); err == nil {
-									_ = tool.SaveAllowedCommand(params.Command, global)
-								}
-							} else {
-								_ = tool.SaveAllowedTool(tc.Function.Name, global)
+							}
+						} else {
+							switch choice {
+							case "s", "S":
+								tool.SaveSessionAllowedTool(tc.Function.Name)
+							case "p", "P", "a":
+								_ = tool.SaveAllowedTool(tc.Function.Name, false)
+							case "g", "G", "A":
+								_ = tool.SaveAllowedTool(tc.Function.Name, true)
 							}
 						}
 					}

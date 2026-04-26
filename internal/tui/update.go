@@ -60,7 +60,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	forwardToInput := true
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
 		switch keyMsg.String() {
-		case "y", "Y", "n", "N", "a", "A":
+		case "y", "Y", "n", "N", "s", "S", "p", "P", "g", "G", "a", "A":
 			if stateBefore == StateConfirmTool {
 				forwardToInput = false
 			}
@@ -196,7 +196,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				return m, nil
 			}
 
-		case "a", "A":
+		case "s", "S", "p", "P", "g", "G", "a", "A":
 			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil {
 				focusedState.PendingConfirm.ResultCh <- msg.String()
 				focusedState.PendingConfirm = nil

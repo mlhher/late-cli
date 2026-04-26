@@ -76,7 +76,7 @@ func (m *Model) statusBarView() string {
 		modeStr = " STREAMING "
 	case StateConfirmTool:
 		modeStr = " CONFIRM "
-		statusText = "Authorize Tool Execution (y/n/a/A)"
+		statusText = "Authorize Tool Execution (y/s/p/n)"
 	}
 
 	// Check if any other agent is waiting for confirmation
@@ -311,7 +311,7 @@ func (m *Model) updateViewport() {
 		if runtime.GOOS == "windows" && displayName == "bash" {
 			displayName = "PowerShell"
 		}
-		prompt := fmt.Sprintf("The agent wants to execute a **%s** command.\n\n```json\n%s\n```\n\n> Press **[ y ]** to Approve  |  **[ n ]** to Deny  |  **[ a ]** to Always Allow (Local)  |  **[ A ]** to Always Allow (Global)", displayName, tc.Function.Arguments)
+		prompt := fmt.Sprintf("The agent wants to execute a **%s** command.\n\n```json\n%s\n```\n\n> Press **[ y ]** Once  |  **[ s ]** Allow Session  |  **[ p ]** Allow Project  |  **[ n ]** Deny", displayName, tc.Function.Arguments)
 		md, _ := m.Renderer.Render(prompt)
 		blocks = append(blocks, aiMsgStyle.Width(msgWidth+1).Border(lipgloss.DoubleBorder()).BorderForeground(lipgloss.Color("#FFD700")).Render(md))
 	}
