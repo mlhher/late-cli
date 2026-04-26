@@ -82,8 +82,8 @@ var allowedEnvVars = map[string]bool{
 
 type BashAnalyzer struct {
 	// ProjectAllowedCommands is a list of normalized command strings (e.g., "git log", "go test")
-	// that the user has explicitly allowed for this project.
-	ProjectAllowedCommands map[string]bool
+	// that the user has explicitly allowed for this project, mapped to the flags allowed for each.
+	ProjectAllowedCommands map[string]map[string]bool
 }
 
 func (b *BashAnalyzer) Analyze(command string) CommandAnalysis {
@@ -195,23 +195,41 @@ func (b *BashAnalyzer) isSafeCall(n *syntax.CallExpr, analysis *CommandAnalysis)
 		}
 	}
 
-	// Step 2: Check project-specific allow-list
-	if b.isProjectAllowed(n) {
-		// If project-allowed, we permit flags (starting with '-') but still reject
-		// anything else that is unsafe (already handled by resolveWord returning false
-		// for expansions/subshells). We still check positional args to ensure they
-		// don't look like flags if they aren't supposed to be.
+	// Step 2: Check project-specific allow-list (with flag-level granularity)
+	if allowedFlags, ok := b.isProjectAllowed(n); ok {
+		// If project-allowed, we check each argument.
 		for _, arg := range n.Args[1:] {
 			val, ok := b.resolveWord(arg)
 			if !ok {
 				return false
 			}
 			if strings.HasPrefix(val, "-") {
-				// For project-allowed commands, we trust flags as they are Literals.
+				// Strip key-value pairs (e.g., --output=foo -> --output)
+				flagKey := val
+				if idx := strings.Index(val, "="); idx != -1 {
+					flagKey = val[:idx]
+				}
+
+				// Exact match for flags
+				if allowedFlags[flagKey] {
+					continue
+				}
+				// Support numeric wildcard if saved as '-*'
+				if allowedFlags["-*"] && isNumericFlag(val) {
+					continue
+				}
+				// Flag not in the approved set for this command
+				return false
+			}
+			
+			// It's a positional argument. 
+			// Special case: if it's in the allowedFlags map (e.g., 'tidy' in 'go mod tidy'), allow it.
+			if allowedFlags[val] {
 				continue
 			}
-			// It's a positional argument. Ensure it's safe (no meta-characters).
-			// (Already guaranteed by resolveWord(arg) returning ok=true).
+
+			// Otherwise, it's a generic positional argument. Since it doesn't start with '-',
+			// and resolveWord succeeded (static literal), it's safe.
 		}
 		return true
 	}
@@ -233,33 +251,35 @@ func (b *BashAnalyzer) isSafeCall(n *syntax.CallExpr, analysis *CommandAnalysis)
 	return false
 }
 
-func (b *BashAnalyzer) isProjectAllowed(n *syntax.CallExpr) bool {
+// isProjectAllowed returns the set of allowed flags and true if the command is whitelisted.
+func (b *BashAnalyzer) isProjectAllowed(n *syntax.CallExpr) (map[string]bool, bool) {
 	if len(b.ProjectAllowedCommands) == 0 {
-		return false
+		return nil, false
 	}
 
 	cmdName, ok := b.resolveWord(n.Args[0])
 	if !ok {
-		return false
+		return nil, false
 	}
 
-	// Check base command
-	if b.ProjectAllowedCommands[cmdName] {
-		return true
-	}
-
-	// Check Command + Subcommand
-	if len(n.Args) >= 2 {
+	// Check Command + Subcommand (e.g., "git log")
+	// Only do this for known Tier 2 commands to avoid false positives (e.g., "grep pattern")
+	if _, isTier2 := tier2AllowList[cmdName]; isTier2 && len(n.Args) >= 2 {
 		subCmd, ok := b.resolveWord(n.Args[1])
 		if ok && subCmd != "" && !strings.HasPrefix(subCmd, "-") {
 			fullCmd := cmdName + " " + subCmd
-			if b.ProjectAllowedCommands[fullCmd] {
-				return true
+			if flags, ok := b.ProjectAllowedCommands[fullCmd]; ok {
+				return flags, true
 			}
 		}
 	}
 
-	return false
+	// Check base command
+	if flags, ok := b.ProjectAllowedCommands[cmdName]; ok {
+		return flags, true
+	}
+
+	return nil, false
 }
 
 func (b *BashAnalyzer) validateTier1(cmd string, args []*syntax.Word, allowedFlags map[string]bool) bool {
@@ -401,4 +421,88 @@ func (b *BashAnalyzer) resolvePart(sb *strings.Builder, p syntax.WordPart) bool 
 	default:
 		return false
 	}
+}
+
+// ParseCommandsForAllowList extracts stable keys (e.g., "git log") and their lists of flags
+// for ALL commands in a potentially compound string (pipes, chains, etc).
+func ParseCommandsForAllowList(command string) map[string][]string {
+	parser := syntax.NewParser()
+	f, err := parser.Parse(strings.NewReader(command), "")
+	if err != nil {
+		return nil
+	}
+
+	commands := make(map[string][]string)
+	analyzer := &BashAnalyzer{}
+
+	syntax.Walk(f, func(node syntax.Node) bool {
+		call, ok := node.(*syntax.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true // Keep walking
+		}
+
+		cmdName, ok := analyzer.resolveWord(call.Args[0])
+		if !ok || cmdName == "" {
+			return true
+		}
+
+		var key string
+		var subCmd string
+		var startIdx int
+
+		// Check for subcommand (only for Tier 2 commands)
+		if _, isTier2 := tier2AllowList[cmdName]; isTier2 && len(call.Args) >= 2 {
+			sc, ok := analyzer.resolveWord(call.Args[1])
+			if ok && sc != "" && !strings.HasPrefix(sc, "-") {
+				key = cmdName + " " + sc
+				subCmd = sc
+				startIdx = 2
+			} else {
+				key = cmdName
+				startIdx = 1
+			}
+		} else {
+			key = cmdName
+			startIdx = 1
+		}
+
+		var flags []string
+		for i := startIdx; i < len(call.Args); i++ {
+			val, ok := analyzer.resolveWord(call.Args[i])
+			if !ok {
+				continue
+			}
+
+			if strings.HasPrefix(val, "-") {
+				// Strip key-value pairs (e.g., --output=foo -> --output)
+				flagKey := val
+				if idx := strings.Index(val, "="); idx != -1 {
+					flagKey = val[:idx]
+				}
+
+				// Normalize numeric flags
+				if isNumericFlag(val) {
+					flags = append(flags, "-*")
+				} else {
+					flags = append(flags, flagKey)
+				}
+			} else {
+				// Positional argument. 
+				// Check if it's a whitelisted "sub-sub-command" (like 'tidy' in 'go mod tidy')
+				if subCmd != "" {
+					if _, ok := tier2AllowList[cmdName][subCmd][val]; ok {
+						flags = append(flags, val)
+					}
+				}
+			}
+		}
+
+		if key != "" {
+			commands[key] = append(commands[key], flags...)
+		}
+
+		return true // Keep walking to find more commands
+	})
+
+	return commands
 }

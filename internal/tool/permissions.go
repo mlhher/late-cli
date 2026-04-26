@@ -169,8 +169,9 @@ func IsSafePath(path string) bool {
 const allowedCommandsFile = ".late/allowed_commands.json"
 
 // LoadAllowedCommands loads the project-specific allow-list from .late/allowed_commands.json.
-func LoadAllowedCommands() (map[string]bool, error) {
-	allowed := make(map[string]bool)
+// The returned map structure is: Command (normalized) -> map of allowed Flags.
+func LoadAllowedCommands() (map[string]map[string]bool, error) {
+	allowed := make(map[string]map[string]bool)
 	
 	// Ensure the directory exists
 	dir := filepath.Dir(allowedCommandsFile)
@@ -186,24 +187,29 @@ func LoadAllowedCommands() (map[string]bool, error) {
 		return nil, err
 	}
 
-	var list []string
+	// JSON format: { "git log": ["--oneline", "-*"], ... }
+	var list map[string][]string
 	if err := json.Unmarshal(data, &list); err != nil {
 		return nil, err
 	}
 
-	for _, cmd := range list {
-		allowed[cmd] = true
+	for cmd, flags := range list {
+		allowed[cmd] = make(map[string]bool)
+		for _, flag := range flags {
+			allowed[cmd][flag] = true
+		}
 	}
 
 	return allowed, nil
 }
 
-// SaveAllowedCommand adds a command to the project-specific allow-list.
+// SaveAllowedCommand adds a command string (potentially compound) to the project-specific allow-list.
+// It extracts all distinct commands and their flags using the AST parser.
 func SaveAllowedCommand(command string) error {
-	// Normalize the command for storage
-	normalized := NormalizeCommandForAllowList(command)
-	if normalized == "" {
-		return nil // Nothing to save
+	// Extract all normalized commands and their flags
+	commands := ParseCommandsForAllowList(command)
+	if len(commands) == 0 {
+		return nil
 	}
 
 	allowed, err := LoadAllowedCommands()
@@ -211,19 +217,27 @@ func SaveAllowedCommand(command string) error {
 		return err
 	}
 
-	if allowed[normalized] {
-		return nil // Already allowed
+	// Merge new commands and flags into the existing set
+	for key, flags := range commands {
+		if _, exists := allowed[key]; !exists {
+			allowed[key] = make(map[string]bool)
+		}
+		for _, flag := range flags {
+			allowed[key][flag] = true
+		}
 	}
 
-	allowed[normalized] = true
-
-	// Convert back to list
-	var list []string
-	for cmd := range allowed {
-		list = append(list, cmd)
+	// Convert back to serializable format
+	serializable := make(map[string][]string)
+	for cmd, flagMap := range allowed {
+		var flagList []string
+		for flag := range flagMap {
+			flagList = append(flagList, flag)
+		}
+		serializable[cmd] = flagList
 	}
 
-	data, err := json.MarshalIndent(list, "", "  ")
+	data, err := json.MarshalIndent(serializable, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -237,30 +251,11 @@ func SaveAllowedCommand(command string) error {
 	return os.WriteFile(allowedCommandsFile, data, 0644)
 }
 
-// NormalizeCommandForAllowList takes a raw command string and returns a stable
-// representation for the allow-list (e.g., "git log", "npm run").
-// It focuses on the command and subcommand, stripping volatile positional args.
+// NormalizeCommandForAllowList is now a legacy helper that returns the first command key found.
 func NormalizeCommandForAllowList(command string) string {
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return ""
+	commands := ParseCommandsForAllowList(command)
+	for key := range commands {
+		return key // Just return the first one found for compatibility
 	}
-
-	// Use a simple splitter for normalization (we don't need full AST here,
-	// but we could use it if we want to be more precise).
-	// For now, let's just take the first two words if the second isn't a flag.
-	parts := strings.Fields(command)
-	if len(parts) == 0 {
-		return ""
-	}
-
-	base := parts[0]
-	if len(parts) >= 2 {
-		sub := parts[1]
-		if !strings.HasPrefix(sub, "-") {
-			return base + " " + sub
-		}
-	}
-
-	return base
+	return ""
 }
