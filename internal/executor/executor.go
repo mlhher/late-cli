@@ -81,16 +81,12 @@ func ExecuteToolCalls(ctx context.Context, sess *session.Session, toolCalls []cl
 		// Fail-closed: if no confirmation middleware is provided, do not
 		// execute shell commands (they must be explicitly approved by a
 		// middleware such as the TUI confirm middleware).
-		if len(middlewares) == 0 {
-			if t := sess.Registry.Get(tc.Function.Name); t != nil {
-				if _, ok := t.(*tool.ShellTool); ok {
-					result := "shell command requires explicit approval before execution"
-					if err := sess.AddToolResultMessage(tc.ID, result); err != nil {
-						return err
-					}
-					continue
-				}
+		if len(middlewares) == 0 && tc.Function.Name == "bash" {
+			result := "shell command requires explicit approval before execution"
+			if err := sess.AddToolResultMessage(tc.ID, result); err != nil {
+				return err
 			}
+			continue
 		}
 
 		result, err := runner(ctx, tc)

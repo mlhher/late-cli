@@ -35,6 +35,8 @@ func TestAnalyzeBashCommand(t *testing.T) {
 		{"Combined cd & ls (blocked)", "cd /tmp; ls", true, true},
 		{"Nested cd in if (blocked)", "if true; then cd /tmp; fi", true, true},
 		{"Nested redirect in cmdsubst (blocked)", "echo $(ls > out.txt)", true, true},
+		{"Nested cd in subshell (blocked)", "(cd /tmp && ls)", true, true},
+		{"Nested redirect in while loop (blocked)", "while true; do echo x > f; break; done", true, true},
 		{"Variable expansion (needs confirm)", "echo $HOME", false, true},
 		{"Path-based command (blocked)", "/bin/ls", false, true},
 		{"Git status (auto-approve)", "git status", false, false},
