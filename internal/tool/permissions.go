@@ -2,6 +2,7 @@ package tool
 
 import (
 	"encoding/json"
+	"late/internal/pathutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -169,17 +170,16 @@ func IsSafePath(path string) bool {
 const (
 	localAllowedCommandsFile = ".late/allowed_commands.json"
 	localAllowedToolsFile    = ".late/allowed_tools.json"
-	globalConfigDirName     = "late"
 	commandsFileName        = "allowed_commands.json"
 	toolsFileName           = "allowed_tools.json"
 )
 
 func getGlobalConfigPath(fileName string) string {
-	configDir, err := os.UserConfigDir()
+	configDir, err := pathutil.LateConfigDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(configDir, globalConfigDirName, fileName)
+	return filepath.Join(configDir, fileName)
 }
 
 func getFilePath(localPath string, fileName string, global bool) string {
