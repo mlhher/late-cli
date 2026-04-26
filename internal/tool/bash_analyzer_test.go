@@ -47,6 +47,10 @@ func TestAnalyzeBashCommand(t *testing.T) {
 		{"Safe env var (auto-approve)", "DEBUG=1 ls", false, false},
 		{"Unsafe env var (needs confirm)", "PAGER=rm ls", false, true},
 		{"Positional flag injection", "git log --output=evil.txt", false, true},
+		{"Mid-word quoting bypass (blocked)", "git log --ou\"\"tput=evil.txt", false, true},
+		{"Command name quoting (auto-approve)", "gi\"\"t status", false, false},
+		{"Flag concatenation (auto-approve)", "ls -\"\"la", false, false},
+		{"Mixed quoting (auto-approve)", "echo 'hello '\"world\"", false, false},
 	}
 
 	for _, tc := range tests {

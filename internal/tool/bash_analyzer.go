@@ -166,8 +166,8 @@ func (b *BashAnalyzer) isSafeCall(n *syntax.CallExpr, analysis *CommandAnalysis)
 		return true
 	}
 
-	cmdName := b.extractCommandName(n.Args[0])
-	if cmdName == "" || strings.Contains(cmdName, "/") {
+	cmdName, ok := b.resolveWord(n.Args[0])
+	if !ok || cmdName == "" || strings.Contains(cmdName, "/") {
 		return false
 	}
 
@@ -186,10 +186,8 @@ func (b *BashAnalyzer) isSafeCall(n *syntax.CallExpr, analysis *CommandAnalysis)
 		if assign.Value == nil {
 			return false
 		}
-		for _, p := range assign.Value.Parts {
-			if !isSafeWordPart(p) {
-				return false
-			}
+		if _, ok := b.resolveWord(assign.Value); !ok {
+			return false
 		}
 	}
 
@@ -212,7 +210,10 @@ func (b *BashAnalyzer) isSafeCall(n *syntax.CallExpr, analysis *CommandAnalysis)
 
 func (b *BashAnalyzer) validateTier1(cmd string, args []*syntax.Word, allowedFlags map[string]bool) bool {
 	for _, arg := range args {
-		val := b.extractCommandName(arg)
+		val, ok := b.resolveWord(arg)
+		if !ok {
+			return false
+		}
 		if strings.HasPrefix(val, "-") {
 			if !allowedFlags[val] {
 				return false
@@ -232,8 +233,8 @@ func (b *BashAnalyzer) validateTier2(cmd string, args []*syntax.Word, subcommand
 		return true // Just the base command is help
 	}
 
-	subCmd := b.extractCommandName(args[0])
-	if subCmd == "" || strings.HasPrefix(subCmd, "-") {
+	subCmd, ok := b.resolveWord(args[0])
+	if !ok || subCmd == "" || strings.HasPrefix(subCmd, "-") {
 		return false // Subcommand expected
 	}
 
@@ -244,7 +245,10 @@ func (b *BashAnalyzer) validateTier2(cmd string, args []*syntax.Word, subcommand
 
 	// Validate remaining arguments
 	for _, arg := range args[1:] {
-		val := b.extractCommandName(arg)
+		val, ok := b.resolveWord(arg)
+		if !ok {
+			return false
+		}
 		if strings.HasPrefix(val, "-") {
 			if !allowedFlags[val] {
 				return false
@@ -261,7 +265,10 @@ func (b *BashAnalyzer) validateTier2(cmd string, args []*syntax.Word, subcommand
 
 func (b *BashAnalyzer) validateFind(args []*syntax.Word) bool {
 	for _, arg := range args {
-		val := b.extractCommandName(arg)
+		val, ok := b.resolveWord(arg)
+		if !ok {
+			return false
+		}
 		if strings.HasPrefix(val, "-") {
 			// Find flags often start with - but are not exactly like standard flags.
 			// Still, we check them against an allow-list.
@@ -283,52 +290,40 @@ func (b *BashAnalyzer) isSafePositionalArg(word *syntax.Word) bool {
 		return true
 	}
 	// Ensure it doesn't look like a flag (injection prevention)
-	val := b.extractCommandName(word)
-	if strings.HasPrefix(val, "-") {
+	val, ok := b.resolveWord(word)
+	if !ok || strings.HasPrefix(val, "-") {
 		return false
 	}
 
-	for _, p := range word.Parts {
-		if !isSafeWordPart(p) {
-			return false
-		}
-	}
 	return true
 }
 
-func (b *BashAnalyzer) extractCommandName(word *syntax.Word) string {
-	if word == nil || len(word.Parts) == 0 {
-		return ""
+// resolveWord concatenates all parts of a word into a single string.
+// It returns false if the word contains non-literal parts (expansions, subshells, etc).
+func (b *BashAnalyzer) resolveWord(word *syntax.Word) (string, bool) {
+	if word == nil {
+		return "", true
 	}
-
-	var rawName string
-	if len(word.Parts) == 1 {
-		switch p := word.Parts[0].(type) {
-		case *syntax.Lit:
-			rawName = p.Value
-		case *syntax.SglQuoted:
-			rawName = p.Value
-		case *syntax.DblQuoted:
-			if len(p.Parts) == 1 {
-				if lit, ok := p.Parts[0].(*syntax.Lit); ok {
-					rawName = lit.Value
-				}
-			}
+	var sb strings.Builder
+	for _, p := range word.Parts {
+		if !b.resolvePart(&sb, p) {
+			return "", false
 		}
 	}
-
-	return rawName
+	return sb.String(), true
 }
 
-func isSafeWordPart(p syntax.WordPart) bool {
+func (b *BashAnalyzer) resolvePart(sb *strings.Builder, p syntax.WordPart) bool {
 	switch n := p.(type) {
 	case *syntax.Lit:
+		sb.WriteString(n.Value)
 		return true
 	case *syntax.SglQuoted:
+		sb.WriteString(n.Value)
 		return true
 	case *syntax.DblQuoted:
 		for _, qp := range n.Parts {
-			if !isSafeWordPart(qp) {
+			if !b.resolvePart(sb, qp) {
 				return false
 			}
 		}
