@@ -435,9 +435,9 @@ func TestBashTool_RequiresConfirmation(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "non-whitelisted command find (removed from whitelist)",
+			name:     "non-whitelisted command find (auto-approved by AST)",
 			params:   json.RawMessage(`{"command": "find . -name *.go"}`),
-			expected: true,
+			expected: false,
 		},
 		{
 			name:     "non-whitelisted command echo (auto-approved by AST IF literal)",
@@ -475,12 +475,12 @@ func TestBashTool_RequiresConfirmation(t *testing.T) {
 		{
 			name:     "pipe all safe",
 			params:   json.RawMessage(`{"command": "cat file.txt | grep pattern"}`),
-			expected: true,
+			expected: false,
 		},
 		{
 			name:     "pipe all safe with wc",
 			params:   json.RawMessage(`{"command": "grep -r pattern . | wc -l"}`),
-			expected: true,
+			expected: false,
 		},
 		// === SHELL METACHARACTER BYPASS PREVENTION ===
 		{

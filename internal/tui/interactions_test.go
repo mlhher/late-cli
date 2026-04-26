@@ -14,7 +14,7 @@ import (
 
 type mockMessenger struct {
 	confirmCalled bool
-	autoConfirm   *bool
+	autoConfirm   *string
 }
 
 func (m *mockMessenger) Send(msg tea.Msg) {
@@ -103,7 +103,7 @@ func TestTUIConfirmMiddleware_SkipConfirmation(t *testing.T) {
 }
 
 func TestTUIConfirmMiddleware_ConfirmedExecutionMarksApproval(t *testing.T) {
-	autoConfirm := true
+	autoConfirm := "y"
 	messenger := &mockMessenger{autoConfirm: &autoConfirm}
 	reg := common.NewToolRegistry()
 	bashTool := &tool.ShellTool{}

@@ -94,7 +94,7 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 			}
 
 			// Ask for confirmation for tools that require it
-			resultCh := make(chan bool, 1)
+			resultCh := make(chan string, 1)
 			errCh := make(chan error, 1)
 
 			messenger.Send(ConfirmRequestMsg{
@@ -105,12 +105,29 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 			})
 
 			select {
-			case confirmed := <-resultCh:
-				if !confirmed {
+			case choice := <-resultCh:
+				switch choice {
+				case "y", "a":
+					if choice == "a" {
+						// For ShellTool, save the command to the project-specific allow-list
+						if t := reg.Get(tc.Function.Name); t != nil {
+							if bashTool, ok := t.(*tool.ShellTool); ok {
+								var params struct {
+									Command string `json:"command"`
+								}
+								if err := json.Unmarshal([]byte(tc.Function.Arguments), &params); err == nil {
+									_ = bashTool.SaveToAllowList(params.Command)
+								}
+							}
+						}
+					}
+					approvedCtx := context.WithValue(ctx, common.ToolApprovalKey, true)
+					return next(approvedCtx, tc)
+				case "n":
+					return "Tool execution cancelled by user", nil
+				default:
 					return "Tool execution cancelled by user", nil
 				}
-				approvedCtx := context.WithValue(ctx, common.ToolApprovalKey, true)
-				return next(approvedCtx, tc)
 			case err := <-errCh:
 				return "", err
 			case <-ctx.Done():
@@ -124,6 +141,6 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 type ConfirmRequestMsg struct {
 	OrchestratorID string
 	ToolCall       client.ToolCall
-	ResultCh       chan bool
+	ResultCh       chan string
 	ErrCh          chan error
 }

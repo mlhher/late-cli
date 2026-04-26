@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,4 +164,103 @@ func IsSafePath(path string) bool {
 	}
 
 	return strings.HasPrefix(absPath, absCwd)
+}
+
+const allowedCommandsFile = ".late/allowed_commands.json"
+
+// LoadAllowedCommands loads the project-specific allow-list from .late/allowed_commands.json.
+func LoadAllowedCommands() (map[string]bool, error) {
+	allowed := make(map[string]bool)
+	
+	// Ensure the directory exists
+	dir := filepath.Dir(allowedCommandsFile)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return allowed, nil
+	}
+
+	data, err := os.ReadFile(allowedCommandsFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return allowed, nil
+		}
+		return nil, err
+	}
+
+	var list []string
+	if err := json.Unmarshal(data, &list); err != nil {
+		return nil, err
+	}
+
+	for _, cmd := range list {
+		allowed[cmd] = true
+	}
+
+	return allowed, nil
+}
+
+// SaveAllowedCommand adds a command to the project-specific allow-list.
+func SaveAllowedCommand(command string) error {
+	// Normalize the command for storage
+	normalized := NormalizeCommandForAllowList(command)
+	if normalized == "" {
+		return nil // Nothing to save
+	}
+
+	allowed, err := LoadAllowedCommands()
+	if err != nil {
+		return err
+	}
+
+	if allowed[normalized] {
+		return nil // Already allowed
+	}
+
+	allowed[normalized] = true
+
+	// Convert back to list
+	var list []string
+	for cmd := range allowed {
+		list = append(list, cmd)
+	}
+
+	data, err := json.MarshalIndent(list, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	// Ensure the directory exists
+	dir := filepath.Dir(allowedCommandsFile)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	return os.WriteFile(allowedCommandsFile, data, 0644)
+}
+
+// NormalizeCommandForAllowList takes a raw command string and returns a stable
+// representation for the allow-list (e.g., "git log", "npm run").
+// It focuses on the command and subcommand, stripping volatile positional args.
+func NormalizeCommandForAllowList(command string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return ""
+	}
+
+	// Use a simple splitter for normalization (we don't need full AST here,
+	// but we could use it if we want to be more precise).
+	// For now, let's just take the first two words if the second isn't a flag.
+	parts := strings.Fields(command)
+	if len(parts) == 0 {
+		return ""
+	}
+
+	base := parts[0]
+	if len(parts) >= 2 {
+		sub := parts[1]
+		if !strings.HasPrefix(sub, "-") {
+			return base + " " + sub
+		}
+	}
+
+	return base
 }

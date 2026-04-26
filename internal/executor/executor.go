@@ -102,7 +102,7 @@ func RegisterTools(reg *tool.Registry, enabledTools map[string]bool, isPlanning 
 		reg.Register(tool.NewReadFileTool())
 	}
 	if enabledTools["bash"] {
-		reg.Register(tool.ShellTool{})
+		reg.Register(&tool.ShellTool{})
 	}
 
 	if isPlanning {

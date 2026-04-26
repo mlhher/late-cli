@@ -80,7 +80,11 @@ var allowedEnvVars = map[string]bool{
 	"CGO_ENABLED": true,
 }
 
-type BashAnalyzer struct{}
+type BashAnalyzer struct {
+	// ProjectAllowedCommands is a list of normalized command strings (e.g., "git log", "go test")
+	// that the user has explicitly allowed for this project.
+	ProjectAllowedCommands map[string]bool
+}
 
 func (b *BashAnalyzer) Analyze(command string) CommandAnalysis {
 	parser := syntax.NewParser()
@@ -178,7 +182,7 @@ func (b *BashAnalyzer) isSafeCall(n *syntax.CallExpr, analysis *CommandAnalysis)
 		return false
 	}
 
-	// Step 1: Environment check
+	// Step 1: Environment check (always enforced, even for project-allowed commands)
 	for _, assign := range n.Assigns {
 		if assign.Name == nil || !allowedEnvVars[assign.Name.Value] {
 			return false
@@ -191,7 +195,28 @@ func (b *BashAnalyzer) isSafeCall(n *syntax.CallExpr, analysis *CommandAnalysis)
 		}
 	}
 
-	// Step 2: Tier Categorization and Validation
+	// Step 2: Check project-specific allow-list
+	if b.isProjectAllowed(n) {
+		// If project-allowed, we permit flags (starting with '-') but still reject
+		// anything else that is unsafe (already handled by resolveWord returning false
+		// for expansions/subshells). We still check positional args to ensure they
+		// don't look like flags if they aren't supposed to be.
+		for _, arg := range n.Args[1:] {
+			val, ok := b.resolveWord(arg)
+			if !ok {
+				return false
+			}
+			if strings.HasPrefix(val, "-") {
+				// For project-allowed commands, we trust flags as they are Literals.
+				continue
+			}
+			// It's a positional argument. Ensure it's safe (no meta-characters).
+			// (Already guaranteed by resolveWord(arg) returning ok=true).
+		}
+		return true
+	}
+
+	// Step 3: Tier Categorization and Validation (Hardcoded Schema)
 	if allowedFlags, ok := tier1AllowList[cmdName]; ok {
 		return b.validateTier1(cmdName, n.Args[1:], allowedFlags)
 	}
@@ -208,6 +233,35 @@ func (b *BashAnalyzer) isSafeCall(n *syntax.CallExpr, analysis *CommandAnalysis)
 	return false
 }
 
+func (b *BashAnalyzer) isProjectAllowed(n *syntax.CallExpr) bool {
+	if len(b.ProjectAllowedCommands) == 0 {
+		return false
+	}
+
+	cmdName, ok := b.resolveWord(n.Args[0])
+	if !ok {
+		return false
+	}
+
+	// Check base command
+	if b.ProjectAllowedCommands[cmdName] {
+		return true
+	}
+
+	// Check Command + Subcommand
+	if len(n.Args) >= 2 {
+		subCmd, ok := b.resolveWord(n.Args[1])
+		if ok && subCmd != "" && !strings.HasPrefix(subCmd, "-") {
+			fullCmd := cmdName + " " + subCmd
+			if b.ProjectAllowedCommands[fullCmd] {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 func (b *BashAnalyzer) validateTier1(cmd string, args []*syntax.Word, allowedFlags map[string]bool) bool {
 	for _, arg := range args {
 		val, ok := b.resolveWord(arg)
@@ -215,6 +269,10 @@ func (b *BashAnalyzer) validateTier1(cmd string, args []*syntax.Word, allowedFla
 			return false
 		}
 		if strings.HasPrefix(val, "-") {
+			// Allow numeric flags for head and tail (e.g., -20)
+			if (cmd == "head" || cmd == "tail") && isNumericFlag(val) {
+				continue
+			}
 			if !allowedFlags[val] {
 				return false
 			}
@@ -223,6 +281,18 @@ func (b *BashAnalyzer) validateTier1(cmd string, args []*syntax.Word, allowedFla
 			if !b.isSafePositionalArg(arg) {
 				return false
 			}
+		}
+	}
+	return true
+}
+
+func isNumericFlag(s string) bool {
+	if len(s) < 2 || s[0] != '-' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
 		}
 	}
 	return true
