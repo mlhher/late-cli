@@ -220,6 +220,40 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
+// RefreshContextSize re-probes the backend properties to update the context size if it's llama.cpp.
+func (c *Client) RefreshContextSize(ctx context.Context) {
+	c.mu.RLock()
+	isLlama := c.backend == BackendLlamaCPP
+	c.mu.RUnlock()
+	if !isLlama {
+		return
+	}
+
+	url := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/props"
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return
+	}
+	if c.cfg.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		var props PropsResponse
+		if err := json.NewDecoder(resp.Body).Decode(&props); err == nil {
+			c.mu.Lock()
+			c.ctxSize = props.DefaultGenerationSettings.NCtx
+			c.mu.Unlock()
+		}
+	}
+}
+
 // DiscoverBackend probes certain endpoints to identify the inference engine.
 func (c *Client) DiscoverBackend(ctx context.Context) BackendType {
 	c.mu.RLock()

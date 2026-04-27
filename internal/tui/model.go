@@ -71,8 +71,8 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer) Model {
 	// Initialize root state
 	history := root.History()
 	cumulativeTokens := 0
-	if history != nil && len(history) > 0 {
-		cumulativeTokens = common.CalculateHistoryTokens(history)
+	if history != nil && len(history) >= 0 {
+		cumulativeTokens = common.CalculateHistoryTokens(history, root.SystemPrompt(), root.ToolDefinitions())
 	}
 	m.AgentStates[root.ID()] = &AppState{
 		State:                initialState,

@@ -60,6 +60,7 @@ type AppState struct {
 	// History token cache
 	CachedHistoryTokens int // Cached total token count for completed history
 	CachedHistoryLen    int // History length when tokens were last computed
+	LastRealTokenCount  int // Last ground-truth token count from the API usage data
 
 	// Performance caches
 	LastStreamingContent string   // To avoid re-splitting if content hasn't changed
@@ -126,4 +127,21 @@ type SetMessengerMsg struct {
 // OrchestratorEventMsg is the bridge between Orchestrator goroutines and the TUI loop.
 type OrchestratorEventMsg struct {
 	Event common.Event
+}
+
+// FindOrchestrator recursively searches for an orchestrator by ID.
+func (m *Model) FindOrchestrator(id string) common.Orchestrator {
+	var search func(curr common.Orchestrator) common.Orchestrator
+	search = func(curr common.Orchestrator) common.Orchestrator {
+		if curr.ID() == id {
+			return curr
+		}
+		for _, child := range curr.Children() {
+			if res := search(child); res != nil {
+				return res
+			}
+		}
+		return nil
+	}
+	return search(m.Root)
 }
