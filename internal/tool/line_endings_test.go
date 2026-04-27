@@ -27,15 +27,22 @@ func TestTargetEditTool_WindowsLineEndings(t *testing.T) {
 
 	tool := TargetEditTool{}
 	ctx := context.Background()
+	makeArgs := func(filePath, search, replace string) json.RawMessage {
+		payload, err := json.Marshal(map[string]string{
+			"file":    filePath,
+			"search":  search,
+			"replace": replace,
+		})
+		if err != nil {
+			t.Fatalf("failed to marshal args: %v", err)
+		}
+		return json.RawMessage(payload)
+	}
 
 	t.Run("succeeds with unix search block on windows file", func(t *testing.T) {
 		// Search block uses Unix line endings (\n)
 		// Usually LLMs will provide search blocks with \n
-		args := json.RawMessage(`{
-			"file": "` + filePath + `",
-			"search": "line 1\nline 2",
-			"replace": "line 1\nupdated line 2"
-		}`)
+		args := makeArgs(filePath, "line 1\nline 2", "line 1\nupdated line 2")
 		res, err := tool.Execute(ctx, args)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -60,11 +67,7 @@ func TestTargetEditTool_WindowsLineEndings(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		args := json.RawMessage(`{
-			"file": "` + mixedFile + `",
-			"search": "line 2",
-			"replace": "updated line 2"
-		}`)
+		args := makeArgs(mixedFile, "line 2", "updated line 2")
 		_, err := tool.Execute(ctx, args)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)

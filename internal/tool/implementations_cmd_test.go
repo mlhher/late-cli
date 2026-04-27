@@ -111,9 +111,17 @@ func TestPSShellTool_WindowsSelectiveRequiresConfirmation(t *testing.T) {
 
 func TestPSShellTool_WindowsNewPathCarveout(t *testing.T) {
 	tool := ShellTool{}
-	tempDir := t.TempDir()
-	newPath := filepath.Join(tempDir, "new-folder")
-	existingPath := filepath.Join(tempDir, "existing-folder")
+	tempDir, err := os.MkdirTemp(".", "ps-newpath-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir in workspace: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+	absTempDir, err := filepath.Abs(tempDir)
+	if err != nil {
+		t.Fatalf("failed to resolve temp dir path: %v", err)
+	}
+	newPath := filepath.Join(absTempDir, "new-folder")
+	existingPath := filepath.Join(absTempDir, "existing-folder")
 	if err := os.Mkdir(existingPath, 0755); err != nil {
 		t.Fatalf("failed to create existing folder fixture: %v", err)
 	}
@@ -135,12 +143,12 @@ func TestPSShellTool_WindowsNewPathCarveout(t *testing.T) {
 	}{
 		{
 			name: "new-item new path can auto-approve",
-				args: makeArgs(`New-Item -Path "`+newPath+`"`, tempDir),
+				args: makeArgs(`New-Item -Path "`+newPath+`"`, absTempDir),
 			want: false,
 		},
 		{
 			name: "new-item existing path requires confirmation",
-				args: makeArgs(`New-Item -Path "`+existingPath+`"`, tempDir),
+				args: makeArgs(`New-Item -Path "`+existingPath+`"`, absTempDir),
 			want: true,
 		},
 	}
@@ -176,7 +184,7 @@ func TestPowerShellParserBackedCommandExtraction(t *testing.T) {
 
 func TestPSShellTool_ExecuteFailsWithoutApproval(t *testing.T) {
 	tool := ShellTool{}
-	args := json.RawMessage(`{"command":"echo hello"}`)
+	args := json.RawMessage(`{"command":"git status"}`)
 	_, err := tool.Execute(context.Background(), args)
 	if err == nil {
 		t.Fatal("expected missing approval error, got nil")

@@ -364,6 +364,10 @@ func TestBashTool_CallString(t *testing.T) {
 }
 
 func TestBashTool_ExecuteRequiresApproval(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash approval behavior tested on Windows via PowerShell-specific tests")
+	}
+
 	tool := ShellTool{}
 	params := json.RawMessage(`{"command": "mkdir foo"}`)
 
@@ -387,6 +391,10 @@ func TestBashTool_ExecuteRequiresApproval(t *testing.T) {
 }
 
 func TestBashTool_RequiresConfirmation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash RequiresConfirmation behavior tested on Unix; Windows uses PowerShell analyzer")
+	}
+
 	tests := []struct {
 		name     string
 		params   json.RawMessage
