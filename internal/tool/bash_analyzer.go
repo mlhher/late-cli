@@ -95,72 +95,30 @@ func (b *BashAnalyzer) Analyze(command string) CommandAnalysis {
 
 	analysis := CommandAnalysis{}
 
-	var checkNode func(node syntax.Node) bool
-	checkNode = func(node syntax.Node) bool {
-		if node == nil {
-			return true
+	syntax.Walk(f, func(node syntax.Node) bool {
+		if node == nil || analysis.IsBlocked {
+			return false
 		}
+
 		switch n := node.(type) {
 		case *syntax.CallExpr:
 			if !b.isSafeCall(n, &analysis) {
 				analysis.NeedsConfirmation = true
 			}
-			if analysis.IsBlocked {
-				return false
-			}
-
 		case *syntax.Redirect:
 			switch n.Op {
 			case syntax.RdrOut, syntax.AppOut, syntax.RdrAll, syntax.AppAll, syntax.RdrClob, syntax.AppClob, syntax.DplOut:
 				analysis.IsBlocked = true
 				analysis.NeedsConfirmation = true
 				analysis.BlockReason = fmt.Errorf("Output redirection (>) is blocked. Use `write_file` or `target_edit` to modify files.")
-				return false
 			}
-
-		case *syntax.BinaryCmd:
-			if !checkNode(n.X) || !checkNode(n.Y) {
-				return false
-			}
-
-		case *syntax.Stmt:
-			for _, redir := range n.Redirs {
-				if !checkNode(redir) {
-					return false
-				}
-			}
-			if !checkNode(n.Cmd) {
-				return false
-			}
-
-		case *syntax.File:
-			for _, stmt := range n.Stmts {
-				if !checkNode(stmt) {
-					return false
-				}
-			}
-
-		case *syntax.Block:
-			for _, stmt := range n.Stmts {
-				if !checkNode(stmt) {
-					return false
-				}
-			}
-			analysis.NeedsConfirmation = true
-
-		case *syntax.CmdSubst, *syntax.Subshell, *syntax.ProcSubst:
-			analysis.NeedsConfirmation = true
-
-		case *syntax.IfClause, *syntax.WhileClause, *syntax.ForClause, *syntax.CaseClause:
-			analysis.NeedsConfirmation = true
-
-		case *syntax.ParamExp:
+		case *syntax.Block, *syntax.CmdSubst, *syntax.Subshell, *syntax.ProcSubst,
+			*syntax.IfClause, *syntax.WhileClause, *syntax.ForClause, *syntax.CaseClause, *syntax.ParamExp:
 			analysis.NeedsConfirmation = true
 		}
-		return true
-	}
 
-	checkNode(f)
+		return !analysis.IsBlocked
+	})
 
 	return analysis
 }

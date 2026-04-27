@@ -2,6 +2,7 @@ package tool
 
 import (
 	"encoding/json"
+	"runtime"
 	"testing"
 )
 
@@ -33,6 +34,10 @@ func TestAnalyzeBashCommand(t *testing.T) {
 		{"Whitelisted list", "ls; pwd", false, false},
 		{"Non-whitelisted command", "mkdir foo", false, true},
 		{"Combined cd & ls (blocked)", "cd /tmp; ls", true, true},
+		{"Nested cd in if (blocked)", "if true; then cd /tmp; fi", true, true},
+		{"Nested redirect in cmdsubst (blocked)", "echo $(ls > out.txt)", true, true},
+		{"Nested cd in subshell (blocked)", "(cd /tmp && ls)", true, true},
+		{"Nested redirect in while loop (blocked)", "while true; do echo x > f; break; done", true, true},
 		{"Variable expansion (needs confirm)", "echo $HOME", false, true},
 		{"Path-based command (blocked)", "/bin/ls", false, true},
 		{"Git status (auto-approve)", "git status", false, false},
@@ -62,6 +67,11 @@ func TestAnalyzeBashCommand(t *testing.T) {
 			}
 			if analysis.NeedsConfirmation != tc.expectConfirm {
 				t.Errorf("confirm mismatch (analyzer): got %v, want %v", analysis.NeedsConfirmation, tc.expectConfirm)
+			}
+
+			if runtime.GOOS == "windows" {
+				// ShellTool uses PowerShellAnalyzer on Windows.
+				return
 			}
 
 			blocked, _, confirm := st.analyzeBashCommand(tc.command, "")
