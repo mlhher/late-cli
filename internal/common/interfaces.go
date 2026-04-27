@@ -24,6 +24,8 @@ type Orchestrator interface {
 	Context() context.Context
 	Middlewares() []ToolMiddleware
 	Registry() *ToolRegistry
+	SystemPrompt() string
+	ToolDefinitions() []client.ToolDefinition
 
 	// Hierarchy
 	Children() []Orchestrator
@@ -31,6 +33,7 @@ type Orchestrator interface {
 
 	// Configuration
 	SetMaxTurns(int)
+	RefreshContextSize(context.Context)
 	MaxTokens() int
 }
 

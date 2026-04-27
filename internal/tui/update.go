@@ -232,19 +232,34 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			s.Usage = event.Usage
 			if event.Usage.TotalTokens > 0 {
 				s.CumulativeTokenCount = event.Usage.TotalTokens
+				s.LastRealTokenCount = event.Usage.TotalTokens
+				s.CachedHistoryLen = len(m.Focused.History())
 			} else {
 				// Fallback to estimation if no real usage data yet
 				newContentTokens := common.EstimateEventTokens(event)
 
-				// Use cached history token count (only recalculate when history changes)
-				history := m.Focused.History()
-				if len(history) != s.CachedHistoryLen {
-					s.CachedHistoryTokens = common.CalculateHistoryTokens(history)
-					s.CachedHistoryLen = len(history)
+				orch := m.FindOrchestrator(event.ID)
+				if orch == nil {
+					orch = m.Focused
 				}
+				history := orch.History()
 
-				// Update cumulative count
-				s.CumulativeTokenCount = s.CachedHistoryTokens + newContentTokens
+				if s.LastRealTokenCount > 0 && len(history) >= s.CachedHistoryLen {
+					// Use last real count as baseline and add estimation for new content since then
+					baseline := s.LastRealTokenCount
+					// Add messages added since the last real count (e.g. the new user prompt)
+					for i := s.CachedHistoryLen; i < len(history); i++ {
+						baseline += common.EstimateMessageTokens(history[i])
+					}
+					s.CumulativeTokenCount = baseline + newContentTokens
+				} else {
+					// Full estimation fallback (accounting for system prompt and tools)
+					if len(history) != s.CachedHistoryLen {
+						s.CachedHistoryTokens = common.CalculateHistoryTokens(history, orch.SystemPrompt(), orch.ToolDefinitions())
+						s.CachedHistoryLen = len(history)
+					}
+					s.CumulativeTokenCount = s.CachedHistoryTokens + newContentTokens
+				}
 			}
 
 			// Throttle viewport updates to ~33 FPS during streaming
