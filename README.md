@@ -4,8 +4,8 @@
 
 Standard AI coding assistants dump massive contexts into a single window, leading to token bloat, amnesia, hallucinations and degraded ability. **Late solves this by mirroring real engineering teams:** a Lead Architect orchestrator maps the codebase and spawns ephemeral, isolated subagents to execute perfect, exact-match code edits.
 
-![Late Orchestrator planning a 4-phase implementation and spawning the first subagent](assets/late-subagent-handoff.png)
-*Late acting as Lead Architect: Orchestrating a 4-phase plan and autonomously spawning atomic subagents.*
+![Late Orchestrator planning a multi-phase implementation and spawning the first subagent](assets/late-subagent-handoff.png)
+*Late acting as Lead Architect: Orchestrating a multi-phase plan and autonomously spawning atomic subagents.*
 
 > **Built with Late:** As of today, the vast majority of Late is being built *inside* Late.
 
@@ -44,7 +44,7 @@ A statically compiled engine. No `node_modules`, no virtual environments, no blo
 
 ### 6. Local-First & Model Agnostic
 
-Requires any OpenAI-compatible endpoint. Late's ephemeral subagent architecture is designed for consumer hardware: subagent contexts are destroyed on completion and never pollute the planner's window, keeping VRAM and context usage flat regardless of task complexity. Late orchestrates its own codebase development on **5GB VRAM** using a local `Qwen3.5-35B-A3B` (~30 tokens/sec through `llama.cpp`, 65k context, remaining layers offloaded to system RAM). Two simultaneous agent instances run comfortably at ~15 t/s.
+Requires any OpenAI-compatible endpoint. Late's ephemeral subagent architecture is designed for consumer hardware: subagent contexts are destroyed on completion and never pollute the planner's window, keeping VRAM and context usage flat regardless of task complexity. Late orchestrates its own codebase development on **5GB VRAM** using a local `Qwen3.6-35B-A3B` (~30 tokens/sec through `llama.cpp`, 65k context, remaining layers offloaded to system RAM). Two simultaneous agent instances run comfortably at ~15 t/s.
 Natively supports both thinking and non-thinking models (including extra support for `Gemma 4`), or can be pointed at heavy-compute cloud endpoints for complex architectural tasks.
 
 ## 🚀 Quick Start (Zero Dependencies)
