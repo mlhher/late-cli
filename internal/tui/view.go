@@ -311,7 +311,7 @@ func (m *Model) updateViewport() {
 		if runtime.GOOS == "windows" && displayName == "bash" {
 			displayName = "PowerShell"
 		}
-		prompt := fmt.Sprintf("The agent wants to execute a **%s** command.\n\n```json\n%s\n```\n\n> Press **[y]** Allow once | **[s]** Always: session | **[p]** Always: project | **[g]** Always: global | **[n]** Deny", displayName, tc.Function.Arguments)
+		prompt := fmt.Sprintf("The agent wants to execute a **%s** command.\n\n```json\n%s\n```\n\n> Press **[y]** Allow once | **[s]** Allow always (session) | **[p]** Allow always (project) | **[g]** Allow always (global) | **[n]** Deny", displayName, tc.Function.Arguments)
 		md, _ := m.Renderer.Render(prompt)
 		blocks = append(blocks, aiMsgStyle.Width(msgWidth+1).Border(lipgloss.DoubleBorder()).BorderForeground(lipgloss.Color("#FFD700")).Render(md))
 	}

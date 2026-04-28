@@ -91,15 +91,15 @@ When the agent wants to run a command or edit a file, you'll see a confirmation 
 ```
 The agent wants to execute list_projects.
   {}
-> Press [y] Allow once | [s] Always: session | [p] Always: project | [g] Always: global | [n] Deny
+> Press [y] Allow once | [s] Allow always (session) | [p] Allow always (project) | [g] Allow always (global) | [n] Deny
 ```
 
 - **Read-only commands** (`ls`, `cat`, `grep`, etc.) are auto-approved for speed (Note: the listed commands can still require permission if Late deems the agents activity suspicious)
 - **Everything else** requires explicit approval.
 - Use **`[y] Allow once`** to approve only this single tool call.
-- Use **`[s] Always: session`** to auto-approve matching requests for the rest of the current session.
-- Use **`[p] Always: project`** to remember approval for this project.
-- Use **`[g] Always: global`** to remember approval across all projects on this machine.
+- Use **`[s] Allow always (session)`** to auto-approve matching requests for the rest of the current session.
+- Use **`[p] Allow always (project)`** to remember approval for this project.
+- Use **`[g] Allow always (global)`** to remember approval across all projects on this machine.
 - Use **`[n] Deny`** to block the request.
 
 This keeps one-off actions safe while reducing repetitive prompts when you trust a tool in a broader scope.
