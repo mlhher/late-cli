@@ -43,22 +43,6 @@ try {
     exit 0
 }
 
-# Input sanitization: reject null bytes or absurdly long input.
-if ($command -match '\x00') {
-    $ir = New-IR
-    Add-Unique $ir.risk_flags "syntax_error"
-    $ir.parse_errors.Add("command contains null byte") | Out-Null
-    Write-Output ($ir | ConvertTo-Json -Compress -Depth 3)
-    exit 0
-}
-if ($command.Length -gt 65536) {
-    $ir = New-IR
-    Add-Unique $ir.risk_flags "syntax_error"
-    $ir.parse_errors.Add("command exceeds maximum length") | Out-Null
-    Write-Output ($ir | ConvertTo-Json -Compress -Depth 3)
-    exit 0
-}
-
 $ir = New-IR
 
 # --- Parse ---
@@ -158,7 +142,6 @@ foreach ($node in $allNodes) {
 
     # File redirection (> >>)
     if ($node -is [System.Management.Automation.Language.FileRedirectionAst]) {
-        $loc = $node.Location
         Add-Unique $ir.redirects "FileRedirection"
         Add-Unique $ir.risk_flags "redirect"
         continue

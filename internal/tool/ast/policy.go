@@ -83,12 +83,7 @@ func (p *PolicyEngine) Decide(ir ParsedIR) Decision {
 		// Pure pipe between allow-listed commands — fall through to auto-approve.
 	}
 
-	// 8. Auto-approve carveout: new-path creation.
-	if hasRisk(ir, ReasonNewPath) {
-		return d // NeedsConfirmation=false, IsBlocked=false
-	}
-
-	// 9. Allow-list check: if every command is explicitly allow-listed, approve.
+	// 8. Allow-list check: if every command is explicitly allow-listed, approve.
 	if len(ir.Commands) > 0 && p.allCommandsAllowlisted(ir.Commands) {
 		return d
 	}

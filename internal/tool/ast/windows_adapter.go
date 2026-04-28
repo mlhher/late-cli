@@ -200,7 +200,7 @@ func nilToEmpty(s []string) []string {
 func isKnownReasonCode(rc ReasonCode) bool {
 	switch rc {
 	case ReasonOperator, ReasonRedirect, ReasonExpansion, ReasonSubshell,
-		ReasonInvokeExpr, ReasonCd, ReasonSyntaxError, ReasonNewPath, ReasonAllowlisted:
+		ReasonInvokeExpr, ReasonCd, ReasonSyntaxError, ReasonNewPath:
 		return true
 	}
 	return false

@@ -1,9 +1,6 @@
 package ast
 
-import (
-	"log"
-	"reflect"
-)
+import "log"
 
 // ShadowAnalyzer wraps a legacy CommandAnalyzer and runs the AST pipeline in
 // parallel (shadow mode). It always returns the legacy decision so there is
@@ -11,10 +8,9 @@ import (
 //
 // Wire it in ShellTool.getAnalyzer() when FeatureASTShadow() is true.
 type ShadowAnalyzer struct {
-	legacy          legacyAnalyzer
-	astParser       Parser
-	policy          *PolicyEngine
-	allowedCommands map[string]map[string]bool
+	legacy    legacyAnalyzer
+	astParser Parser
+	policy    *PolicyEngine
 }
 
 // legacyAnalyzer mirrors tool.CommandAnalyzer without importing the tool
@@ -41,10 +37,9 @@ func NewShadowAnalyzer(
 	allowedCommands map[string]map[string]bool,
 ) *ShadowAnalyzer {
 	return &ShadowAnalyzer{
-		legacy:          legacy,
-		astParser:       NewParser(platform, cwd),
-		policy:          &PolicyEngine{AllowedCommands: allowedCommands},
-		allowedCommands: allowedCommands,
+		legacy:    legacy,
+		astParser: NewParser(platform, cwd),
+		policy:    &PolicyEngine{AllowedCommands: allowedCommands},
 	}
 }
 
@@ -61,16 +56,8 @@ func (s *ShadowAnalyzer) Analyze(command string) LegacyAnalysis {
 
 	astDecision := s.policy.Decide(ir)
 
-	legacyNorm := LegacyAnalysis{
-		IsBlocked:         legacyResult.IsBlocked,
-		NeedsConfirmation: legacyResult.NeedsConfirmation,
-	}
-	astNorm := LegacyAnalysis{
-		IsBlocked:         astDecision.IsBlocked,
-		NeedsConfirmation: astDecision.NeedsConfirmation,
-	}
-
-	if !reflect.DeepEqual(legacyNorm, astNorm) {
+	if legacyResult.IsBlocked != astDecision.IsBlocked ||
+		legacyResult.NeedsConfirmation != astDecision.NeedsConfirmation {
 		log.Printf(
 			"[ast/shadow] DELTA command=%q legacy={blocked:%v confirm:%v} ast={blocked:%v confirm:%v} risk_flags=%v",
 			truncate(command, 80),
@@ -89,3 +76,4 @@ func truncate(s string, max int) string {
 	}
 	return s[:max] + "…"
 }
+

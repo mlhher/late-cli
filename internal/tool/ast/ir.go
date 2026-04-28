@@ -57,12 +57,9 @@ const (
 	ReasonSyntaxError ReasonCode = "syntax_error"
 
 	// ReasonNewPath indicates the command creates a new path inside an allowed
-	// root. Used as an auto-approval carveout signal.
+	// root. The policy engine treats this as NeedsConfirmation; callers with
+	// cwd context may downgrade to auto-approve when the target is within scope.
 	ReasonNewPath ReasonCode = "new_path"
-
-	// ReasonAllowlisted indicates the command matched an explicit allow-list
-	// entry and was auto-approved.
-	ReasonAllowlisted ReasonCode = "allowlisted"
 )
 
 // ParsedIR is the compact, JSON-safe intermediate representation emitted by
