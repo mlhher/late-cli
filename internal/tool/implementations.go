@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"late/internal/common"
+	"late/internal/tool/ast"
 )
 
 // ReadFileTool reads content from a file.
@@ -171,11 +172,29 @@ func (t WriteFileTool) CallString(args json.RawMessage) string {
 }
 
 func (t *ShellTool) getAnalyzer(cwd string) CommandAnalyzer {
-	if runtime.GOOS == "windows" {
-		return &PowerShellAnalyzer{Cwd: cwd}
-	}
+	platform := ast.CurrentPlatform()
 	allowed, _ := LoadAllAllowedCommands()
-	return &BashAnalyzer{ProjectAllowedCommands: allowed}
+
+	// Phase 5: AST enforcement — AST pipeline is authoritative.
+	if ast.FeatureASTEnforcement() {
+		return newASTAnalyzer(platform, cwd, allowed)
+	}
+
+	// Build the legacy analyzer for this platform.
+	var legacy CommandAnalyzer
+	if runtime.GOOS == "windows" {
+		legacy = &PowerShellAnalyzer{Cwd: cwd}
+	} else {
+		legacy = &BashAnalyzer{ProjectAllowedCommands: allowed}
+	}
+
+	// Phase 4: AST shadow mode — run AST in parallel, log deltas, return legacy.
+	if ast.FeatureASTShadow() {
+		shadow := ast.NewShadowAnalyzer(&shadowAnalyzerShim{inner: legacy}, platform, cwd, allowed)
+		return &shadowWrapper{shadow: shadow}
+	}
+
+	return legacy
 }
 
 // SaveToAllowList persists a command to the allow-list. Defaults to local scope.
