@@ -258,61 +258,83 @@ func min(a, b int) int {
 	return b
 }
 
-// TestPrune_OrphanedToolCallsRemoved verifies that the structural sanitizer
-// removes assistant messages whose tool_call_ids are not resolved within the
-// tail. This is the exact condition that produces a 400 from OpenAI-compatible
-// APIs when pruning splits a multi-turn tool exchange.
-func TestPrune_OrphanedToolCallsRemoved(t *testing.T) {
-	// Build a history where the last 10 messages contain an assistant message
-	// with tool_calls whose results are NOT in the tail window.
-	var history []client.ChatMessage
+// TestSanitizeTailToolCalls_RemovesUnresolved directly tests the sanitizer
+// function: an assistant message whose tool_call_id has no matching tool result
+// in the tail must be dropped along with any immediately-following tool messages.
+func TestSanitizeTailToolCalls_RemovesUnresolved(t *testing.T) {
+	tail := []client.ChatMessage{
+		{Role: "user", Content: "do something"},
+		{
+			Role: "assistant",
+			ToolCalls: []client.ToolCall{
+				{ID: "call_orphan", Function: client.FunctionCall{Name: "read_file", Arguments: `{"path":"x"}`}},
+			},
+		},
+		// Note: NO tool result for call_orphan — this is the orphan condition.
+		{Role: "user", Content: "follow-up"},
+		{Role: "assistant", Content: "done"},
+	}
 
-	// Fill with 70 clean messages so the tail starts mid-exchange.
-	for i := 0; i < 70; i++ {
-		if i%2 == 0 {
-			history = append(history, client.ChatMessage{Role: "user", Content: fmt.Sprintf("u%d", i)})
-		} else {
-			history = append(history, client.ChatMessage{Role: "assistant", Content: fmt.Sprintf("a%d", i)})
+	result := sanitizeTailToolCalls(tail)
+
+	// The assistant with call_orphan must be removed.
+	for _, m := range result {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				if tc.ID == "call_orphan" {
+					t.Errorf("sanitizer left unresolved tool_call_id %q in tail", tc.ID)
+				}
+			}
 		}
 	}
 
-	// Message 70: assistant with tool_calls (results will NOT be in tail)
-	history = append(history, client.ChatMessage{
-		Role:    "assistant",
-		Content: "",
-		ToolCalls: []client.ToolCall{
-			{ID: "call_orphan", Function: client.FunctionCall{Name: "read_file", Arguments: `{"path":"x"}`}},
-		},
-	})
-	// Message 71: tool result for call_orphan (also NOT in tail of 10)
-	history = append(history, client.ChatMessage{
-		Role:       "tool",
-		ToolCallID: "call_orphan",
-		Content:    "file content",
-	})
+	// The two clean messages (user "follow-up" + assistant "done") must survive.
+	var cleanCount int
+	for _, m := range result {
+		if m.Content == "follow-up" || m.Content == "done" {
+			cleanCount++
+		}
+	}
+	if cleanCount != 2 {
+		t.Errorf("expected 2 clean messages to survive sanitization, got %d (result len=%d)", cleanCount, len(result))
+	}
+}
 
-	// Messages 72–81: clean 10 messages that form the tail
-	history = append(history, client.ChatMessage{Role: "user", Content: "clean start"})
-	history = append(history, client.ChatMessage{
-		Role:    "assistant",
-		Content: "",
-		ToolCalls: []client.ToolCall{
-			{ID: "call_resolved", Function: client.FunctionCall{Name: "bash", Arguments: `{"command":"ls"}`}},
+// TestSanitizeTailToolCalls_KeepsResolved verifies the sanitizer does NOT drop
+// an assistant message when all of its tool_call_ids have matching tool results.
+func TestSanitizeTailToolCalls_KeepsResolved(t *testing.T) {
+	tail := []client.ChatMessage{
+		{Role: "user", Content: "go"},
+		{
+			Role: "assistant",
+			ToolCalls: []client.ToolCall{
+				{ID: "call_ok", Function: client.FunctionCall{Name: "bash", Arguments: `{"command":"ls"}`}},
+			},
 		},
-	})
-	history = append(history, client.ChatMessage{Role: "tool", ToolCallID: "call_resolved", Content: "file.go"})
-	history = append(history, client.ChatMessage{Role: "assistant", Content: "done"})
-	history = append(history, client.ChatMessage{Role: "user", Content: "next"})
-	history = append(history, client.ChatMessage{Role: "assistant", Content: "ok"})
-	history = append(history, client.ChatMessage{Role: "user", Content: "final"})
-	// tail is now exactly 7 messages (72-78); pad to get past the 10-msg window for msg 70
-	// Actual window: last 10 = messages [69..78] → includes msg 70 (assistant orphan) and 71 (tool)
-	// but NOT the tool result "call_orphan" is at msg 71 which IS in the tail...
-	// Let me rebuild so the orphan's RESULT is outside the window.
+		{Role: "tool", ToolCallID: "call_ok", Content: "file.go"},
+		{Role: "assistant", Content: "done"},
+	}
 
-	// Reset and rebuild more carefully:
-	history = nil
-	// 72 base messages
+	result := sanitizeTailToolCalls(tail)
+
+	if len(result) != len(tail) {
+		t.Errorf("expected sanitizer to leave all %d messages intact, got %d", len(tail), len(result))
+	}
+}
+
+// TestPrune_OrphanedToolCallsRemoved verifies that PruneAndRestoreFromDisk
+// removes an assistant message whose tool_calls have no matching tool results
+// in the retained tail window. This exercises the sanitizer via the full prune
+// path with a realistic history shape.
+//
+// Shape: 72 clean alternating messages followed by a single assistant message
+// that has tool_calls but no corresponding tool result (simulates the mid-turn
+// pruning scenario our split heartbeat was designed to prevent).
+// Tail = last 10 = messages 63–72; boundary guard trims the leading assistant
+// (msg 63 is odd → assistant), leaving msgs 64–72; sanitizer then removes
+// msg 72 (unresolved), leaving msgs 64–71 — all clean.
+func TestPrune_OrphanedToolCallsRemoved(t *testing.T) {
+	var history []client.ChatMessage
 	for i := 0; i < 72; i++ {
 		if i%2 == 0 {
 			history = append(history, client.ChatMessage{Role: "user", Content: fmt.Sprintf("u%d", i)})
@@ -320,44 +342,22 @@ func TestPrune_OrphanedToolCallsRemoved(t *testing.T) {
 			history = append(history, client.ChatMessage{Role: "assistant", Content: fmt.Sprintf("a%d", i)})
 		}
 	}
-	// msg[72]: assistant with unresolved tool_call (its result was already committed at msg[71])
-	// The tail = last 10 = msg[63..72]. msg[72] has tool_calls but msg[73] is not yet added.
-	// Actually we need the tool RESULT to be outside (before) the tail window.
-	// Tail starts at len-10. Insert assistant+tool at positions that put the result outside:
-	// Insert at positions 60 and 61 (assistant+tool), then fill to 82 messages.
-	history = nil
-	for i := 0; i < 60; i++ {
-		if i%2 == 0 {
-			history = append(history, client.ChatMessage{Role: "user", Content: fmt.Sprintf("u%d", i)})
-		} else {
-			history = append(history, client.ChatMessage{Role: "assistant", Content: fmt.Sprintf("a%d", i)})
-		}
-	}
-	// pos 60: assistant with tool_calls (result will be pos 61 — outside tail window)
+	// pos 72: assistant with tool_calls — no tool result will ever be added.
 	history = append(history, client.ChatMessage{
 		Role: "assistant",
 		ToolCalls: []client.ToolCall{
-			{ID: "call_outside", Function: client.FunctionCall{Name: "read_file", Arguments: `{"path":"f"}`}},
+			{ID: "call_orphan", Function: client.FunctionCall{Name: "read_file", Arguments: `{"path":"f"}`}},
 		},
 	})
-	// pos 61: tool result (this will be OUTSIDE the last-10 window when total len >= 72)
-	history = append(history, client.ChatMessage{Role: "tool", ToolCallID: "call_outside", Content: "data"})
-	// pos 62-81: 20 more clean messages (so tail = last 10 = pos 72-81, cutting out pos 61)
-	for i := 0; i < 20; i++ {
-		if i%2 == 0 {
-			history = append(history, client.ChatMessage{Role: "user", Content: fmt.Sprintf("tail-u%d", i)})
-		} else {
-			history = append(history, client.ChatMessage{Role: "assistant", Content: fmt.Sprintf("tail-a%d", i)})
-		}
-	}
+	// Total: 73 messages. Tail (last 10) = msgs 63–72, which includes the
+	// unresolved assistant at 72 but contains no tool result for call_orphan.
 
 	sess, _ := newTestSession(t, history, "")
 	if err := sess.PruneAndRestoreFromDisk(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify no message references an unresolved tool_call_id.
-	// Build the set of tool_call_ids that have results in the pruned history.
+	// No assistant message in pruned history may have an unresolved tool_call_id.
 	resolvedIDs := map[string]bool{}
 	for _, m := range sess.History {
 		if m.Role == "tool" && m.ToolCallID != "" {
@@ -374,8 +374,15 @@ func TestPrune_OrphanedToolCallsRemoved(t *testing.T) {
 		}
 	}
 
-	// Verify history still starts with user role.
+	// History must start with a user message.
 	if len(sess.History) > 0 && sess.History[0].Role != "user" {
 		t.Errorf("expected first message role 'user', got %q", sess.History[0].Role)
+	}
+
+	// The orphaned assistant must not appear at all.
+	for _, m := range sess.History {
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 && m.ToolCalls[0].ID == "call_orphan" {
+			t.Error("sanitizer failed: orphaned assistant message still present after prune")
+		}
 	}
 }

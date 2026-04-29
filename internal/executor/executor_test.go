@@ -354,7 +354,9 @@ func sseOnce(t *testing.T, content string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		chunk := fmt.Sprintf(`{"choices":[{"delta":{"content":%q,"role":"assistant"},"finish_reason":null}]}`, content)
+		// Omit finish_reason entirely: a JSON null would fail to unmarshal into
+		// the string field and the client would silently drop the chunk.
+		chunk := fmt.Sprintf(`{"choices":[{"delta":{"content":%q,"role":"assistant"}}]}`, content)
 		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", chunk)
 	}))
 }

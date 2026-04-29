@@ -56,6 +56,13 @@ func NewSubagentOrchestrator(
 	// Subagents should not persist their history to the sessions directory
 	sess := session.New(c, "", []client.ChatMessage{}, systemPrompt, true)
 
+	// Inherit context recovery setting from parent so subagents also prune
+	// when --context-rot is active. Without this, each subagent slot fills
+	// independently and produces the same 400 errors the flag was built to prevent.
+	if p, ok := parent.(*orchestrator.BaseOrchestrator); ok {
+		sess.ContextRecoveryEnabled = p.Session().ContextRecoveryEnabled
+	}
+
 	// Inherit all tools from parent (including MCP tools)
 	if parent != nil && parent.Registry() != nil {
 		for _, t := range parent.Registry().All() {

@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -208,7 +209,7 @@ func main() {
 
 	// ── Session ───────────────────────────────────────────────────────────────
 	const systemPrompt = "You are a helpful coding assistant. Answer concisely."
-	histPath := fmt.Sprintf("/tmp/late-test-session-%d.json", time.Now().UnixMilli())
+	histPath := filepath.Join(os.TempDir(), fmt.Sprintf("late-test-session-%d.json", time.Now().UnixMilli()))
 	history := make([]client.ChatMessage, 0, *prefill)
 
 	if *prefill > 0 {

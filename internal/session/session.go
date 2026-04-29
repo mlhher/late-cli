@@ -288,10 +288,11 @@ func (s *Session) IsLlamaCPP() bool {
 	return s.client.IsLlamaCPP()
 }
 
-// PruneAndRestoreFromDisk performs a deterministic context-recovery reset.
-// It preserves the last 10 messages (trimmed to a clean user-turn boundary),
-// optionally re-injects the on-disk implementation plan, and syncs to disk.
-// s.systemPrompt is never touched; StartStream re-injects it automatically.
+// PruneAndRestoreFromDisk performs a deterministic eight-step context-recovery
+// reset: steps 1–4 extract and sanitize the last 10 messages down to a clean
+// user-turn boundary, step 5 resets history, step 6 optionally re-injects the
+// on-disk mission plan, step 7 restores the sanitized tail, step 8 syncs to
+// disk. s.systemPrompt is never touched; StartStream re-injects it automatically.
 func (s *Session) PruneAndRestoreFromDisk() error {
 	// 1. Tail extraction: capture last 10 messages.
 	tail := make([]client.ChatMessage, len(s.History[max(0, len(s.History)-10):]))
@@ -329,7 +330,15 @@ func (s *Session) PruneAndRestoreFromDisk() error {
 	s.History = append(s.History, tail...)
 
 	// 8. Persistence sync: write the pruned history to disk immediately.
-	return s.saveAndNotify()
+	// We bypass saveAndNotify() here because it skips saving when len(History)==0,
+	// which would leave a stale on-disk history after a prune that trims everything.
+	if s.HistoryPath == "" {
+		return nil // subagents don't persist history
+	}
+	if err := SaveHistory(s.HistoryPath, s.History); err != nil {
+		return err
+	}
+	return s.UpdateSessionMetadata()
 }
 
 // sanitizeTailToolCalls removes assistant messages whose tool_calls are not
