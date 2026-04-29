@@ -42,6 +42,7 @@ func main() {
 	appendSystemPromptReq := flag.String("append-system-prompt", "", "Append text to the system prompt after processing")
 	versionReq := flag.Bool("version", false, "Show version")
 	unsupervisedReq := flag.Bool("i-promise-i-have-backups-and-will-not-file-issues", false, "Unsupported: Execute all tools without supervision. Do not use this, bad things will happen. You have been warned.")
+	contextRotReq := flag.Bool("context-rot", false, "Enable experimental context recovery: auto-prune history and restore from disk when the context window approaches its limit")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of late:\n")
@@ -212,6 +213,7 @@ func main() {
 	}
 
 	sess := session.New(c, historyPath, history, systemPrompt, *useToolsReq)
+	sess.ContextRecoveryEnabled = *contextRotReq
 	executor.RegisterTools(sess.Registry, enabledTools, true)
 
 	// Register MCP tools into the session registry

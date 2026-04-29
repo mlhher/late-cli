@@ -109,14 +109,13 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 	// Inject orchestrator ID into context for tool interactions
 	ctx = context.WithValue(ctx, common.OrchestratorIDKey, o.id)
 
-	if err := o.sess.AddUserMessage(text); err != nil {
-		return "", err
+	if text != "" {
+		if err := o.sess.AddUserMessage(text); err != nil {
+			return "", err
+		}
 	}
 
 	o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
-	defer func() {
-		o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"}
-	}()
 
 	// Build extra body
 	var extraBody map[string]any

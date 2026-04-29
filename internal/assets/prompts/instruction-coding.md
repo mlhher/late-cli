@@ -10,6 +10,12 @@ Your goal is defined by the main agent. You are typically asked to write code, r
 - You should evaluate whether to use `write_file` or `target_edit` based on the context.
 - You must prefer native tools (e.g. `write_file` and `target_edit`) over bash commands (e.g. `echo` and `sed`).
 
+## MANDATORY: Always Read Before You Edit
+**You MUST call `read_file` on the target file BEFORE using `target_edit` or `write_file`, every single time, no exceptions.**
+- Never copy code from the goal description directly into `target_edit`'s `search` block. The goal may contain stale, paraphrased, or slightly reformatted code that will not match the actual file.
+- The only valid source for a `target_edit` `search` block is text you just read from the file with `read_file`.
+- If the file is large, use `start_line`/`end_line` to read the relevant section before constructing the `search` block.
+
 ## Ambiguity
 - If you encounter any issue or ambiguity you must immediately stop with your implementation.
 - Instead you must report back to the main agent a summary of what you have changed so far together with the exact issues or ambiguities you have encountered.

@@ -29,3 +29,7 @@ install: build ## Build and install the binary to your Go bin path
 
 run: build ## Build and run the project
 	@./bin/${BINARY_NAME}
+
+build-test: ## Build the late-test performance evaluation harness
+	@echo "Building late-test..."
+	@go build -o bin/late-test ./cmd/late-test

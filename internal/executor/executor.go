@@ -10,6 +10,7 @@ import (
 	"late/internal/skill"
 	"late/internal/session"
 	"late/internal/tool"
+	"log"
 )
 
 // --- Stream Accumulator ---
@@ -247,6 +248,20 @@ func RunLoop(
 			onEndTurn()
 		}
 
+		// Context health heartbeat — no-tool path (opt-in via --context-rot):
+		// Safe to prune here because no tool calls are pending; history is
+		// in a fully consistent state (assistant reply just committed).
+		if sess.ContextRecoveryEnabled && len(acc.ToolCalls) == 0 {
+			maxCtx := sess.Client().ContextSize()
+			isTokenOverflow := maxCtx > 0 && float64(acc.Usage.PromptTokens)/float64(maxCtx) > 0.75
+			isMsgOverflow := len(sess.History) > 80
+			if isTokenOverflow || isMsgOverflow {
+				if err := sess.PruneAndRestoreFromDisk(); err != nil {
+					log.Printf("context recovery warning: %v", err)
+				}
+			}
+		}
+
 		if len(acc.ToolCalls) == 0 {
 			return acc.Content, nil
 		}
@@ -269,6 +284,22 @@ func RunLoop(
 		case <-ctx.Done():
 			return lastContent + "\n\n(Stopped by user)", nil
 		default:
+		}
+
+		// Context health heartbeat — tool path (opt-in via --context-rot):
+		// Pruning fires HERE (after ExecuteToolCalls) so that every tool result
+		// from this turn is already committed before the tail is rebuilt.
+		// Pruning before ExecuteToolCalls would add orphaned tool results for
+		// a now-absent assistant message, producing a 400 from the API.
+		if sess.ContextRecoveryEnabled {
+			maxCtx := sess.Client().ContextSize()
+			isTokenOverflow := maxCtx > 0 && float64(acc.Usage.PromptTokens)/float64(maxCtx) > 0.75
+			isMsgOverflow := len(sess.History) > 80
+			if isTokenOverflow || isMsgOverflow {
+				if err := sess.PruneAndRestoreFromDisk(); err != nil {
+					log.Printf("context recovery warning: %v", err)
+				}
+			}
 		}
 	}
 

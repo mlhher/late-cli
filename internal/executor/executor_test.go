@@ -2,9 +2,12 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"late/internal/client"
 	"late/internal/common"
 	"late/internal/session"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -342,5 +345,82 @@ func TestRegisterTools_Planning(t *testing.T) {
 	}
 	if sess.Registry.Get("bash") == nil {
 		t.Error("bash should be registered in planning mode")
+	}
+}
+
+// sseOnce returns an httptest.Server that serves a single SSE chunk with the
+// given content followed by [DONE]. Suitable for driving one RunLoop turn.
+func sseOnce(t *testing.T, content string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		chunk := fmt.Sprintf(`{"choices":[{"delta":{"content":%q,"role":"assistant"},"finish_reason":null}]}`, content)
+		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", chunk)
+	}))
+}
+
+// newRunLoopSession creates a session backed by sseServer with n pre-filled
+// alternating user/assistant messages. history.json is written to t.TempDir().
+func newRunLoopSession(t *testing.T, srv *httptest.Server, n int) *session.Session {
+	t.Helper()
+	msgs := make([]client.ChatMessage, n)
+	for i := range msgs {
+		if i%2 == 0 {
+			msgs[i] = client.ChatMessage{Role: "user", Content: fmt.Sprintf("user %d", i)}
+		} else {
+			msgs[i] = client.ChatMessage{Role: "assistant", Content: fmt.Sprintf("assistant %d", i)}
+		}
+	}
+	c := client.NewClient(client.Config{BaseURL: srv.URL})
+	histPath := filepath.Join(t.TempDir(), "history.json")
+	return session.New(c, histPath, msgs, "", false)
+}
+
+// TestRunLoop_ContextRecovery_Disabled verifies that when ContextRecoveryEnabled
+// is false (the default), a history exceeding the 80-message ceiling is NOT
+// pruned — RunLoop leaves history untouched.
+func TestRunLoop_ContextRecovery_Disabled(t *testing.T) {
+	srv := sseOnce(t, "response")
+	defer srv.Close()
+
+	const prefill = 82
+	sess := newRunLoopSession(t, srv, prefill)
+	sess.ContextRecoveryEnabled = false // explicit default
+
+	_, err := RunLoop(context.Background(), sess, 1, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("RunLoop error: %v", err)
+	}
+
+	// History grows by 1 (the assistant reply) — it is never pruned.
+	if len(sess.History) <= prefill {
+		t.Errorf("expected history > %d (no prune), got %d", prefill, len(sess.History))
+	}
+	if len(sess.History) < prefill {
+		t.Errorf("history was pruned despite ContextRecoveryEnabled=false: got %d messages", len(sess.History))
+	}
+}
+
+// TestRunLoop_ContextRecovery_Enabled verifies that when ContextRecoveryEnabled
+// is true, a history exceeding the 80-message ceiling IS pruned after the turn.
+func TestRunLoop_ContextRecovery_Enabled(t *testing.T) {
+	srv := sseOnce(t, "response")
+	defer srv.Close()
+
+	const prefill = 82
+	sess := newRunLoopSession(t, srv, prefill)
+	sess.ContextRecoveryEnabled = true
+
+	_, err := RunLoop(context.Background(), sess, 1, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("RunLoop error: %v", err)
+	}
+
+	// PruneAndRestoreFromDisk keeps at most 10 tail messages.
+	if len(sess.History) > 10 {
+		t.Errorf("expected history <= 10 after recovery, got %d", len(sess.History))
+	}
+	if len(sess.History) == 0 {
+		t.Error("history is empty after recovery; expected tail to be retained")
 	}
 }

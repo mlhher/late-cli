@@ -7,6 +7,7 @@ import (
 	"late/internal/client"
 	"late/internal/common"
 	"late/internal/tool"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -20,6 +21,10 @@ type Session struct {
 	systemPrompt string
 	useTools     bool
 	Registry     *tool.Registry
+
+	// ContextRecoveryEnabled enables automatic history pruning and disk restore
+	// when the context window approaches its limit. Enable via --context-rot.
+	ContextRecoveryEnabled bool
 }
 
 func New(c *client.Client, historyPath string, history []client.ChatMessage, systemPrompt string, useTools bool) *Session {
@@ -281,4 +286,90 @@ func (s *Session) Client() *client.Client {
 
 func (s *Session) IsLlamaCPP() bool {
 	return s.client.IsLlamaCPP()
+}
+
+// PruneAndRestoreFromDisk performs a deterministic context-recovery reset.
+// It preserves the last 10 messages (trimmed to a clean user-turn boundary),
+// optionally re-injects the on-disk implementation plan, and syncs to disk.
+// s.systemPrompt is never touched; StartStream re-injects it automatically.
+func (s *Session) PruneAndRestoreFromDisk() error {
+	// 1. Tail extraction: capture last 10 messages.
+	tail := make([]client.ChatMessage, len(s.History[max(0, len(s.History)-10):]))
+	copy(tail, s.History[max(0, len(s.History)-10):])
+
+	// 2. Boundary guard: trim leading non-user messages.
+	for len(tail) > 0 && tail[0].Role != "user" {
+		tail = tail[1:]
+	}
+
+	// 3. Structural sanitizer: remove any assistant message whose tool_calls
+	// are not fully resolved within the tail. This prevents 400 errors caused
+	// by orphaned tool_call_ids when the tail window splits a tool exchange.
+	tail = sanitizeTailToolCalls(tail)
+
+	// 4. Re-apply boundary guard in case sanitization exposed a new non-user head.
+	for len(tail) > 0 && tail[0].Role != "user" {
+		tail = tail[1:]
+	}
+
+	// 5. History reset (s.systemPrompt is a separate field and is unaffected).
+	s.History = []client.ChatMessage{}
+
+	// 6. Mission injection: read implementation_plan.md from CWD.
+	if planBytes, err := os.ReadFile("implementation_plan.md"); err == nil {
+		if len(planBytes) < 8000 {
+			s.History = append(s.History, client.ChatMessage{
+				Role:    "user",
+				Content: "RESTORED MISSION PLAN: " + string(planBytes),
+			})
+		}
+	}
+
+	// 7. Continuity restoration: re-append the sanitized tail.
+	s.History = append(s.History, tail...)
+
+	// 8. Persistence sync: write the pruned history to disk immediately.
+	return s.saveAndNotify()
+}
+
+// sanitizeTailToolCalls removes assistant messages whose tool_calls are not
+// fully resolved within tail (i.e. the corresponding tool results were cut
+// by the 10-message window). Sending unresolved tool_calls to an OpenAI-
+// compatible API produces a 400 error.
+func sanitizeTailToolCalls(tail []client.ChatMessage) []client.ChatMessage {
+	// Build the set of tool_call_ids that have results present in the tail.
+	resolved := make(map[string]bool)
+	for _, m := range tail {
+		if m.Role == "tool" && m.ToolCallID != "" {
+			resolved[m.ToolCallID] = true
+		}
+	}
+
+	var result []client.ChatMessage
+	i := 0
+	for i < len(tail) {
+		m := tail[i]
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			// Check every tool call in this assistant turn is resolved.
+			allResolved := true
+			for _, tc := range m.ToolCalls {
+				if !resolved[tc.ID] {
+					allResolved = false
+					break
+				}
+			}
+			if !allResolved {
+				// Drop this assistant message and any immediately following
+				// tool messages that belong to it.
+				i++
+				for i < len(tail) && tail[i].Role == "tool" {
+					i++
+				}
+				continue
+			}
+		}
+		result = append(result, m)
+		i++
+	}
+	return result
 }
