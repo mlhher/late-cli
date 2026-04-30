@@ -17,9 +17,6 @@ type snapshotEntry struct {
 var unixCorpus = []snapshotEntry{
 	{"ls", false, false},
 	{"ls -la", false, false},
-	// KNOWN SHADOW DELTA: legacy BashAnalyzer rejects -rt (not in flag allowlist).
-	// The AST policy engine does not perform flag-level validation; flag granularity
-	// is a legacy-layer concern. This delta is expected and logged in shadow mode.
 	{"ls -rt", false, false},
 	{"date", false, false},
 	{"echo 'hello world'", false, false},
@@ -44,7 +41,7 @@ func TestUnixCorpusSnapshot(t *testing.T) {
 	p := &UnixParser{}
 	pe := &PolicyEngine{
 		AllowedCommands: map[string]map[string]bool{
-			"ls":   {},
+			"ls":   {"-la": true, "-rt": true},
 			"grep": {},
 			"pwd":  {},
 			"date": {},
