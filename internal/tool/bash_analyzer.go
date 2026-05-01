@@ -289,7 +289,7 @@ func isNumericFlag(s string) bool {
 	return true
 }
 
-func (b *BashAnalyzer) validateTier2(cmd string, args []*syntax.Word, subcommands map[string]map[string]bool) bool {
+func (b *BashAnalyzer) validateTier2(_ string, args []*syntax.Word, subcommands map[string]map[string]bool) bool {
 	if len(args) == 0 {
 		return true // Just the base command is help
 	}
