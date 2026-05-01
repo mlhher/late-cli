@@ -1,8 +1,27 @@
 package tool
 
 import (
+	"strings"
 	"late/internal/tool/ast"
 )
+
+// extractTargetPath extracts the target path from a command for unsupervised
+// mode validation. Returns empty string if unable to extract.
+func extractTargetPath(command string, platform ast.Platform) string {
+	if platform == ast.PlatformWindows {
+		return extractPowerShellTargetPath(command)
+	}
+	// Unix: extract mkdir target from simple commands like "mkdir foo"
+	tokens := strings.Fields(strings.TrimSpace(command))
+	if len(tokens) < 2 {
+		return ""
+	}
+	cmd := strings.ToLower(tokens[0])
+	if cmd == "mkdir" {
+		return tokens[1]
+	}
+	return ""
+}
 
 // astAnalyzer wraps the ast pipeline and implements CommandAnalyzer so it can
 // be dropped into ShellTool.getAnalyzer as a drop-in replacement (Phase 5).
@@ -42,10 +61,13 @@ func (a *astAnalyzer) Analyze(command string) CommandAnalysis {
 
 	// Unsupervised mode: PolicyEngine conservatively requires confirmation for
 	// mkdir/New-Item (it has no cwd context). Here we auto-approve new-path
-	// operations on Windows without scope restriction.
-	if d.NeedsConfirmation && !d.IsBlocked && ir.Platform == ast.PlatformWindows {
+	// operations on all platforms, but only if the target doesn't already exist.
+	if d.NeedsConfirmation && !d.IsBlocked {
 		if ast.HasRiskOnly(ir, ast.ReasonNewPath) {
-			return CommandAnalysis{NeedsConfirmation: false}
+			target := extractTargetPath(command, ir.Platform)
+			if target != "" && isNewPath(target, a.cwd) {
+				return CommandAnalysis{NeedsConfirmation: false}
+			}
 		}
 	}
 
