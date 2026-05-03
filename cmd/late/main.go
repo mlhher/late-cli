@@ -57,6 +57,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  worktree remove <path>           Remove a worktree\n")
 		fmt.Fprintf(os.Stderr, "  worktree active        Show current worktree\n\n")
 		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\n🌟 Enjoying Late? Consider leaving a star on GitHub: https://github.com/mlhher/late-cli\n")
 	}
 	flag.Parse()
 	if *versionReq {
@@ -271,6 +272,11 @@ func main() {
 			if err != nil {
 				return "", err
 			}
+
+			if child.IsStopRequested() {
+				return fmt.Sprintf("The subagent task was explicitly cancelled by the user. Final output before cancellation:\n\n%s", res), nil
+			}
+
 			return fmt.Sprintf("The subagent successfully completed its task. Final result:\n\n%s", res), nil
 		}
 

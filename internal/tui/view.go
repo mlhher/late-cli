@@ -117,12 +117,8 @@ func (m *Model) statusBarView() string {
 
 	// Add hierarchy hints
 	var hierarchyHint string
-	if m.Focused.Parent() != nil {
-		hierarchyHint = lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("Esc"), statusTextStyle.Render(" Back "))
-	}
 	if len(m.Focused.Children()) > 0 {
-		hNext := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("Tab"), statusTextStyle.Render(" Subagents "))
-		hierarchyHint = lipgloss.JoinHorizontal(lipgloss.Left, hierarchyHint, hNext)
+		hierarchyHint = lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("Tab"), statusTextStyle.Render(" Subagents "))
 	}
 
 	// Token count display (after status, before space)

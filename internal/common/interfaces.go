@@ -19,6 +19,7 @@ type Orchestrator interface {
 	Execute(text string) (string, error)
 	Reset() error
 	Cancel()
+	IsStopRequested() bool
 	Events() <-chan Event
 	History() []client.ChatMessage
 	Context() context.Context
@@ -94,10 +95,10 @@ type InputProvider interface {
 type contextKey string
 
 const (
-	InputProviderKey  contextKey = "input_provider"
-	OrchestratorIDKey contextKey = "orchestrator_id"
+	InputProviderKey    contextKey = "input_provider"
+	OrchestratorIDKey   contextKey = "orchestrator_id"
 	SkipConfirmationKey contextKey = "skip_confirmation"
-	ToolApprovalKey    contextKey = "tool_approval"
+	ToolApprovalKey     contextKey = "tool_approval"
 )
 
 // GetInputProvider returns the InputProvider from the context.

@@ -23,9 +23,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		vpCmd tea.Cmd
 	)
 
-	// Global Key Handling (Ctrl+C)
+	// Global Key Handling (Ctrl+C, Ctrl+D)
 	if msg, ok := msg.(tea.KeyMsg); ok {
-		if msg.String() == "ctrl+c" {
+		if msg.String() == "ctrl+c" || msg.String() == "ctrl+d" {
 			return m, tea.Quit
 		}
 	}
@@ -70,6 +70,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Update Sub-models
 	if forwardToInput {
 		m.Input, tiCmd = m.Input.Update(msg)
+		// Prevent cursor from moving before the "> " prompt on the first line
+		if m.Input.Line() == 0 && m.Input.Column() < 2 {
+			m.Input.SetCursorColumn(2)
+		}
 
 		if !strings.HasPrefix(m.Input.Value(), "> ") {
 			val := m.Input.Value()
@@ -126,14 +130,14 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 	case tea.KeyMsg:
 		focusedState := m.GetAgentState(m.Focused.ID())
 		switch msg.String() {
-		case "esc":
-			if m.Mode != ViewChat {
+		case "esc", "ctrl+g":
+			if msg.String() == "esc" && m.Mode != ViewChat {
 				m.Mode = ViewChat
 				focusedState.RenderedHistory = nil
 				m.updateViewport()
 				return m, nil
 			}
-			return m, tea.Quit
+			return m.interruptFocusedAgent()
 
 		case "enter":
 			input := strings.TrimPrefix(m.Input.Value(), "> ")
@@ -174,6 +178,36 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				m.updateViewport()
 				return m, nil
 			}
+
+		case "alt+enter":
+			m.Input.InsertString("\n")
+			return m, nil
+
+		case "shift+home":
+			m.Viewport.GotoTop()
+			m.updateViewport()
+			return m, nil
+
+		case "shift+end":
+			m.Viewport.GotoBottom()
+			m.updateViewport()
+			return m, nil
+
+		case "home":
+			if strings.TrimPrefix(m.Input.Value(), "> ") == "" {
+				m.Viewport.GotoTop()
+				m.updateViewport()
+				return m, nil
+			}
+			return m, nil
+
+		case "end":
+			if strings.TrimPrefix(m.Input.Value(), "> ") == "" {
+				m.Viewport.GotoBottom()
+				m.updateViewport()
+				return m, nil
+			}
+			return m, nil
 
 		case "tab":
 			// Allow focus switching regardless of agent state
@@ -226,27 +260,6 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				return m, nil
 			}
 
-		case "ctrl+g":
-			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil {
-				focusedState.PendingConfirm.ResultCh <- "n"
-				focusedState.PendingConfirm = nil
-				focusedState.PendingStop = true
-				focusedState.State = StateStopping
-				focusedState.StatusText = "Stopping..."
-				focusedState.TokenCount = 0
-				m.Focused.Cancel()
-				m.updateViewport()
-				return m, nil
-			}
-			if focusedState.State == StateThinking || focusedState.State == StateStreaming {
-				focusedState.PendingStop = true
-				focusedState.State = StateStopping
-				focusedState.StatusText = "Stopping..."
-				focusedState.TokenCount = 0
-				m.Focused.Cancel()
-				m.updateViewport()
-				return m, nil
-			}
 		}
 
 	case OrchestratorEventMsg:
@@ -395,4 +408,29 @@ func (m *Model) updateLayout() {
 	m.Viewport.SetHeight(vHeight)
 
 	m.updateViewport()
+}
+
+func (m Model) interruptFocusedAgent() (Model, tea.Cmd) {
+	focusedState := m.GetAgentState(m.Focused.ID())
+	if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil {
+		focusedState.PendingConfirm.ResultCh <- "n"
+		focusedState.PendingConfirm = nil
+		focusedState.PendingStop = true
+		focusedState.State = StateStopping
+		focusedState.StatusText = "Stopping..."
+		focusedState.TokenCount = 0
+		m.Focused.Cancel()
+		m.updateViewport()
+		return m, nil
+	}
+	if focusedState.State == StateThinking || focusedState.State == StateStreaming {
+		focusedState.PendingStop = true
+		focusedState.State = StateStopping
+		focusedState.StatusText = "Stopping..."
+		focusedState.TokenCount = 0
+		m.Focused.Cancel()
+		m.updateViewport()
+		return m, nil
+	}
+	return m, nil
 }

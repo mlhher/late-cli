@@ -47,12 +47,15 @@ Late is a terminal UI with three areas: the **chat viewport** (scrollable histor
 
 | Key | Action |
 | --- | --- |
-| `Enter` | Send your message |
-| `↑` `↓` `PgUp` `PgDn` | Scroll the chat viewport |
+| `Enter` | Send your message (`Alt+Enter` for a new line) |
+| `↑` `↓` `PgUp` `PgDn` | Scroll chat viewport |
+| `Home` / `End` | Move cursor to line start/end (scrolls chat viewport if input is empty) |
+| `Shift+Home/End` | Scroll chat viewport to top/bottom |
 | `Tab` | Switch between agent tabs (orchestrator ↔ subagents) |
-| `y` / `n` | Approve or deny a tool call when prompted |
-| `Ctrl+G` | Stop the current agent (cancel generation) |
-| `Esc` / `Ctrl+C` | Quit Late |
+| `Esc` / `Ctrl+G` | Stop the current agent (cancel generation) |
+| `Ctrl+D` / `Ctrl+C` | Quit Late |
+
+> **Tip:** Late supports standard terminal editing like `Alt+Arrows` (word jump), `Ctrl+A/E` (start/end), and `Alt+Backspace/Del` (delete word).
 
 ### Agent Tabs
 
@@ -63,7 +66,7 @@ When Late spawns subagents, each one gets its own tab. Use `Tab` to cycle throug
 
 The status bar at the bottom shows which agent you're currently viewing and its state (Idle, Thinking, Streaming, etc.).
 
-> **Tip:** If a subagent seems stuck, switch to it with `Tab` to see what it's doing. You can stop it with `Ctrl+G` without affecting the orchestrator.
+> **Tip:** If a subagent seems stuck, switch to it with `Tab` to see what it's doing. You can stop it with `Esc` or `Ctrl+G` without affecting the orchestrator.
 
 ## How to Give Good Instructions
 

@@ -1,5 +1,7 @@
 # Late: High-Leverage AI Agent Orchestration
 
+[![GitHub Stars](https://img.shields.io/github/stars/mlhher/late-cli?style=social)](https://github.com/mlhher/late-cli/stargazers)
+
 **Late** (Lightweight AI Terminal Environment) is a deterministic coding agent orchestrator designed to give a solo developer the execution throughput of an entire engineering team.
 
 Standard AI coding assistants dump massive contexts into a single window, leading to token bloat, amnesia, hallucinations and degraded ability. **Late solves this by mirroring real engineering teams:** a Lead Architect orchestrator maps the codebase and spawns ephemeral, isolated subagents to execute perfect, exact-match code edits.
@@ -74,6 +76,8 @@ late
 ```
 
 📖 Next Steps: See the **[Quickstart Guide](docs/quickstart.md)** for advanced setup (e.g. API keys, subagent models, persistent configuration), keyboard shortcuts, and more features (including MCP integration).
+
+> 🌟 **Are you finding Late useful?** If Late is helping you build things, consider leaving a star on [GitHub](https://github.com/mlhher/late-cli) so other developers can find it.
 
 ## 🔨 Build from Source
 
