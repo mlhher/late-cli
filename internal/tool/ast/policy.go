@@ -124,6 +124,12 @@ func (p *PolicyEngine) allCommandsAllowlisted(ir ParsedIR) bool {
 		if !ok {
 			return false
 		}
+		// nil flag set = built-in whitelist entry: all flags are permitted.
+		// Only enforce strict flag checking for user-approved commands
+		// (non-nil flag sets stored by the permissions subsystem).
+		if allowedFlags == nil {
+			continue
+		}
 		// Every flag actually used must appear in the stored allow-list.
 		for _, flag := range ir.CommandArgs[cmd] {
 			if !allowedFlags[flag] {

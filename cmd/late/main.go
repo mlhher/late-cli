@@ -226,6 +226,14 @@ func main() {
 		sess.Registry.Register(t)
 	}
 
+	// Log archive compaction startup status (Phase 7 bootstrap).
+	if appConfig != nil && appConfig.IsArchiveCompactionEnabled() {
+		settings := appConfig.ArchiveCompactionSettings()
+		fmt.Fprintf(os.Stderr, "[late] archive compaction enabled (threshold=%d, keepRecent=%d)\n",
+			settings.CompactionThresholdMessages, settings.KeepRecentMessages)
+		_ = tool.RegisterArchiveTools // referenced to ensure linkage; actual registration done at pre-run hook
+	}
+
 	// Initialize common renderer
 	renderer, _ := glamour.NewTermRenderer(
 		glamour.WithStylesFromJSONBytes(tui.LateTheme),

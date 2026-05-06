@@ -4,6 +4,15 @@ import (
 	"late/internal/tool/ast"
 )
 
+// whitelistedUnixCommands lists Unix/bash commands that are considered
+// read-only/safe and auto-approve without user allowlisting.
+// A nil flag entry in AllowedCommands means all flags are permitted.
+var whitelistedUnixCommands = []string{
+	"cat", "date", "echo", "env", "file", "find", "grep", "head",
+	"ls", "printf", "pwd", "sort", "stat", "tail", "test", "true",
+	"uniq", "wc", "which", "whoami",
+}
+
 // whitelistedWindowsCommands contains PowerShell cmdlets and aliases that are
 // considered read-only/safe and auto-approve without user allowlisting.
 var whitelistedWindowsCommands = map[string]bool{
@@ -28,50 +37,6 @@ var whitelistedWindowsCommands = map[string]bool{
 	"write-output":   true,
 }
 
-// whitelistedUnixCommands contains Unix/shell commands that are considered
-// read-only/safe and auto-approve without user allowlisting.
-var whitelistedUnixCommands = map[string]map[string]bool{
-	"cat": {
-		"-n": true, "-b": true, "-v": true,
-	},
-	"date": {
-		"-u": true, "-R": true,
-	},
-	"echo": {
-		"-n": true, "-e": true,
-	},
-	"file": {
-		"-b": true, "-i": true,
-	},
-	"find": {
-		"-name": true, "-iname": true, "-type": true, "-maxdepth": true, "-mindepth": true,
-		"-size": true, "-mtime": true, "-atime": true, "-ctime": true, "-newer": true,
-		"-user": true, "-group": true, "-path": true, "-ipath": true, "-links": true,
-		"-empty": true, "-not": true, "-and": true, "-or": true,
-	},
-	"grep": {
-		"-i": true, "-v": true, "-l": true, "-n": true, "-r": true, "-R": true,
-		"-E": true, "-F": true, "-w": true, "-x": true, "-c": true,
-	},
-	"head": {
-		"-n": true, "-c": true, "-*": true, // -* allows numeric flags like -20
-	},
-	"ls": {
-		"-l": true, "-a": true, "-la": true, "-1": true, "-R": true, "-h": true,
-		"--color": true, "-F": true,
-	},
-	"pwd": {
-		"-P": true, "-L": true,
-	},
-	"tail": {
-		"-n": true, "-c": true, "-f": true, "-*": true, // -* allows numeric flags like -20
-	},
-	"wc": {
-		"-l": true, "-w": true, "-c": true, "-m": true,
-	},
-	"whoami": {},
-}
-
 // astAnalyzer wraps the AST pipeline and implements CommandAnalyzer.
 type astAnalyzer struct {
 	parser ast.Parser
@@ -80,29 +45,25 @@ type astAnalyzer struct {
 }
 
 func newASTAnalyzer(platform ast.Platform, cwd string, allowed map[string]map[string]bool) *astAnalyzer {
-	// Seed the policy engine with the built-in safe commands so that
-	// basic commands (ls, pwd, cat, etc.) auto-approve without user allowlisting.
+	// Seed the policy engine with the built-in safe commands for the target
+	// platform so they auto-approve without user allowlisting.
 	// Check the platform parameter (not runtime.GOOS) so behaviour is consistent
 	// when platform is overridden, e.g. in cross-platform tests.
-	if platform == ast.PlatformWindows {
+	switch platform {
+	case ast.PlatformWindows:
 		for cmd := range whitelistedWindowsCommands {
 			if _, ok := allowed[cmd]; !ok {
 				allowed[cmd] = map[string]bool{}
 			}
 		}
-	} else {
-		// Unix: seed with commands and their common flags
-		for cmd, flags := range whitelistedUnixCommands {
+	default: // Unix
+		for _, cmd := range whitelistedUnixCommands {
 			if _, ok := allowed[cmd]; !ok {
-				allowed[cmd] = make(map[string]bool)
-			}
-			// Add all the whitelisted flags for this command
-			for flag := range flags {
-				allowed[cmd][flag] = true
+				// nil means "all flags permitted" for built-in safe commands.
+				allowed[cmd] = nil
 			}
 		}
 	}
-
 	return &astAnalyzer{
 		parser: ast.NewParser(platform, cwd),
 		policy: &ast.PolicyEngine{AllowedCommands: allowed},

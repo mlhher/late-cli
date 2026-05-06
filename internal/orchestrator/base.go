@@ -2,17 +2,17 @@ package orchestrator
 
 import (
 	"context"
-	"encoding/base64"
-	"fmt"
+	"late/internal/archive"
 	"late/internal/client"
 	"late/internal/common"
+	"late/internal/config"
 	"late/internal/executor"
 	"late/internal/session"
-	"net/http"
+	"late/internal/tool"
+	"log"
 	"os"
-	"path/filepath"
-	"strings"
 	"sync"
+	"time"
 )
 
 // BaseOrchestrator implements common.Orchestrator and manages an agent's run loop.
@@ -36,6 +36,15 @@ type BaseOrchestrator struct {
 
 	// Max turns configuration
 	maxTurns int
+
+	// Archive subsystem (nil when compaction is disabled)
+	archiveSub *archiveState
+}
+
+// archiveState holds loaded archive and search service for one session run.
+type archiveState struct {
+	sub *tool.ArchiveSubsystem
+	cfg config.ArchiveCompactionConfig
 }
 
 func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.ToolMiddleware, maxTurns int) *BaseOrchestrator {
@@ -74,19 +83,13 @@ func (o *BaseOrchestrator) MaxTokens() int {
 	return o.sess.Client().ContextSize()
 }
 
-func (o *BaseOrchestrator) SupportsVision() bool {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-	return o.sess.Client().SupportsVision()
-}
-
 func (o *BaseOrchestrator) RefreshContextSize(ctx context.Context) {
 	o.sess.Client().RefreshContextSize(ctx)
 }
 
 func (o *BaseOrchestrator) ID() string { return o.id }
 
-func (o *BaseOrchestrator) Submit(text string, images []string) error {
+func (o *BaseOrchestrator) Submit(text string) error {
 	o.mu.Lock()
 	// Clear any old cancellation state so a new run isn't instantly aborted
 	o.cancel = nil
@@ -96,53 +99,7 @@ func (o *BaseOrchestrator) Submit(text string, images []string) error {
 	}
 	o.mu.Unlock()
 
-	msg := client.ChatMessage{Role: "user", AttachedFiles: images}
-
-	if len(images) == 0 {
-		msg.Content = client.TextContent(text)
-	} else {
-		parts := []client.ContentPart{
-			{Type: client.ContentPartText, Text: text},
-		}
-		supportsVision := o.SupportsVision()
-		for _, imgPath := range images {
-			data, err := os.ReadFile(imgPath)
-			if err != nil {
-				return fmt.Errorf("failed to read file %s: %w", imgPath, err)
-			}
-
-			mimeType := http.DetectContentType(data)
-			// Only attach to LLM content if it's an image AND the model supports vision
-			if strings.HasPrefix(mimeType, "image/") && supportsVision {
-				encoded := base64.StdEncoding.EncodeToString(data)
-				parts = append(parts, client.ContentPart{
-					Type: client.ContentPartImageURL,
-					ImageURL: &client.ImageURL{
-						URL: fmt.Sprintf("data:%s;base64,%s", mimeType, encoded),
-					},
-				})
-			} else {
-				// Treat as text if it looks like text or has a common extension.
-				// If it's an image but the model doesn't support vision, just include a note.
-				content := ""
-				isAttachment := true
-				if strings.HasPrefix(mimeType, "image/") {
-					content = fmt.Sprintf("\nAttached Image: %s (Vision not supported by current model)\n", filepath.Base(imgPath))
-				} else {
-					content = fmt.Sprintf("\nFilename: %s\nContent: ```\n%s\n```\n", filepath.Base(imgPath), string(data))
-				}
-
-				parts = append(parts, client.ContentPart{
-					Type:         client.ContentPartText,
-					Text:         content,
-					IsAttachment: isAttachment,
-				})
-			}
-		}
-		msg.Content = client.MessageContent{Parts: parts}
-	}
-
-	if err := o.sess.AddMessage(msg); err != nil {
+	if err := o.sess.AddUserMessage(text); err != nil {
 		return err
 	}
 
@@ -178,6 +135,9 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 
 	// Build extra body
 	var extraBody map[string]any
+
+	// Pre-run archive compaction hook (fail-open).
+	o.runArchivePreHook()
 
 	onStartTurn := func() {
 		o.RefreshContextSize(ctx)
@@ -246,6 +206,9 @@ func (o *BaseOrchestrator) run() {
 	// Inject orchestrator ID into context for tool interactions
 	ctx = context.WithValue(ctx, common.OrchestratorIDKey, o.id)
 
+	// Pre-run archive compaction hook (fail-open).
+	o.runArchivePreHook()
+
 	onStartTurn := func() {
 		o.RefreshContextSize(ctx)
 		o.mu.Lock()
@@ -293,20 +256,7 @@ func (o *BaseOrchestrator) run() {
 	o.mu.Unlock()
 
 	if err != nil {
-		// If the error is about unsupported image input, roll back the user message
-		// so it doesn't poison the context for future requests.
-		errStr := err.Error()
-		if strings.Contains(errStr, "image input is not supported") ||
-			strings.Contains(errStr, "image_input") ||
-			strings.Contains(errStr, "does not support image") {
-			// Remove the last user message from history
-			if len(o.sess.History) > 0 && o.sess.History[len(o.sess.History)-1].Role == "user" {
-				o.sess.History = o.sess.History[:len(o.sess.History)-1]
-			}
-			o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: fmt.Errorf("image_unsupported")}
-		} else {
-			o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: err}
-		}
+		o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: err}
 	} else {
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"}
 	}
@@ -403,5 +353,116 @@ func (o *BaseOrchestrator) AddChild(child common.Orchestrator) {
 	o.eventCh <- common.ChildAddedEvent{
 		ParentID: o.id,
 		Child:    child,
+	}
+}
+
+// runArchivePreHook runs archive compaction before a run loop if enabled.
+// Fail-open: any error is logged but does not block execution.
+func (o *BaseOrchestrator) runArchivePreHook() {
+	histPath := o.sess.HistoryPath
+	if histPath == "" {
+		return
+	}
+
+	cfg, err := config.LoadConfig()
+	if err != nil || !cfg.IsArchiveCompactionEnabled() {
+		return
+	}
+	settings := cfg.ArchiveCompactionSettings()
+
+	// Phase 8: verify archive file permissions (warn only).
+	archPath := archive.ArchivePath(histPath)
+	if info, statErr := os.Stat(archPath); statErr == nil {
+		if perm := info.Mode().Perm(); perm&0o077 != 0 {
+			log.Printf("[archive] warning: archive file %s has loose permissions (%o); expected 0600", archPath, perm)
+		}
+	}
+
+	var arch *archive.SessionArchive
+	o.mu.Lock()
+	existing := o.archiveSub
+	o.mu.Unlock()
+
+	if existing != nil && existing.sub != nil && existing.sub.Archive != nil {
+		arch = existing.sub.Archive
+	} else {
+		arch, err = archive.Load(archPath, o.id)
+		if err != nil {
+			log.Printf("[archive] failed to load archive for hook: %v", err)
+			return
+		}
+	}
+
+	compactCfg := archive.CompactionConfig{
+		ThresholdMessages:  settings.CompactionThresholdMessages,
+		KeepRecentMessages: settings.KeepRecentMessages,
+		ChunkSize:          settings.ArchiveChunkSize,
+		StaleAfterSeconds:  settings.LockStaleAfterSeconds,
+	}
+
+	log.Printf("[archive] pre-run hook: history=%d msgs, threshold=%d", len(o.sess.History), settings.CompactionThresholdMessages)
+	compactStart := time.Now()
+
+	res, newActive, newArch, err := archive.Compact(
+		histPath, o.id,
+		o.sess.History,
+		arch,
+		compactCfg,
+	)
+	compactDur := time.Since(compactStart)
+
+	if err != nil {
+		log.Printf("[archive] compaction hook error: %v", err)
+		return
+	}
+	if res.LockHeld {
+		log.Printf("[archive] compaction skipped (lock held by another process)")
+	}
+	if !res.NoOp {
+		log.Printf("[archive] compaction complete: archived=%d msgs in %s", res.ArchivedCount, compactDur)
+		o.mu.Lock()
+		o.sess.History = newActive
+		o.mu.Unlock()
+		if err := session.SaveHistory(histPath, newActive); err != nil {
+			log.Printf("[archive] failed to persist compacted history: %v", err)
+		}
+
+		// Phase 8: update session meta counters.
+		metaID := archive.BaseSessionID(histPath)
+		if meta, loadErr := session.LoadSessionMeta(metaID); loadErr == nil && meta != nil {
+			meta.CompactionCount = newArch.CompactionCount
+			meta.ArchivedMessageCount = newArch.ArchivedMessageCount
+			meta.LastCompactionAt = time.Now().UTC()
+			if saveErr := session.SaveSessionMeta(*meta); saveErr != nil {
+				log.Printf("[archive] failed to save session meta counters: %v", saveErr)
+			}
+		}
+	}
+
+	svc := archive.NewSearchService(newArch)
+	if !res.NoOp {
+		svc.MarkDirty()
+	}
+	searchStart := time.Now()
+	_ = svc.Search("", 0, false) // warm the lazy index
+	log.Printf("[archive] search index ready in %s", time.Since(searchStart))
+
+	o.mu.Lock()
+	o.archiveSub = &archiveState{
+		sub: &tool.ArchiveSubsystem{
+			Archive: newArch,
+			Search:  svc,
+		},
+		cfg: settings,
+	}
+	o.mu.Unlock()
+
+	// Register archive tools into session registry (idempotent: only if not already present).
+	reg := o.sess.Registry
+	if reg != nil && reg.Get("search_session_archive") == nil {
+		tool.RegisterArchiveTools(reg, o.archiveSub.sub,
+			settings.ArchiveSearchMaxResults,
+			settings.ArchiveSearchCaseSensitive)
+		log.Printf("[archive] tools registered (search_session_archive, retrieve_archived_message)")
 	}
 }
