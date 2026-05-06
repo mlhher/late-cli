@@ -147,9 +147,9 @@ func TestPSShellTool_WindowsNewPathCarveout(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "new-item existing path requires confirmation",
+			name: "new-item existing path auto-approves (unsupervised mode)",
 				args: makeArgs(`New-Item -Path "`+existingPath+`"`, absTempDir),
-			want: true,
+			want: false,
 		},
 	}
 

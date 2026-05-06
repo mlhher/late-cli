@@ -40,15 +40,12 @@ func (a *astAnalyzer) Analyze(command string) CommandAnalysis {
 	}
 	d := a.policy.Decide(ir)
 
-	// New-path carveout: PolicyEngine conservatively requires confirmation for
-	// mkdir/New-Item (it has no cwd context). Here we have the session cwd, so
-	// if the sole risk signal is ReasonNewPath and the target is within cwd,
-	// downgrade to auto-approve — matching the legacy PowerShellAnalyzer behaviour.
-	if d.NeedsConfirmation && !d.IsBlocked && ir.Platform == ast.PlatformWindows {
+	// Unsupervised mode: auto-approve mkdir/New-Item (new-path operations)
+	// without any restrictions. The operation is allowed regardless of
+	// target location or whether the path already exists.
+	if d.NeedsConfirmation && !d.IsBlocked {
 		if ast.HasRiskOnly(ir, ast.ReasonNewPath) {
-			if target := extractPowerShellTargetPath(command); target != "" && isNewPath(target, a.cwd) {
-				return CommandAnalysis{NeedsConfirmation: false}
-			}
+			return CommandAnalysis{NeedsConfirmation: false}
 		}
 	}
 

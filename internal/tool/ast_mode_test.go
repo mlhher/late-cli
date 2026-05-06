@@ -18,37 +18,38 @@ func skipIfNoPwshTool(t *testing.T) {
 	}
 }
 
-// TestGetAnalyzer_NoFlags verifies the no-flag code path returns the
-// platform-native legacy analyzer on Windows.
-func TestGetAnalyzer_NoFlags(t *testing.T) {
+// TestGetAnalyzer_WindowsAlwaysAST verifies that Windows always uses the AST
+// analyzer regardless of feature flags, now that the legacy PowerShellAnalyzer
+// has been fully migrated to AST.
+func TestGetAnalyzer_WindowsAlwaysAST(t *testing.T) {
 	t.Setenv(ast.EnvASTEnforcement, "")
 	t.Setenv(ast.EnvASTShadow, "")
 
 	tool := &ShellTool{}
 	analyzer := tool.getAnalyzer(t.TempDir())
 
-	if _, ok := analyzer.(*PowerShellAnalyzer); !ok {
-		t.Errorf("expected *PowerShellAnalyzer with no feature flags, got %T", analyzer)
+	if _, ok := analyzer.(*astAnalyzer); !ok {
+		t.Errorf("expected *astAnalyzer on Windows (no legacy fallback), got %T", analyzer)
 	}
 }
 
-// TestGetAnalyzer_ShadowMode verifies that LATE_AST_SHADOW=1 wraps the legacy
-// analyzer in a shadowWrapper without changing behavior/decision flow.
-func TestGetAnalyzer_ShadowMode(t *testing.T) {
+// TestGetAnalyzer_WindowsIgnoresFeatureFlags verifies that Windows always uses
+// the AST analyzer even when LATE_AST_SHADOW is set.
+func TestGetAnalyzer_WindowsIgnoresFeatureFlags(t *testing.T) {
 	t.Setenv(ast.EnvASTShadow, "1")
 	t.Setenv(ast.EnvASTEnforcement, "")
 
 	tool := &ShellTool{}
 	analyzer := tool.getAnalyzer(t.TempDir())
 
-	if _, ok := analyzer.(*shadowWrapper); !ok {
-		t.Errorf("expected *shadowWrapper in shadow mode, got %T", analyzer)
+	if _, ok := analyzer.(*astAnalyzer); !ok {
+		t.Errorf("expected *astAnalyzer on Windows (ignoring feature flags), got %T", analyzer)
 	}
 }
 
-// TestGetAnalyzer_EnforcementMode verifies that LATE_AST_ENFORCEMENT=1 returns
-// an astAnalyzer and that LATE_AST_SHADOW is ignored when enforcement is set.
-func TestGetAnalyzer_EnforcementMode(t *testing.T) {
+// TestGetAnalyzer_WindowsEnforcementMode verifies that LATE_AST_ENFORCEMENT=1
+// still returns an astAnalyzer on Windows (which is the default now).
+func TestGetAnalyzer_WindowsEnforcementMode(t *testing.T) {
 	t.Setenv(ast.EnvASTEnforcement, "1")
 	t.Setenv(ast.EnvASTShadow, "")
 
@@ -56,13 +57,13 @@ func TestGetAnalyzer_EnforcementMode(t *testing.T) {
 	analyzer := tool.getAnalyzer(t.TempDir())
 
 	if _, ok := analyzer.(*astAnalyzer); !ok {
-		t.Errorf("expected *astAnalyzer in enforcement mode, got %T", analyzer)
+		t.Errorf("expected *astAnalyzer on Windows, got %T", analyzer)
 	}
 }
 
-// TestGetAnalyzer_EnforcementTakesPrecedence verifies enforcement wins when
-// both flags are set simultaneously.
-func TestGetAnalyzer_EnforcementTakesPrecedence(t *testing.T) {
+// TestGetAnalyzer_BothFlagsSet verifies that both flags set results in AST
+// (which is the only option on Windows now).
+func TestGetAnalyzer_BothFlagsSet(t *testing.T) {
 	t.Setenv(ast.EnvASTEnforcement, "1")
 	t.Setenv(ast.EnvASTShadow, "1")
 
@@ -70,7 +71,7 @@ func TestGetAnalyzer_EnforcementTakesPrecedence(t *testing.T) {
 	analyzer := tool.getAnalyzer(t.TempDir())
 
 	if _, ok := analyzer.(*astAnalyzer); !ok {
-		t.Errorf("expected *astAnalyzer when both flags set, got %T", analyzer)
+		t.Errorf("expected *astAnalyzer on Windows, got %T", analyzer)
 	}
 }
 

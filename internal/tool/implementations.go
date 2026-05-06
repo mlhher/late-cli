@@ -174,34 +174,25 @@ func (t WriteFileTool) CallString(args json.RawMessage) string {
 func (t *ShellTool) getAnalyzer(cwd string) CommandAnalyzer {
 	platform := ast.CurrentPlatform()
 
-	// Phase 5: AST enforcement — AST pipeline is authoritative.
+	// Windows: always use AST analyzer.
+	if runtime.GOOS == "windows" {
+		allowed, _ := LoadAllAllowedCommands()
+		return newASTAnalyzer(platform, cwd, allowed)
+	}
+
+	// Unix: Phase 5: AST enforcement — AST pipeline is authoritative.
 	if ast.FeatureASTEnforcement() {
 		allowed, _ := LoadAllAllowedCommands()
 		return newASTAnalyzer(platform, cwd, allowed)
 	}
 
-	// Build the legacy analyzer for this platform.
-	var legacy CommandAnalyzer
-	if runtime.GOOS == "windows" {
-		legacy = &PowerShellAnalyzer{Cwd: cwd}
-	} else {
-		allowed, _ := LoadAllAllowedCommands()
-		legacy = &BashAnalyzer{ProjectAllowedCommands: allowed}
-	}
+	// Unix: Build the legacy analyzer.
+	allowed, _ := LoadAllAllowedCommands()
+	legacy := &BashAnalyzer{ProjectAllowedCommands: allowed}
 
-	// Phase 4: AST shadow mode — run AST in parallel, log deltas, return legacy.
+	// Unix: Phase 4: AST shadow mode — run AST in parallel, log deltas, return legacy.
 	if ast.FeatureASTShadow() {
 		allowed, _ := LoadAllAllowedCommands()
-		// Seed shadow's policy engine with the built-in safe cmdlets on Windows
-		// so that commands like Get-ChildItem don't always appear as
-		// confirm-required and generate noisy/useless deltas.
-		if runtime.GOOS == "windows" {
-			for cmd := range whitelistedWindowsCommands {
-				if _, ok := allowed[cmd]; !ok {
-					allowed[cmd] = map[string]bool{}
-				}
-			}
-		}
 		shadow := ast.NewShadowAnalyzer(&shadowAnalyzerShim{inner: legacy}, platform, cwd, allowed)
 		return &shadowWrapper{shadow: shadow}
 	}

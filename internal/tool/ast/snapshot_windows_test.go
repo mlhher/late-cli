@@ -63,6 +63,8 @@ func windowsBuiltinPE() *PolicyEngine {
 	for _, cmd := range builtins {
 		m[cmd] = map[string]bool{}
 	}
+	// Add safe flags for commands that use them in the corpus.
+	m["get-childitem"]["-Recurse"] = true
 	return &PolicyEngine{AllowedCommands: m}
 }
 
