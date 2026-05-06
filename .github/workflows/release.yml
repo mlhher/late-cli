@@ -49,3 +49,43 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: late-${{ matrix.os }}-${{ matrix.arch }}*
+
+  update-homebrew:
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          for target in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do
+            curl -sL -o "late-${target}" \
+              "https://github.com/mlhher/late-cli/releases/download/${VERSION}/late-${target}"
+          done
+
+      - name: Compute SHA256 hashes
+        id: hashes
+        run: |
+          echo "darwin_arm64=$(sha256sum late-darwin-arm64 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "darwin_amd64=$(sha256sum late-darwin-amd64 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "linux_arm64=$(sha256sum late-linux-arm64 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "linux_amd64=$(sha256sum late-linux-amd64 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Clone tap and update formula
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          git clone https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/mlhher/homebrew-late.git tap
+          cd tap
+          CLEAN_VERSION="${VERSION#v}"
+          sed -i "s/VERSION_PLACEHOLDER/${CLEAN_VERSION}/" Formula/late.rb
+          sed -i "s/SHA_DARWIN_ARM64/${{ steps.hashes.outputs.darwin_arm64 }}/" Formula/late.rb
+          sed -i "s/SHA_DARWIN_AMD64/${{ steps.hashes.outputs.darwin_amd64 }}/" Formula/late.rb
+          sed -i "s/SHA_LINUX_ARM64/${{ steps.hashes.outputs.linux_arm64 }}/" Formula/late.rb
+          sed -i "s/SHA_LINUX_AMD64/${{ steps.hashes.outputs.linux_amd64 }}/" Formula/late.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/late.rb
+          git commit -m "Update late to ${CLEAN_VERSION}"
+          git push
