@@ -6,20 +6,10 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-// tier2Commands is the set of commands that have a mandatory subcommand (e.g.
-// "git log", "go mod"). It is used by ParseCommandsForAllowList to build the
-// canonical allow-list key ("git log" rather than just "git").
-var tier2Commands = map[string]bool{
-	"git": true,
-	"go":  true,
-}
-
-// tier2Positionals lists the positional sub-sub-command tokens that should be
-// recorded in the allow-list for a given "cmd subcommand" key.  Only tokens
-// in this set are included; generic path arguments (e.g. "./...") are ignored.
-var tier2Positionals = map[string]map[string]bool{
-	"go mod": {"tidy": true, "graph": true, "verify": true, "why": true, "download": true},
-}
+// NOTE: Compound command keys (e.g., "git log", "go mod") are NOT created here
+// because AST adapters (both Windows and Unix) only emit base command names
+// ("git", "go") without subcommand qualification. The policy engine matches
+// against these base names, so allow-list keys must align with base names only.
 
 // wordResolver resolves shell AST word nodes to their string values.
 // It only handles static literals — any dynamic expansion (variable, subshell,
@@ -59,9 +49,11 @@ func (r *wordResolver) resolvePart(sb *strings.Builder, p syntax.WordPart) bool 
 	}
 }
 
-// ParseCommandsForAllowList extracts stable keys (e.g., "git log") and their
+// ParseCommandsForAllowList extracts command base names (lowercased) and their
 // lists of flags for ALL commands in a potentially compound string (pipes,
-// chains, etc).
+// chains, etc). Command names are normalized to lowercase to align with how
+// AST adapters emit them (Windows PowerShell lowers all names; Unix is
+// normalized to lowercase here for consistency).
 func ParseCommandsForAllowList(command string) map[string][]string {
 	parser := syntax.NewParser()
 	f, err := parser.Parse(strings.NewReader(command), "")
@@ -83,28 +75,13 @@ func ParseCommandsForAllowList(command string) map[string][]string {
 			return true
 		}
 
-		var key string
-		var subCmd string
-		var startIdx int
-
-		// Check for subcommand (only for known multi-level commands)
-		if tier2Commands[cmdName] && len(call.Args) >= 2 {
-			sc, ok := wr.resolveWord(call.Args[1])
-			if ok && sc != "" && !strings.HasPrefix(sc, "-") {
-				key = cmdName + " " + sc
-				subCmd = sc
-				startIdx = 2
-			} else {
-				key = cmdName
-				startIdx = 1
-			}
-		} else {
-			key = cmdName
-			startIdx = 1
-		}
+		// Normalize command name to lowercase to match AST adapter behavior:
+		// Windows PowerShell adapter lowercases all cmdlets; Unix should
+		// also normalize to lowercase for consistency.
+		key := strings.ToLower(cmdName)
 
 		var flags []string
-		for i := startIdx; i < len(call.Args); i++ {
+		for i := 1; i < len(call.Args); i++ {
 			val, ok := wr.resolveWord(call.Args[i])
 			if !ok {
 				continue
@@ -122,13 +99,6 @@ func ParseCommandsForAllowList(command string) map[string][]string {
 					flags = append(flags, "-*")
 				} else {
 					flags = append(flags, flagKey)
-				}
-			} else if subCmd != "" {
-				// Positional argument — only record it when it is an explicitly
-				// whitelisted sub-sub-command (e.g. 'tidy' in 'go mod tidy').
-				// Generic path arguments like './...' are intentionally skipped.
-				if tier2Positionals[key][val] {
-					flags = append(flags, val)
 				}
 			}
 		}

@@ -10,17 +10,26 @@ func TestParseCommandsForAllowList(t *testing.T) {
 		want    map[string][]string
 	}{
 		{
+			// Base commands are lowercased; only flags (starting with -) are recorded
 			"go mod tidy && go test -v ./...",
 			map[string][]string{
-				"go mod":  {"tidy"},
-				"go test": {"-v"},
+				"go": {"-v"},
 			},
 		},
 		{
+			// Commands are lowercased; flags are recorded
 			"git log --oneline --output=test.txt | grep foo",
 			map[string][]string{
-				"git log": {"--oneline", "--output"},
-				"grep":    {},
+				"git":  {"--oneline", "--output"},
+				"grep": {},
+			},
+		},
+		{
+			// PowerShell: command lowercased, flags preserved (with original casing)
+			"Get-ChildItem -Path C:\\Temp | Write-Output",
+			map[string][]string{
+				"get-childitem": {"-Path"},
+				"write-output":  {},
 			},
 		},
 	}
