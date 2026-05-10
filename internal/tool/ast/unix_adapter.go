@@ -46,15 +46,32 @@ func (u *UnixParser) Parse(command string) (ParsedIR, error) {
 			if len(n.Args) > 0 {
 				name := unixResolveWord(n.Args[0])
 				if name != "" && !strings.Contains(name, "/") {
-					addStringUnique(&ir.Commands, seenCmds, name)
+					// For tier2 commands (git, go), detect subcommand to form compound key.
+					// This ensures "git log" and "git push" are stored as separate allow-list entries.
+					cmdKey := name
+					var argsStartIdx int
+					if tier2Commands[name] && len(n.Args) >= 2 {
+						// Check if the next argument is a subcommand (non-flag).
+						subCmd := unixResolveWord(n.Args[1])
+						if subCmd != "" && !strings.HasPrefix(subCmd, "-") {
+							cmdKey = name + " " + subCmd
+							argsStartIdx = 2
+						} else {
+							argsStartIdx = 1
+						}
+					} else {
+						argsStartIdx = 1
+					}
+
+					addStringUnique(&ir.Commands, seenCmds, cmdKey)
 					if name == "cd" {
 						addRiskFlag(&ir, seenRisk, ReasonCd)
 					}
 					// Collect flags for policy engine allow-list matching.
-					if _, ok := seenCmdFlags[name]; !ok {
-						seenCmdFlags[name] = map[string]bool{}
+					if _, ok := seenCmdFlags[cmdKey]; !ok {
+						seenCmdFlags[cmdKey] = map[string]bool{}
 					}
-					for _, arg := range n.Args[1:] {
+					for _, arg := range n.Args[argsStartIdx:] {
 						val := unixResolveWord(arg)
 						if !strings.HasPrefix(val, "-") {
 							continue
@@ -67,9 +84,9 @@ func (u *UnixParser) Parse(command string) (ParsedIR, error) {
 						if unixIsNumericFlag(val) {
 							flagKey = "-*"
 						}
-						if !seenCmdFlags[name][flagKey] {
-							seenCmdFlags[name][flagKey] = true
-							ir.CommandArgs[name] = append(ir.CommandArgs[name], flagKey)
+						if !seenCmdFlags[cmdKey][flagKey] {
+							seenCmdFlags[cmdKey][flagKey] = true
+							ir.CommandArgs[cmdKey] = append(ir.CommandArgs[cmdKey], flagKey)
 						}
 					}
 				}

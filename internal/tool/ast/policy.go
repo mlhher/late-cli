@@ -2,6 +2,14 @@ package ast
 
 import "fmt"
 
+// tier2Commands is the set of commands that have mandatory subcommands.
+// The AST adapters should emit compound command keys (e.g. "git log", "go mod")
+// for these commands to maintain fine-grained allow-list granularity.
+var tier2Commands = map[string]bool{
+	"git": true,
+	"go":  true,
+}
+
 // PolicyEngine evaluates a ParsedIR against an optional allow-list and
 // produces a Decision. The engine consumes ONLY the compact IR — no raw
 // AST nodes — making decisions deterministic and platform-neutral.
@@ -32,7 +40,7 @@ type PolicyEngine struct {
 //  7. Variable/parameter expansion → NeedsConfirmation.
 //  8. Destructive filesystem operation (Remove-Item, Copy-Item, etc.) → NeedsConfirmation.
 //  9. Shell operators (&&, ||, ;, |) with any non-allow-listed command → NeedsConfirmation.
-// 10. All commands in ir.Commands are allow-listed + no blocking signals
+//  10. All commands in ir.Commands are allow-listed + no blocking signals
 //     → auto-approve (NeedsConfirmation = false).
 func (p *PolicyEngine) Decide(ir ParsedIR) Decision {
 	d := Decision{ReasonCodes: ir.RiskFlags}
