@@ -1,18 +1,18 @@
 # Late 快速入门指南
 
-本指南将帮助你在 5 分钟内快速上手并高效使用 Late。
+[English](quickstart.md) | [简体中文](quickstart.zh-CN.md)
 
-[English](quickstart.md) | [简体中文](quickstart_zh.md)
+本指南将帮助你在 5 分钟内快速上手并高效使用 Late。
 
 ## 初始设置
 
-**1. 配置你的 API 端点** (支持任何兼容 OpenAI 格式的 API，例如 llama.cpp, 阿里云百炼/通义千问, [DeepSeek](https://api-docs.deepseek.com/), [Google](https://ai.google.dev/gemini-api/docs/openai), [Anthropic](https://platform.claude.com/docs/en/api/openai-sdk), [OpenRouter](https://openrouter.ai/docs/quickstart))：
+**1. 配置你的 API 端点** (支持任何兼容 OpenAI 格式的 API，例如 llama.cpp, [DeepSeek](https://api-docs.deepseek.com/), [阿里云百炼/通义千问](https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope), [Google](https://ai.google.dev/gemini-api/docs/openai), [Anthropic](https://platform.claude.com/docs/en/api/openai-sdk), [OpenRouter](https://openrouter.ai/docs/quickstart))：
 
 ```bash
 # 本地模型 (如 llama.cpp)
 export OPENAI_BASE_URL="http://localhost:8080"
 
-# 云端模型 (如 DeepSeek 或通义千问)
+# 云端模型 (如 DeepSeek)
 export OPENAI_BASE_URL="https://api.deepseek.com/"
 export OPENAI_API_KEY="你的-API-Key"
 export OPENAI_MODEL="deepseek-v4-pro"
@@ -36,7 +36,7 @@ late
 如果你希望主控节点使用聪明的大模型来制定计划，而子智能体使用快速便宜的小模型来执行代码编写，这一功能将非常有用：
 
 ```bash
-export LATE_SUBAGENT_MODEL="qwen-coder-14b"
+export LATE_SUBAGENT_MODEL="gemma-4-e4b"
 export LATE_SUBAGENT_BASE_URL="http://10.8.0.2:8080" # (可选) 默认回退至 OPENAI_BASE_URL
 export LATE_SUBAGENT_API_KEY="你的-另一个-API-Key"  # (可选) 默认回退至 OPENAI_API_KEY
 ```
@@ -147,7 +147,7 @@ The agent wants to execute a bash command.
   "openai_model": "qwen3.6-35b-a3b",
   "late_subagent_base_url": "http://10.8.0.2:8080",
   "late_subagent_api_key": "your-other-api-key",
-  "late_subagent_model": "qwen-coder-14b"
+  "late_subagent_model": "gemma-4-e4b"
 }
 ```
 

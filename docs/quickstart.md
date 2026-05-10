@@ -1,6 +1,6 @@
 # Late Quickstart Guide
 
-[English](quickstart.md) | [简体中文](quickstart_zh.md)
+[English](quickstart.md) | [简体中文](quickstart.zh-CN.md)
 
 This guide gets you productive in Late in under 5 minutes.
 
