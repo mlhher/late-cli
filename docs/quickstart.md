@@ -1,19 +1,21 @@
 # Late Quickstart Guide
 
+[English](quickstart.md) | [简体中文](quickstart_zh.md)
+
 This guide gets you productive in Late in under 5 minutes.
 
 ## Setup
 
-**1. Set your endpoint** (any OpenAI-compatible API, e.g. llama.cpp, [Google](https://ai.google.dev/gemini-api/docs/openai), [Anthropic](https://platform.claude.com/docs/en/api/openai-sdk), [OpenRouter](https://openrouter.ai/docs/quickstart)): 
+**1. Set your endpoint** (any OpenAI-compatible API, e.g. llama.cpp, [DeepSeek](https://api-docs.deepseek.com/), [Google](https://ai.google.dev/gemini-api/docs/openai), [Anthropic](https://platform.claude.com/docs/en/api/openai-sdk), [OpenRouter](https://openrouter.ai/docs/quickstart)): 
 
 ```bash
 # Local (e.g. llama.cpp)
 export OPENAI_BASE_URL="http://localhost:8080"
 
-# Cloud (e.g. Google)
-export OPENAI_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai/"
+# Cloud (e.g. DeepSeek)
+export OPENAI_BASE_URL="https://api.deepseek.com/"
 export OPENAI_API_KEY="your-api-key"
-export OPENAI_MODEL="your-model"
+export OPENAI_MODEL="deepseek-v4-pro"
 ```
 
 > **Windows:** Use your preferred shell's syntax for all environment variables for example `$env:OPENAI_BASE_URL="http://localhost:8080"` in PowerShell.
