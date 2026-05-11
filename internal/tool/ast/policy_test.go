@@ -225,3 +225,86 @@ func TestPolicyEngine_FlagEnforcement(t *testing.T) {
 		}
 	})
 }
+
+// TestGitLogDoesNotApproveGitPush verifies that approving "git log" does NOT
+// auto-approve "git push" — each subcommand must have independent approval.
+//
+// This regression test validates the fix for the subcommand granularity bug where
+// the AST adapters now properly emit compound command keys ("git push", not just "git")
+// to match the compound keys created by ParseCommandsForAllowList.
+func TestGitLogDoesNotApproveGitPush(t *testing.T) {
+	p := &UnixParser{}
+	ir, err := p.Parse("git push")
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+
+	t.Logf("AST IR for 'git push': Commands=%v, CommandArgs=%+v", ir.Commands, ir.CommandArgs)
+
+	// Simulate: user approved "git log --oneline" but NOT "git push"
+	pe := &PolicyEngine{
+		AllowedCommands: map[string]map[string]bool{
+			"git log": {"--oneline": true},
+			// Note: "git push" is NOT in the allow-list
+		},
+	}
+
+	d := pe.Decide(ir)
+
+	// With the fix: adapter now emits "git push" as the command key, policy engine
+	// checks if "git push" is in AllowedCommands, it's not, so correctly requires confirmation.
+	if !d.NeedsConfirmation {
+		t.Errorf("REGRESSION: 'git push' should require confirmation when only 'git log' is approved, but got NeedsConfirmation=false")
+		t.Errorf("  Commands in IR: %v", ir.Commands)
+		t.Errorf("  Allowed keys: %v", pe.AllowedCommands)
+	}
+}
+
+// TestGitLogApprovesGitLogWithFlags verifies that "git log" with matching flags
+// is approved when "git log --oneline" was previously approved.
+func TestGitLogApprovesGitLogWithFlags(t *testing.T) {
+	p := &UnixParser{}
+	ir, err := p.Parse("git log --oneline")
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+
+	// Simulate: user previously approved "git log --oneline"
+	pe := &PolicyEngine{
+		AllowedCommands: map[string]map[string]bool{
+			"git log": {"--oneline": true},
+		},
+	}
+
+	d := pe.Decide(ir)
+
+	// Should auto-approve because command and all flags match the allow-list.
+	if d.NeedsConfirmation {
+		t.Errorf("'git log --oneline' should auto-approve when explicitly approved, but got NeedsConfirmation=true")
+	}
+}
+
+// TestGitLogRejectsGitLogWithNewFlags verifies that "git log" with a new flag
+// requires confirmation even if some flags were approved.
+func TestGitLogRejectsGitLogWithNewFlags(t *testing.T) {
+	p := &UnixParser{}
+	ir, err := p.Parse("git log --all")
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+
+	// Simulate: user previously approved only "git log --oneline"
+	pe := &PolicyEngine{
+		AllowedCommands: map[string]map[string]bool{
+			"git log": {"--oneline": true},
+			// Note: --all is NOT in the allowed flags for "git log"
+		},
+	}
+
+	d := pe.Decide(ir)
+
+	// Should require confirmation because --all flag was not previously approved.
+	if !d.NeedsConfirmation {
+		t.Errorf("'git log --all' should require confirmation when only '--oneline' was approved, but got NeedsConfirmation=false")
+	}
+}

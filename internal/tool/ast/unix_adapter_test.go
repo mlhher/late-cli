@@ -66,12 +66,12 @@ func TestUnixParser_SimpleCommands(t *testing.T) {
 		},
 		{
 			command:  "git log --oneline",
-			wantCmds: []string{"git"},
+			wantCmds: []string{"git log"},
 			wantRisk: nil,
 		},
 		{
 			command:  "go mod tidy && go test ./...",
-			wantCmds: []string{"go"},
+			wantCmds: []string{"go mod", "go test"},
 			wantRisk: []ReasonCode{ReasonOperator},
 		},
 	}

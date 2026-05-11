@@ -652,12 +652,3 @@ func SaveAllowedTool(name string, global bool) error {
 
 	return os.WriteFile(path, data, 0644)
 }
-
-// NormalizeCommandForAllowList is now a legacy helper that returns the first command key found.
-func NormalizeCommandForAllowList(command string) string {
-	commands := ParseCommandsForAllowList(command)
-	for key := range commands {
-		return key
-	}
-	return ""
-}

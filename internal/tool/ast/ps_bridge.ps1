@@ -101,15 +101,28 @@ function Invoke-Parse {
     }
 
     # --- Walk every AST node ---
-    $allNodes = $ast.FindAll({ $true }, $true)
-    foreach ($node in $allNodes) {
+    $astNodes = $ast.FindAll({ $true }, $true)
+    foreach ($node in $astNodes) {
         # Commands
         if ($node -is [System.Management.Automation.Language.CommandAst]) {
             $elems = $node.CommandElements
             if ($elems -and $elems.Count -gt 0) {
                 $cmdName = $elems[0].ToString().Trim().ToLower()
                 if ($cmdName -ne '') {
-                    Add-Unique $ir.commands $cmdName
+                    # For tier2 commands (git, go), detect subcommand to form compound key.
+                    # This ensures "git log" and "git push" are stored as separate allow-list entries.
+                    $cmdKey = $cmdName
+                    $argsStartIdx = 1
+                    if (($cmdName -eq "git" -or $cmdName -eq "go") -and $elems.Count -gt 1) {
+                        $subCmd = $elems[1].ToString().Trim().ToLower()
+                        # Check if the next element is NOT a parameter flag (doesn't start with -)
+                        if ($subCmd -and -not $subCmd.StartsWith('-')) {
+                            $cmdKey = $cmdName + " " + $subCmd
+                            $argsStartIdx = 2
+                        }
+                    }
+                    
+                    Add-Unique $ir.commands $cmdKey
                     if ($invokeRiskCmdlets -contains $cmdName) {
                         Add-Unique $ir.risk_flags "invoke_expression"
                     }
@@ -123,17 +136,17 @@ function Invoke-Parse {
                         Add-Unique $ir.risk_flags "new_path"
                     }
                     # Collect flags for policy engine allow-list matching.
-                    if (-not $ir.command_args.ContainsKey($cmdName)) {
-                        $ir.command_args[$cmdName] = [System.Collections.Generic.List[string]]::new()
+                    if (-not $ir.command_args.ContainsKey($cmdKey)) {
+                        $ir.command_args[$cmdKey] = [System.Collections.Generic.List[string]]::new()
                     }
-                    for ($i = 1; $i -lt $elems.Count; $i++) {
+                    for ($i = $argsStartIdx; $i -lt $elems.Count; $i++) {
                         $argText = $elems[$i].ToString().Trim()
                         if ($argText.StartsWith('-')) {
                             # Normalize -Param:value → -Param (PowerShell colon syntax)
                             $colonIdx = $argText.IndexOf(':')
                             if ($colonIdx -gt 0) { $argText = $argText.Substring(0, $colonIdx) }
-                            if (-not $ir.command_args[$cmdName].Contains($argText)) {
-                                $ir.command_args[$cmdName].Add($argText) | Out-Null
+                            if (-not $ir.command_args[$cmdKey].Contains($argText)) {
+                                $ir.command_args[$cmdKey].Add($argText) | Out-Null
                             }
                         }
                     }
@@ -230,9 +243,9 @@ function Invoke-Parse {
     return $ir
 }
 
-# Emit-IR serializes an IR hashtable to a compact JSON line and flushes stdout
+# Write-IR serializes an IR hashtable to a compact JSON line and flushes stdout
 # immediately so the Go reader is not left waiting for a buffer to fill.
-function Emit-IR {
+function Write-IR {
     param($ir)
     # Convert command_args hashtable → plain hashtable of arrays for JSON.
     $cmdArgsOut = @{}
@@ -278,5 +291,5 @@ while ($true) {
         $ir.parse_errors.Add("request error: $_") | Out-Null
     }
 
-    Emit-IR $ir
+    Write-IR $ir
 }

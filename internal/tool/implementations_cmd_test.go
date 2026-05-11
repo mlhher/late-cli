@@ -4,14 +4,14 @@ package tool
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
-	"os"
 	"late/internal/common"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf16"
-	"encoding/base64"
 )
 
 // getUnixShellPath is a shim so shell_command_test.go (which references this symbol)
@@ -143,12 +143,12 @@ func TestPSShellTool_WindowsNewPathCarveout(t *testing.T) {
 	}{
 		{
 			name: "new-item new path can auto-approve",
-				args: makeArgs(`New-Item -Path "`+newPath+`"`, absTempDir),
+			args: makeArgs(`New-Item -Path "`+newPath+`"`, absTempDir),
 			want: false,
 		},
 		{
 			name: "new-item existing path auto-approves (unsupervised mode)",
-				args: makeArgs(`New-Item -Path "`+existingPath+`"`, absTempDir),
+			args: makeArgs(`New-Item -Path "`+existingPath+`"`, absTempDir),
 			want: false,
 		},
 	}
@@ -159,26 +159,6 @@ func TestPSShellTool_WindowsNewPathCarveout(t *testing.T) {
 				t.Fatalf("RequiresConfirmation(%s)=%v, want %v", string(tt.args), got, tt.want)
 			}
 		})
-	}
-}
-
-func TestPowerShellParserBackedCommandExtraction(t *testing.T) {
-	got := getPowerShellBaseCommands(`Get-ChildItem 'C:\Program Files' | Select-String "go"; echo done`)
-	want := []string{"get-childitem", "select-string", "echo"}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("getPowerShellBaseCommands mismatch: got %v want %v", got, want)
-	}
-
-	if !containsPowerShellRiskySyntax("IEX 'Get-ChildItem'") {
-		t.Fatal("expected IEX command to be treated as risky")
-	}
-
-	if containsPowerShellRiskySyntax("Get-ChildItem") {
-		t.Fatal("expected simple Get-ChildItem to be non-risky")
-	}
-
-	if got := extractPowerShellTargetPath(`New-Item -Path C:\tmp\newfile.txt`); got == "" {
-		t.Fatal("expected New-Item -Path target extraction to succeed")
 	}
 }
 
@@ -210,8 +190,8 @@ func TestPSShellTool_CallString(t *testing.T) {
 	tool := ShellTool{}
 
 	cases := []struct {
-		args     json.RawMessage
-		wantPfx  string
+		args    json.RawMessage
+		wantPfx string
 	}{
 		{json.RawMessage(`{"command":"Get-ChildItem"}`), "Executing in PowerShell: Get-ChildItem"},
 		{json.RawMessage(`{"command":"Write-Output hello","cwd":"C:/tmp"}`), "Executing in PowerShell: Write-Output hello in dir: C:/tmp"},

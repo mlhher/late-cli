@@ -173,31 +173,8 @@ func (t WriteFileTool) CallString(args json.RawMessage) string {
 
 func (t *ShellTool) getAnalyzer(cwd string) CommandAnalyzer {
 	platform := ast.CurrentPlatform()
-
-	// Windows: always use AST analyzer.
-	if runtime.GOOS == "windows" {
-		allowed, _ := LoadAllAllowedCommands()
-		return newASTAnalyzer(platform, cwd, allowed)
-	}
-
-	// Unix: Phase 5: AST enforcement — AST pipeline is authoritative.
-	if ast.FeatureASTEnforcement() {
-		allowed, _ := LoadAllAllowedCommands()
-		return newASTAnalyzer(platform, cwd, allowed)
-	}
-
-	// Unix: Build the legacy analyzer.
 	allowed, _ := LoadAllAllowedCommands()
-	legacy := &BashAnalyzer{ProjectAllowedCommands: allowed}
-
-	// Unix: Phase 4: AST shadow mode — run AST in parallel, log deltas, return legacy.
-	if ast.FeatureASTShadow() {
-		allowed, _ := LoadAllAllowedCommands()
-		shadow := ast.NewShadowAnalyzer(&shadowAnalyzerShim{inner: legacy}, platform, cwd, allowed)
-		return &shadowWrapper{shadow: shadow}
-	}
-
-	return legacy
+	return newASTAnalyzer(platform, cwd, allowed)
 }
 
 // SaveToAllowList persists a command to the allow-list. Defaults to local scope.
