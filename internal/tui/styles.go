@@ -54,6 +54,10 @@ var (
 			Foreground(subtextColor).
 			BorderLeftForeground(subtextColor)
 
+	attachmentStyle = lipgloss.NewStyle().
+			Foreground(secondaryColor).
+			Italic(true)
+
 	// AI Bubble
 	aiMsgStyle = baseStyle.Copy().
 			Padding(0, 2).
@@ -93,8 +97,7 @@ var (
 				Border(lipgloss.NormalBorder(), true, false, false, false).
 				BorderForeground(lipgloss.Color("#444444")).
 				BorderBackground(appBgColor).
-				Foreground(textColor).
-				Height(StatusBarHeight - 1)
+				Foreground(textColor)
 
 	statusModeStyle = lipgloss.NewStyle().
 			Background(primaryColor).

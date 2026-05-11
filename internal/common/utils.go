@@ -39,7 +39,7 @@ func EstimateToolDefinitionTokens(tools []client.ToolDefinition) int {
 
 // EstimateMessageTokens estimates tokens for a full chat message including tool calls and role overhead.
 func EstimateMessageTokens(msg client.ChatMessage) int {
-	tokens := EstimateTokenCount(msg.Content) + EstimateTokenCount(msg.ReasoningContent)
+	tokens := EstimateTokenCount(msg.Content.String()) + EstimateTokenCount(msg.ReasoningContent)
 	for _, tc := range msg.ToolCalls {
 		tokens += EstimateTokenCount(tc.Function.Name) + EstimateTokenCount(tc.Function.Arguments)
 	}

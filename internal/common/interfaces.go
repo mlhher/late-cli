@@ -15,7 +15,7 @@ type ToolMiddleware func(next ToolRunner) ToolRunner
 // Orchestrator defines the interface for an agentic conversation manager.
 type Orchestrator interface {
 	ID() string
-	Submit(text string) error
+	Submit(text string, images []string) error
 	Execute(text string) (string, error)
 	Reset() error
 	Cancel()
@@ -36,6 +36,7 @@ type Orchestrator interface {
 	SetMaxTurns(int)
 	RefreshContextSize(context.Context)
 	MaxTokens() int
+	SupportsVision() bool
 }
 
 // Event represents something that happened in the orchestrator.

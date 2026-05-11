@@ -48,7 +48,7 @@ func (s *Session) AddToolResultMessage(toolCallID, content string) error {
 	s.History = append(s.History, client.ChatMessage{
 		Role:       "tool",
 		ToolCallID: toolCallID,
-		Content:    content,
+		Content:    client.TextContent(content),
 	})
 	return s.saveAndNotify()
 }
@@ -57,7 +57,7 @@ func (s *Session) AddToolResultMessage(toolCallID, content string) error {
 func (s *Session) AddAssistantMessageWithTools(content string, reasoning string, toolCalls []client.ToolCall) error {
 	s.History = append(s.History, client.ChatMessage{
 		Role:             "assistant",
-		Content:          content,
+		Content:          client.TextContent(content),
 		ReasoningContent: reasoning,
 		ToolCalls:        toolCalls,
 	})
@@ -82,7 +82,13 @@ func (s *Session) GetToolDefinitions() []client.ToolDefinition {
 
 // AddUserMessage adds a user message to history and persists it.
 func (s *Session) AddUserMessage(content string) error {
-	s.History = append(s.History, client.ChatMessage{Role: "user", Content: content})
+	s.History = append(s.History, client.ChatMessage{Role: "user", Content: client.TextContent(content)})
+	return s.saveAndNotify()
+}
+
+// AddMessage adds an arbitrary message to history and persists it.
+func (s *Session) AddMessage(msg client.ChatMessage) error {
+	s.History = append(s.History, msg)
 	return s.saveAndNotify()
 }
 
@@ -90,7 +96,7 @@ func (s *Session) AddUserMessage(content string) error {
 func (s *Session) AddAssistantMessage(content, reasoning string) error {
 	s.History = append(s.History, client.ChatMessage{
 		Role:             "assistant",
-		Content:          content,
+		Content:          client.TextContent(content),
 		ReasoningContent: reasoning,
 	})
 	return s.saveAndNotify()
@@ -102,7 +108,27 @@ func (s *Session) AppendToLastMessage(content, reasoning string) error {
 		return fmt.Errorf("no history to append to")
 	}
 	lastIdx := len(s.History) - 1
-	s.History[lastIdx].Content += content
+	if len(s.History[lastIdx].Content.Parts) > 0 {
+		// If it's multimodal, we append to the last text part if it exists, or add a new one
+		// For now, let's just append to the simple text field if it's used, or the last part.
+		// Actually, let's keep it simple: if Parts is not empty, append to the last part if it's text.
+		found := false
+		for i := len(s.History[lastIdx].Content.Parts) - 1; i >= 0; i-- {
+			if s.History[lastIdx].Content.Parts[i].Type == client.ContentPartText {
+				s.History[lastIdx].Content.Parts[i].Text += content
+				found = true
+				break
+			}
+		}
+		if !found {
+			s.History[lastIdx].Content.Parts = append(s.History[lastIdx].Content.Parts, client.ContentPart{
+				Type: client.ContentPartText,
+				Text: content,
+			})
+		}
+	} else {
+		s.History[lastIdx].Content.Text += content
+	}
 	if reasoning != "" {
 		if s.History[lastIdx].ReasoningContent != "" {
 			s.History[lastIdx].ReasoningContent += "\n" + reasoning
@@ -122,7 +148,7 @@ func (s *Session) StartStream(ctx context.Context, extraBody map[string]any) (<-
 	// Prepare messages with system prompt
 	messages := make([]client.ChatMessage, 0, len(s.History)+1)
 	if s.systemPrompt != "" {
-		messages = append(messages, client.ChatMessage{Role: "system", Content: s.systemPrompt})
+		messages = append(messages, client.ChatMessage{Role: "system", Content: client.TextContent(s.systemPrompt)})
 	}
 	messages = append(messages, s.History...)
 
@@ -150,7 +176,7 @@ func (s *Session) StartStream(ctx context.Context, extraBody map[string]any) (<-
 				var content, reasoning, finishReason string
 				var toolCalls []client.ToolCall
 				if len(chunk.Choices) > 0 {
-					content = chunk.Choices[0].Delta.Content
+					content = chunk.Choices[0].Delta.Content.String()
 					reasoning = chunk.Choices[0].Delta.ReasoningContent
 					toolCalls = chunk.Choices[0].Delta.ToolCalls
 					finishReason = chunk.Choices[0].FinishReason
@@ -193,7 +219,7 @@ func (s *Session) StartStream(ctx context.Context, extraBody map[string]any) (<-
 func (s *Session) Impersonate(ctx context.Context) (string, error) {
 	var sb strings.Builder
 	for _, msg := range s.History {
-		sb.WriteString(fmt.Sprintf("%s\n%s\n", msg.Role, msg.Content))
+		sb.WriteString(fmt.Sprintf("%s\n%s\n", msg.Role, msg.Content.String()))
 	}
 	prompt := sb.String() + "user\n"
 
@@ -219,7 +245,7 @@ func (s *Session) GenerateSessionMeta() SessionMeta {
 		// Find first user message for title
 		for _, msg := range s.History {
 			if msg.Role == "user" && title == "Untitled Session" {
-				truncated := msg.Content
+				truncated := msg.Content.String()
 				if len(truncated) > 100 {
 					truncated = truncateUTF8(truncated, 100)
 				}
@@ -230,7 +256,7 @@ func (s *Session) GenerateSessionMeta() SessionMeta {
 		// Last user message for last prompt
 		for i := len(s.History) - 1; i >= 0; i-- {
 			if s.History[i].Role == "user" {
-				lastPrompt = s.History[i].Content
+				lastPrompt = s.History[i].Content.String()
 				if len(lastPrompt) > 50 {
 					lastPrompt = truncateUTF8(lastPrompt, 50)
 				}

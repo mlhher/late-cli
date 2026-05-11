@@ -22,7 +22,7 @@ func TestSessionMeta(t *testing.T) {
 	defer func() { SessionDir = oldSessionDir }()
 
 	historyPath := filepath.Join(tmpDir, "session-test.json")
-	history := []client.ChatMessage{{Role: "user", Content: "Hello"}}
+	history := []client.ChatMessage{{Role: "user", Content: client.TextContent("Hello")}}
 
 	s := New(nil, historyPath, history, "", false)
 	meta := s.GenerateSessionMeta()

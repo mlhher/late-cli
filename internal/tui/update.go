@@ -3,6 +3,8 @@ package tui
 import (
 	"fmt"
 	"late/internal/common"
+	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -27,6 +29,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if msg, ok := msg.(tea.KeyMsg); ok {
 		if msg.String() == "ctrl+c" || msg.String() == "ctrl+d" {
 			return m, tea.Quit
+		}
+		if msg.String() == "ctrl+a" {
+			m.ShowFilePicker = !m.ShowFilePicker
+			if m.ShowFilePicker {
+				m.Mode = ViewFilePicker
+			} else {
+				m.Mode = ViewChat
+			}
+			return m, m.FilePicker.Init()
+		}
+		if msg.String() == "ctrl+x" {
+			m.AttachedFiles = nil
+			return m, nil
 		}
 	}
 
@@ -122,7 +137,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Viewport, vpCmd = m.Viewport.Update(msg)
 	}
 
-	return m, tea.Batch(cmd, tiCmd, vpCmd, spCmd)
+	var fpCmd tea.Cmd
+	if m.ShowFilePicker {
+		m.FilePicker, fpCmd = m.FilePicker.Update(msg)
+		if didSelect, file := m.FilePicker.DidSelectFile(msg); didSelect {
+			info, err := os.Stat(file)
+			if err == nil && info.IsDir() {
+				// Should not happen with DirAllowed=false, but good for safety.
+				// If we got here, it means we don't want to close the picker yet.
+				return m, fpCmd
+			}
+
+			// Content-based validation for image support
+			data, err := os.ReadFile(file)
+			if err != nil {
+				m.Err = fmt.Errorf("failed to read file: %w", err)
+			} else {
+			mimeType := http.DetectContentType(data)
+				isImage := strings.HasPrefix(mimeType, "image/")
+				if isImage && !m.Focused.SupportsVision() {
+					focusedState := m.GetAgentState(m.Focused.ID())
+					focusedState.StatusText = "Images not supported by current model"
+				} else {
+					m.AttachedFiles = append(m.AttachedFiles, file)
+				}
+			}
+			m.ShowFilePicker = false
+			m.Mode = ViewChat
+		}
+	}
+
+	return m, tea.Batch(cmd, tiCmd, vpCmd, spCmd, fpCmd)
 }
 
 func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
@@ -131,15 +176,25 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 		focusedState := m.GetAgentState(m.Focused.ID())
 		switch msg.String() {
 		case "esc", "ctrl+g":
-			if msg.String() == "esc" && m.Mode != ViewChat {
-				m.Mode = ViewChat
-				focusedState.RenderedHistory = nil
-				m.updateViewport()
-				return m, nil
+			if msg.String() == "esc" {
+				if m.ShowFilePicker {
+					m.ShowFilePicker = false
+					m.Mode = ViewChat
+					return m, nil
+				}
+				if m.Mode != ViewChat {
+					m.Mode = ViewChat
+					focusedState.RenderedHistory = nil
+					m.updateViewport()
+					return m, nil
+				}
 			}
 			return m.interruptFocusedAgent()
 
 		case "enter":
+			if m.ShowFilePicker {
+				return m, nil
+			}
 			input := strings.TrimPrefix(m.Input.Value(), "> ")
 			if strings.TrimSpace(input) == "" {
 				return m, nil
@@ -159,12 +214,33 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 					}
 				}
 
-				if err := m.Focused.Submit(input); err != nil {
+				// Re-validate attachments in case the model changed since file selection
+				if len(m.AttachedFiles) > 0 && !m.Focused.SupportsVision() {
+					var filtered []string
+					for _, f := range m.AttachedFiles {
+						data, err := os.ReadFile(f)
+						if err != nil {
+							continue
+						}
+						mimeType := http.DetectContentType(data)
+						if !strings.HasPrefix(mimeType, "image/") {
+							filtered = append(filtered, f)
+						}
+					}
+					if len(filtered) != len(m.AttachedFiles) {
+						m.AttachedFiles = filtered
+						focusedState.StatusText = "Images dropped: model no longer supports vision"
+						return m, nil
+					}
+				}
+
+				if err := m.Focused.Submit(input, m.AttachedFiles); err != nil {
 					m.Err = err
 					return m, nil
 				}
 				m.Input.Reset()
 				m.Input.SetValue("> ")
+				m.AttachedFiles = nil // Clear attachments after submit
 				focusedState.State = StateThinking
 				focusedState.ContextWarningShown = false // Reset after successful submission
 				// Token count will be calculated in ContentEvent handler
@@ -318,7 +394,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 					s.QueuedMessages = s.QueuedMessages[1:]
 					orch := m.FindOrchestrator(event.ID)
 					if orch != nil {
-						if err := orch.Submit(next); err != nil {
+						if err := orch.Submit(next, nil); err != nil {
 							m.Err = err
 						} else {
 							s.State = StateThinking
@@ -337,8 +413,13 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				}
 			case "error":
 				s.State = StateIdle
-				s.StatusText = fmt.Sprintf("Error: %v", event.Error)
-				s.Error = event.Error
+				if event.Error != nil && event.Error.Error() == "image_unsupported" {
+					s.StatusText = "Model does not support images"
+					s.RenderedHistory = nil // Re-render to remove rolled-back message
+				} else {
+					s.StatusText = fmt.Sprintf("Error: %v", event.Error)
+					s.Error = event.Error
+				}
 				// We don't clear rendered history so user can see what happened
 			default:
 				s.State = StateIdle
@@ -353,7 +434,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 					s.QueuedMessages = s.QueuedMessages[1:]
 					orch := m.FindOrchestrator(event.ID)
 					if orch != nil {
-						if err := orch.Submit(next); err != nil {
+						if err := orch.Submit(next, nil); err != nil {
 							m.Err = err
 						} else {
 							s.State = StateThinking
@@ -365,7 +446,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				m.updateViewport()
 			}
 		case common.ChildAddedEvent:
-			s.StatusText = fmt.Sprintf("Subagent '%s' Spawned (Tab to switch)", event.Child.ID())
+			s.StatusText = "Subagent spawned"
 			m.updateViewport()
 		case common.StopRequestedEvent:
 			s.PendingStop = false
@@ -406,6 +487,14 @@ func (m *Model) updateLayout() {
 		vHeight = 1
 	}
 	m.Viewport.SetHeight(vHeight)
+
+	// Ensure file picker also respects the layout height to prevent pushing the status bar off-screen
+	// We subtract StatusBarHeight. If we have a 2-line picker status bar, we subtract 3.
+	fpHeight := m.Height - 3
+	if fpHeight < 1 {
+		fpHeight = 1
+	}
+	m.FilePicker.SetHeight(fpHeight)
 
 	m.updateViewport()
 }

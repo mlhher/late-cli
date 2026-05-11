@@ -2,10 +2,16 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"late/internal/client"
 	"late/internal/common"
 	"late/internal/executor"
 	"late/internal/session"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -68,13 +74,19 @@ func (o *BaseOrchestrator) MaxTokens() int {
 	return o.sess.Client().ContextSize()
 }
 
+func (o *BaseOrchestrator) SupportsVision() bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.sess.Client().SupportsVision()
+}
+
 func (o *BaseOrchestrator) RefreshContextSize(ctx context.Context) {
 	o.sess.Client().RefreshContextSize(ctx)
 }
 
 func (o *BaseOrchestrator) ID() string { return o.id }
 
-func (o *BaseOrchestrator) Submit(text string) error {
+func (o *BaseOrchestrator) Submit(text string, images []string) error {
 	o.mu.Lock()
 	// Clear any old cancellation state so a new run isn't instantly aborted
 	o.cancel = nil
@@ -84,7 +96,53 @@ func (o *BaseOrchestrator) Submit(text string) error {
 	}
 	o.mu.Unlock()
 
-	if err := o.sess.AddUserMessage(text); err != nil {
+	msg := client.ChatMessage{Role: "user", AttachedFiles: images}
+
+	if len(images) == 0 {
+		msg.Content = client.TextContent(text)
+	} else {
+		parts := []client.ContentPart{
+			{Type: client.ContentPartText, Text: text},
+		}
+		supportsVision := o.SupportsVision()
+		for _, imgPath := range images {
+			data, err := os.ReadFile(imgPath)
+			if err != nil {
+				return fmt.Errorf("failed to read file %s: %w", imgPath, err)
+			}
+
+			mimeType := http.DetectContentType(data)
+			// Only attach to LLM content if it's an image AND the model supports vision
+			if strings.HasPrefix(mimeType, "image/") && supportsVision {
+				encoded := base64.StdEncoding.EncodeToString(data)
+				parts = append(parts, client.ContentPart{
+					Type: client.ContentPartImageURL,
+					ImageURL: &client.ImageURL{
+						URL: fmt.Sprintf("data:%s;base64,%s", mimeType, encoded),
+					},
+				})
+			} else {
+				// Treat as text if it looks like text or has a common extension.
+				// If it's an image but the model doesn't support vision, just include a note.
+				content := ""
+				isAttachment := true
+				if strings.HasPrefix(mimeType, "image/") {
+					content = fmt.Sprintf("\nAttached Image: %s (Vision not supported by current model)\n", filepath.Base(imgPath))
+				} else {
+					content = fmt.Sprintf("\nFilename: %s\nContent: ```\n%s\n```\n", filepath.Base(imgPath), string(data))
+				}
+
+				parts = append(parts, client.ContentPart{
+					Type:         client.ContentPartText,
+					Text:         content,
+					IsAttachment: isAttachment,
+				})
+			}
+		}
+		msg.Content = client.MessageContent{Parts: parts}
+	}
+
+	if err := o.sess.AddMessage(msg); err != nil {
 		return err
 	}
 
@@ -235,7 +293,20 @@ func (o *BaseOrchestrator) run() {
 	o.mu.Unlock()
 
 	if err != nil {
-		o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: err}
+		// If the error is about unsupported image input, roll back the user message
+		// so it doesn't poison the context for future requests.
+		errStr := err.Error()
+		if strings.Contains(errStr, "image input is not supported") ||
+			strings.Contains(errStr, "image_input") ||
+			strings.Contains(errStr, "does not support image") {
+			// Remove the last user message from history
+			if len(o.sess.History) > 0 && o.sess.History[len(o.sess.History)-1].Role == "user" {
+				o.sess.History = o.sess.History[:len(o.sess.History)-1]
+			}
+			o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: fmt.Errorf("image_unsupported")}
+		} else {
+			o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: err}
+		}
 	} else {
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"}
 	}

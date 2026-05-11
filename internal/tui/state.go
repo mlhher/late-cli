@@ -4,6 +4,7 @@ import (
 	"late/internal/client"
 	"late/internal/common"
 
+	"charm.land/bubbles/v2/filepicker"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
@@ -31,6 +32,7 @@ const (
 	ViewHelp
 	ViewDump
 	ViewSubagent
+	ViewFilePicker
 )
 
 // Fixed layout heights (crush-style)
@@ -98,6 +100,11 @@ type Model struct {
 
 	// Active spinner animation
 	Spinner spinner.Model
+
+	// File Picker
+	FilePicker     filepicker.Model
+	AttachedFiles  []string
+	ShowFilePicker bool
 
 	// Performance caches
 	cachedRenderer      *glamour.TermRenderer

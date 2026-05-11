@@ -174,8 +174,8 @@ func TestExecuteToolCalls_Denied(t *testing.T) {
 	if len(sess.History) != 1 {
 		t.Fatalf("expected 1 history entry, got %d", len(sess.History))
 	}
-	if sess.History[0].Content != "Tool execution cancelled by user" {
-		t.Errorf("expected cancel message, got '%s'", sess.History[0].Content)
+	if sess.History[0].Content.String() != "Tool execution cancelled by user" {
+		t.Errorf("expected cancel message, got '%s'", sess.History[0].Content.String())
 	}
 }
 
@@ -201,8 +201,8 @@ func TestExecuteToolCalls_NoMiddlewareFailsClosed(t *testing.T) {
 		t.Fatalf("expected 1 history entry, got %d", len(sess.History))
 	}
 
-	if !strings.Contains(sess.History[0].Content, "requires explicit approval") {
-		t.Fatalf("expected fail-closed approval message, got %q", sess.History[0].Content)
+	if !strings.Contains(sess.History[0].Content.String(), "requires explicit approval") {
+		t.Fatalf("expected fail-closed approval message, got %q", sess.History[0].Content.String())
 	}
 }
 

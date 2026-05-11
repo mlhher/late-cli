@@ -23,7 +23,7 @@ clean: ## Remove build artifacts
 	@rm -rf bin/
 
 install: build ## Build and install the binary to your Go bin path
-	@echo "Installing to $${GOPATH:-$(HOME)/go}/bin..."
+	@echo "Installing to ~/.local/bin/late..."
 	@go build ${LDFLAGS} -o bin/${BINARY_NAME} ./cmd/late
 	@mv bin/${BINARY_NAME} ~/.local/bin/late
 

@@ -31,8 +31,9 @@ type Client struct {
 	mu         sync.RWMutex
 	cfg        Config
 	httpClient *http.Client
-	backend    BackendType
-	ctxSize    int
+	backend        BackendType
+	ctxSize        int
+	supportsVision bool
 }
 
 func NewClient(cfg Config) *Client {
@@ -253,6 +254,7 @@ func (c *Client) RefreshContextSize(ctx context.Context) {
 		if err := json.NewDecoder(resp.Body).Decode(&props); err == nil {
 			c.mu.Lock()
 			c.ctxSize = props.DefaultGenerationSettings.NCtx
+			c.supportsVision = props.Modalities.Vision
 			c.mu.Unlock()
 		}
 	}
@@ -299,6 +301,7 @@ func (c *Client) DiscoverBackend(ctx context.Context) BackendType {
 		var props PropsResponse
 		if err := json.NewDecoder(resp.Body).Decode(&props); err == nil {
 			c.ctxSize = props.DefaultGenerationSettings.NCtx
+			c.supportsVision = props.Modalities.Vision
 		}
 	} else {
 		// If we got a response but it's not OK, it's likely a standard OpenAI endpoint
@@ -324,6 +327,12 @@ func (c *Client) IsLlamaCPP() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.backend == BackendLlamaCPP
+}
+
+func (c *Client) SupportsVision() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.supportsVision
 }
 
 func (c *Client) marshalFlattened(req ChatCompletionRequest) ([]byte, error) {

@@ -62,7 +62,7 @@ func TestEstimateTokenCount(t *testing.T) {
 func TestEstimateMessageTokens(t *testing.T) {
 	msg := client.ChatMessage{
 		Role:             "assistant",
-		Content:          "Hello",
+		Content:          client.TextContent("Hello"),
 		ReasoningContent: "Thinking...",
 		ToolCalls: []client.ToolCall{
 			{
@@ -123,7 +123,7 @@ func TestCalculateHistoryTokens(t *testing.T) {
 			history: []client.ChatMessage{
 				{
 					Role:    "user",
-					Content: "Hello",
+					Content: client.TextContent("Hello"),
 				},
 			},
 			systemPrompt: "",

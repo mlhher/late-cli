@@ -1,6 +1,9 @@
 package client
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // CompletionRequest represents a standard prompt to llama.cpp
 type CompletionRequest struct {
@@ -18,11 +21,92 @@ type CompletionResponse struct {
 }
 
 type ChatMessage struct {
-	Role             string     `json:"role"`
-	Content          string     `json:"content"`
-	ReasoningContent string     `json:"reasoning_content,omitempty"`
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID       string     `json:"tool_call_id,omitempty"` // For tool responses
+	Role             string         `json:"role"`
+	Content          MessageContent `json:"content"`
+	ReasoningContent string         `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall     `json:"tool_calls,omitempty"`
+	ToolCallID       string         `json:"tool_call_id,omitempty"` // For tool responses
+	AttachedFiles    []string       `json:"-"`                      // Purely for UI display
+}
+
+type MessageContent struct {
+	Text  string
+	Parts []ContentPart
+}
+
+func (c MessageContent) MarshalJSON() ([]byte, error) {
+	if len(c.Parts) > 0 {
+		return json.Marshal(c.Parts)
+	}
+	return json.Marshal(c.Text)
+}
+
+func (c *MessageContent) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	if data[0] == '"' {
+		return json.Unmarshal(data, &c.Text)
+	}
+	return json.Unmarshal(data, &c.Parts)
+}
+
+func (c MessageContent) String() string {
+	if len(c.Parts) > 0 {
+		var sb strings.Builder
+		for i, p := range c.Parts {
+			if p.Type == ContentPartText {
+				if i > 0 {
+					sb.WriteString(" ")
+				}
+				sb.WriteString(p.Text)
+			}
+		}
+		return sb.String()
+	}
+	return c.Text
+}
+
+// UIString returns the text content excluding parts marked as attachments.
+func (c MessageContent) UIString() string {
+	if len(c.Parts) > 0 {
+		var sb strings.Builder
+		first := true
+		for _, p := range c.Parts {
+			if p.Type == ContentPartText && !p.IsAttachment {
+				if !first {
+					sb.WriteString(" ")
+				}
+				sb.WriteString(p.Text)
+				first = false
+			}
+		}
+		return sb.String()
+	}
+	return c.Text
+}
+
+func TextContent(s string) MessageContent {
+	return MessageContent{Text: s}
+}
+
+type ContentPartType string
+
+const (
+	ContentPartText     ContentPartType = "text"
+	ContentPartImageURL ContentPartType = "image_url"
+)
+
+type ContentPart struct {
+	Type         ContentPartType `json:"type"`
+	Text         string          `json:"text,omitempty"`
+	ImageURL     *ImageURL       `json:"image_url,omitempty"`
+	IsAttachment bool            `json:"-"` // Purely for UI filtering
+}
+
+type ImageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
 }
 
 type ToolCall struct {
@@ -102,6 +186,12 @@ type Usage struct {
 
 type PropsResponse struct {
 	DefaultGenerationSettings GenerationSettings `json:"default_generation_settings"`
+	Modalities                Modalities         `json:"modalities"`
+}
+
+type Modalities struct {
+	Vision bool `json:"vision"`
+	Audio  bool `json:"audio"`
 }
 
 type GenerationSettings struct {

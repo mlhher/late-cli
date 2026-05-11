@@ -2,7 +2,9 @@ package tui
 
 import (
 	"late/internal/common"
+	"os"
 
+	"charm.land/bubbles/v2/filepicker"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
@@ -68,6 +70,24 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer) Model {
 		Spinner:             spinner.New(spinner.WithSpinner(spinner.Dot)),
 		cachedRendererWidth: -1, // Force first creation
 	}
+
+	fp := filepicker.New()
+	fp.FileAllowed = true
+	fp.DirAllowed = false
+	fp.ShowHidden = true
+	cwd, _ := os.Getwd()
+	fp.CurrentDirectory = cwd
+	fp.AutoHeight = false
+	fp.SetHeight(m.Height - 2)
+
+	// Apply styles for visibility
+	s := filepicker.DefaultStyles()
+	s.Selected = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00")).Bold(true)
+	s.File = lipgloss.NewStyle().Foreground(textColor)
+	s.Directory = lipgloss.NewStyle().Foreground(lipgloss.Color("#5555FF")).Bold(true)
+	fp.Styles = s
+
+	m.FilePicker = fp
 	// Initialize root state
 	history := root.History()
 	cumulativeTokens := 0
@@ -101,5 +121,5 @@ func (m *Model) GetRenderer(width int) *glamour.TermRenderer {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.Spinner.Tick)
+	return tea.Batch(textarea.Blink, m.Spinner.Tick, m.FilePicker.Init())
 }

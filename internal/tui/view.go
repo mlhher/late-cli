@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -25,6 +26,31 @@ func (m Model) View() tea.View {
 		Render(m.Viewport.View())
 
 	iStr := m.inputView()
+
+	if m.ShowFilePicker {
+		// Build picker hints line
+		hEnter := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("Enter"), statusTextStyle.Render(" Select/Open "))
+		hBack := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("Backspace"), statusTextStyle.Render(" Up "))
+		hEsc := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("Esc"), statusTextStyle.Render(" Exit "))
+		pickerHints := lipgloss.JoinHorizontal(lipgloss.Left, hEnter, hBack, hEsc)
+
+		// File picker area: leave room for hints (1 line) + status bar (StatusBarHeight)
+		fpHeight := m.Height - StatusBarHeight - 1
+		if fpHeight < 1 {
+			fpHeight = 1
+		}
+		vStr = lipgloss.NewStyle().
+			Height(fpHeight).
+			MaxHeight(fpHeight).
+			Width(m.Width).
+			Background(appBgColor).
+			Render(m.FilePicker.View())
+		iStr = lipgloss.NewStyle().
+			Background(appBgColor).
+			Width(m.Width).
+			Render(pickerHints)
+	}
+
 	sStr := m.statusBarView()
 
 	content := lipgloss.JoinVertical(
@@ -64,6 +90,10 @@ func (m *Model) inputView() string {
 func (m *Model) statusBarView() string {
 	w := max(m.Width, 1)
 
+	if m.ShowFilePicker {
+		return ""
+	}
+
 	s := m.GetAgentState(m.Focused.ID())
 
 	modeStr := " CHAT "
@@ -91,7 +121,7 @@ func (m *Model) statusBarView() string {
 	var warning string
 	if otherWaiting {
 		warning = statusWarningStyle.Render(" SUBAGENT CONFIRMATION REQUIRED ")
-		if strings.Contains(statusText, "Spawned") {
+		if strings.Contains(statusText, "spawned") {
 			statusText = ""
 		}
 	}
@@ -114,6 +144,7 @@ func (m *Model) statusBarView() string {
 
 	// Build key hints
 	stopKey := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("Ctrl+g"), statusTextStyle.Render(" Stop "))
+	attachHint := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("Ctrl+a/x"), statusTextStyle.Render(" Add/Clear attachments "))
 
 	// Add hierarchy hints
 	var hierarchyHint string
@@ -129,9 +160,26 @@ func (m *Model) statusBarView() string {
 		tokenDisplay = fmt.Sprintf(" | %d/%d (%d%%)", s.CumulativeTokenCount, maxTokens, pct)
 	}
 	tokenStyled := statusKeyStyle.Render(tokenDisplay)
-	hints := lipgloss.JoinHorizontal(lipgloss.Left, hierarchyHint, stopKey)
+	hints := lipgloss.JoinHorizontal(lipgloss.Left, hierarchyHint, attachHint, stopKey)
 
-	spaceWidth := w - lipgloss.Width(mode) - lipgloss.Width(status) - lipgloss.Width(warning) - lipgloss.Width(tokenStyled) - lipgloss.Width(hints)
+	// Attached files count
+	var attachedStr string
+	if len(m.AttachedFiles) > 0 {
+		attachedStr = statusKeyStyle.Foreground(lipgloss.Color("#00FF00")).Render(fmt.Sprintf(" Attached: %d ", len(m.AttachedFiles)))
+	}
+
+	// Truncate status text if it would push hints off-screen
+	fixedWidth := lipgloss.Width(mode) + lipgloss.Width(warning) + lipgloss.Width(tokenStyled) + lipgloss.Width(attachedStr) + lipgloss.Width(hints)
+	maxStatusWidth := w - fixedWidth - 1 // leave at least 1 char of space
+	if maxStatusWidth < 0 {
+		maxStatusWidth = 0
+	}
+	if lipgloss.Width(status) > maxStatusWidth {
+		statusText = m.truncateWithEllipsis(statusText, maxStatusWidth-2) // -2 for style padding
+		status = statusTextStyle.Render(statusText)
+	}
+
+	spaceWidth := w - lipgloss.Width(mode) - lipgloss.Width(status) - lipgloss.Width(warning) - lipgloss.Width(tokenStyled) - lipgloss.Width(attachedStr) - lipgloss.Width(hints)
 	if spaceWidth < 0 {
 		spaceWidth = 0
 	}
@@ -139,9 +187,10 @@ func (m *Model) statusBarView() string {
 	spaceStyle := lipgloss.NewStyle().Background(appBgColor).MarginBackground(appBgColor)
 	space := spaceStyle.Width(spaceWidth).Render("")
 
-	content := lipgloss.JoinHorizontal(lipgloss.Left, mode, status, warning, tokenStyled, space, hints)
+	content := lipgloss.JoinHorizontal(lipgloss.Left, mode, status, warning, tokenStyled, attachedStr, space, hints)
 	return statusBarBaseStyle.Width(w).Render(content)
 }
+
 
 func (m *Model) updateViewport() {
 	if m.Focused == nil {
@@ -168,19 +217,37 @@ func (m *Model) updateViewport() {
 		var rendered string
 		switch msg.Role {
 		case "user":
-			rendered = userMsgStyle.Width(msgWidth + 1).Render(msg.Content)
+			content := msg.Content.UIString()
+			if len(msg.AttachedFiles) > 0 {
+				var names []string
+				for _, f := range msg.AttachedFiles {
+					name := filepath.Base(f)
+					if len(name) > 20 {
+						name = name[:17] + "..."
+					}
+					names = append(names, name)
+				}
+
+				attachmentLabel := "Attached: " + strings.Join(names, ", ")
+				maxLabelWidth := msgWidth - 4
+				if lipgloss.Width(attachmentLabel) > maxLabelWidth {
+					attachmentLabel = m.truncateWithEllipsis(attachmentLabel, maxLabelWidth)
+				}
+				content += "\n\n" + attachmentStyle.Render(attachmentLabel)
+			}
+			rendered = userMsgStyle.Width(msgWidth + 1).Render(content)
 		case "assistant":
 			var assistantParts []string
 			if msg.ReasoningContent != "" {
 				assistantParts = append(assistantParts, thoughtHeaderStyle.Width(msgWidth+1).Render("Thoughts:"))
 				assistantParts = append(assistantParts, thinkingStyle.Width(msgWidth-2).Render(msg.ReasoningContent))
 			}
-			if msg.Content != "" {
+			if msg.Content.String() != "" {
 				innerWidth := m.Viewport.Width() - AIMsgOverhead
 				if innerWidth < 1 {
 					innerWidth = 1
 				}
-				md := m.renderMarkdownBlock(msg.Content, innerWidth)
+				md := m.renderMarkdownBlock(msg.Content.String(), innerWidth)
 				assistantParts = append(assistantParts, aiMsgStyle.Width(msgWidth+1).Render(md))
 			}
 			for _, tc := range msg.ToolCalls {
