@@ -79,13 +79,31 @@ jobs:
           git clone https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/mlhher/homebrew-late.git tap
           cd tap
           CLEAN_VERSION="${VERSION#v}"
-          sed -i "s/VERSION_PLACEHOLDER/${CLEAN_VERSION}/" Formula/late.rb
-          sed -i "s/SHA_DARWIN_ARM64/${{ steps.hashes.outputs.darwin_arm64 }}/" Formula/late.rb
-          sed -i "s/SHA_DARWIN_AMD64/${{ steps.hashes.outputs.darwin_amd64 }}/" Formula/late.rb
-          sed -i "s/SHA_LINUX_ARM64/${{ steps.hashes.outputs.linux_arm64 }}/" Formula/late.rb
-          sed -i "s/SHA_LINUX_AMD64/${{ steps.hashes.outputs.linux_amd64 }}/" Formula/late.rb
+          # Replace version and sha256 values in-place (matches existing values, not placeholders)
+          sed -i "s/version \".*\"/version \"${CLEAN_VERSION}\"/" Formula/late.rb
+          # Each sha256 line is unique by context (order: darwin-arm64, darwin-amd64, linux-arm64, linux-amd64)
+          python3 -c "
+          import re, sys
+          with open('Formula/late.rb') as f:
+              content = f.read()
+          hashes = {
+              'darwin-arm64': '${{ steps.hashes.outputs.darwin_arm64 }}',
+              'darwin-amd64': '${{ steps.hashes.outputs.darwin_amd64 }}',
+              'linux-arm64':  '${{ steps.hashes.outputs.linux_arm64 }}',
+              'linux-amd64':  '${{ steps.hashes.outputs.linux_amd64 }}',
+          }
+          for target, sha in hashes.items():
+              content = re.sub(
+                  r'(late-' + re.escape(target) + r'\")\s*\n\s*sha256 \"[a-f0-9]+\"',
+                  r'\1\n      sha256 \"' + sha + '\"',
+                  content
+              )
+          with open('Formula/late.rb', 'w') as f:
+              f.write(content)
+          "
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/late.rb
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
           git commit -m "Update late to ${CLEAN_VERSION}"
           git push
