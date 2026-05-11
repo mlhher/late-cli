@@ -6,10 +6,11 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-// NOTE: Compound command keys (e.g., "git log", "go mod") are NOT created here
-// because AST adapters (both Windows and Unix) only emit base command names
-// ("git", "go") without subcommand qualification. The policy engine matches
-// against these base names, so allow-list keys must align with base names only.
+// tier2Commands require subcommands for safe allow-list precision.
+var tier2Commands = map[string]bool{
+	"git": true,
+	"go":  true,
+}
 
 // wordResolver resolves shell AST word nodes to their string values.
 // It only handles static literals — any dynamic expansion (variable, subshell,
@@ -49,11 +50,10 @@ func (r *wordResolver) resolvePart(sb *strings.Builder, p syntax.WordPart) bool 
 	}
 }
 
-// ParseCommandsForAllowList extracts command base names (lowercased) and their
-// lists of flags for ALL commands in a potentially compound string (pipes,
-// chains, etc). Command names are normalized to lowercase to align with how
-// AST adapters emit them (Windows PowerShell lowers all names; Unix is
-// normalized to lowercase here for consistency).
+// ParseCommandsForAllowList extracts command keys (lowercased) and their lists
+// of flags for ALL commands in a potentially compound string (pipes, chains,
+// etc). For tier2 commands (currently git/go), the command key includes the
+// first non-flag subcommand (e.g., "git log", "go test").
 func ParseCommandsForAllowList(command string) map[string][]string {
 	parser := syntax.NewParser()
 	f, err := parser.Parse(strings.NewReader(command), "")
@@ -78,10 +78,23 @@ func ParseCommandsForAllowList(command string) map[string][]string {
 		// Normalize command name to lowercase to match AST adapter behavior:
 		// Windows PowerShell adapter lowercases all cmdlets; Unix should
 		// also normalize to lowercase for consistency.
-		key := strings.ToLower(cmdName)
+		baseCmd := strings.ToLower(cmdName)
+		key := baseCmd
+		argsStartIdx := 1
+
+		if tier2Commands[baseCmd] && len(call.Args) > 1 {
+			subCmd, ok := wr.resolveWord(call.Args[1])
+			if ok {
+				subCmd = strings.TrimSpace(strings.ToLower(subCmd))
+				if subCmd != "" && !strings.HasPrefix(subCmd, "-") {
+					key = baseCmd + " " + subCmd
+					argsStartIdx = 2
+				}
+			}
+		}
 
 		var flags []string
-		for i := 1; i < len(call.Args); i++ {
+		for i := argsStartIdx; i < len(call.Args); i++ {
 			val, ok := wr.resolveWord(call.Args[i])
 			if !ok {
 				continue

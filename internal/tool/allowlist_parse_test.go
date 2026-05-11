@@ -10,18 +10,25 @@ func TestParseCommandsForAllowList(t *testing.T) {
 		want    map[string][]string
 	}{
 		{
-			// Base commands are lowercased; only flags (starting with -) are recorded
+			// Tier2 commands include subcommands in the key.
 			"go mod tidy && go test -v ./...",
 			map[string][]string{
-				"go": {"-v"},
+				"go mod":  {},
+				"go test": {"-v"},
 			},
 		},
 		{
-			// Commands are lowercased; flags are recorded
+			// Tier2 commands include subcommands and preserve flag capture.
 			"git log --oneline --output=test.txt | grep foo",
 			map[string][]string{
-				"git":  {"--oneline", "--output"},
-				"grep": {},
+				"git log": {"--oneline", "--output"},
+				"grep":    {},
+			},
+		},
+		{
+			"git push origin main",
+			map[string][]string{
+				"git push": {},
 			},
 		},
 		{
