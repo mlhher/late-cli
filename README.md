@@ -24,14 +24,15 @@ late
 ![Late Orchestrator planning a multi-phase implementation and spawning the first subagent](assets/late-subagent-handoff.png)
 *Lead Architect forming a plan and spawning an atomic subagent for a surgical edit.*
 
-|  | Late | Claude Code | OpenCode |
-|---|---|---|---|
-| Architecture | **Orchestrator + ephemeral subagents** | Single context window | Single context window |
-| Implementations | **Isolated in subagents, destroyed after** | Flood main context | Flood main context |
-| System prompt | **~1,000 tokens** | 10,000+ | 10,000+ (per default behavior) |
-| Native tools | **5 (different per agent)** | 15+ | 15+ |
-| Dependencies | **Zero — single binary** | Node.js | Node.js |
-| Model support | **Any OpenAI-compatible** | Claude API | Multiple |
+|  | Late | Claude Code | OpenCode | The Weekly Clone |
+| --- | --- | --- | --- | --- |
+| **Workflow** | **Autonomous Orchestration** | Manual toggling | Manual toggling | Blind execution/Manual toggling |
+| **Implementations** | **Ephemeral subagents (Context destroyed)** | Floods main context window | Floods main context window | Floods main context window |
+| **KV-Cache** | **Ruthless KV cache management** | "My employer pays the API bill" | Brute-force context dumping | Brute-force context dumping |
+| **System Prompt** | **~1,000 tokens (Always planning workflow)** | 10,000+ tokens | 10,000+ tokens | ~300-1000+ tokens (No-workflow lobotomy) |
+| **Dependencies** | **Zero-dependency static binary** | Node.js | Node.js | Python / Node.js |
+| **Setup required** | **None (OOTB `llama-server` support)** | Anthropic OAuth / Sign-in | Mandatory JSON tweaking | Flavor of the week JSON/YAML/TOML configs |
+| **Built For** | **Builders wanting 10x throughput** | Enterprise expense accounts | Tinkering with settings | Chasing GitHub stars |
 
 > *"The same model feels smarter with Late."* — Reddit
 
@@ -57,14 +58,14 @@ Late manages the KV cache and context window carefully, leaving more room for re
 
 ## Features
 
-- **Hybrid model routing** — separate models for orchestrator and subagents. Plan with a large model, execute with a fast cheap one.
-- **Exact-match diffs** — strict `search`/`replace` blocks with autonomous self-healing on mismatch. Edits fail loud, never silently corrupt files.
-- **Human-in-the-loop** — reads auto-approved, mutations hard-stop for `[y/N]`. Session, project, and global trust scopes with TTL decay.
-- **Session save/resume** — checkpoint and resume long-running sessions across restarts.
-- **MCP integration** — connect Model Context Protocol servers directly into Late via standard I/O.
-- **Agent Skills** — full native support for skills, no configuration needed.
-- **Git worktrees** — parallel isolated agent instances across branches.
-- **Model-agnostic** — Claude, DeepSeek, Qwen, Gemma, or any OpenAI-compatible endpoint, local or cloud.
+- **Hybrid Model Routing:** Architect the plan with a massive reasoning model (e.g., DeepSeek V4), then spawn subagents to execute it using blazing-fast, cheap local models (e.g., Gemma 4).
+- **Exact-Match Diffs:** Strict `search`/`replace` blocks with autonomous self-healing on mismatch. Edits fail loud. We never silently corrupt your files.
+- **Human-in-the-Loop:** Read-only commands are auto-approved for velocity. Mutations hard-stop for `[y/N]`. Features Session, Project, and Global trust scopes with TTL decay.
+- **Stateful Resilience:** The Orchestrator maintains continuous session history on disk. Close your terminal, reboot your machine, and pick up exactly where you left off.
+- **MCP Integration:** Natively map external Model Context Protocol servers directly into Late via standard I/O.
+- **Agent Skills:** Drop in reusable sets of instructions and scripts. Zero configuration or boilerplate required.
+- **Git Worktree Support:** Run independent, parallel agent instances across multiple branches without context bleeding.
+- **Gemma 4 Thinking Mode:** Standard wrappers just pipe text to an API, which means they can't trigger Gemma's reasoning. Late includes a dedicated flag to inject the exact tokens required to actually make it think.
 
 ---
 
