@@ -97,6 +97,11 @@ func parseSkillFile(content string) (*SkillMetadata, string, error) {
 		return nil, "", fmt.Errorf("SKILL.md must have YAML frontmatter enclosed in '---'")
 	}
 
+	const maxFrontmatterSize = 1 << 20 // 1 MB
+	if frontmatter.Len() > maxFrontmatterSize {
+		return nil, "", fmt.Errorf("YAML frontmatter exceeds maximum size of %d bytes", maxFrontmatterSize)
+	}
+
 	var metadata SkillMetadata
 	if err := yaml.Unmarshal([]byte(frontmatter.String()), &metadata); err != nil {
 		return nil, "", fmt.Errorf("failed to unmarshal YAML frontmatter: %w", err)
