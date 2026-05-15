@@ -28,7 +28,7 @@ late
 | --- | --- | --- | --- | --- |
 | **Workflow** | **Autonomous Orchestration** | Manual toggling | Manual toggling | Blind execution/Manual toggling |
 | **Implementations** | **Ephemeral subagents (Context destroyed)** | Floods main context window | Floods main context window | Floods main context window |
-| **KV-Cache** | **Ruthless KV cache management** | "My employer pays the API bill" | Brute-force context dumping | Brute-force context dumping |
+| **KV-Cache** | **Ruthless KV cache management** | Brute-force context dumping | Brute-force context dumping | Brute-force context dumping |
 | **System Prompt** | **~1,000 tokens (Always planning workflow)** | 10,000+ tokens | 10,000+ tokens | ~300-1000+ tokens (No-workflow lobotomy) |
 | **Dependencies** | **Zero-dependency static binary** | Node.js | Node.js | Python / Node.js |
 | **Setup required** | **None (OOTB `llama-server` support)** | Anthropic OAuth / Sign-in | Mandatory JSON tweaking | Flavor of the week JSON/YAML/TOML configs |
