@@ -1,6 +1,6 @@
 # Late: 高效的 AI 智能体编排工具 (High-Leverage AI Agent Orchestration)
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+[English](README.md) | [中文](README.zh-CN.md)
 
 > 现有的编程智能体常常将编辑、重试和实现细节全部塞进自己的上下文窗口中，直到模型彻底“迷失”。而 Late 则将这些细节委托给短暂的“子智能体 (subagents)”处理——它们在隔离的上下文中执行单一任务，并在完成后自动销毁。主控节点 (Orchestrator) 仅负责制定计划和查看结果，绝不干涉具体的代码实现细节。单一静态文件，零依赖，支持任何模型。
 
