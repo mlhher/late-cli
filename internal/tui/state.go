@@ -65,9 +65,6 @@ type AppState struct {
 	CachedHistoryLen    int // History length when tokens were last computed
 	LastRealTokenCount  int // Last ground-truth token count from the API usage data
 
-	// Message Queue
-	QueuedMessages []string
-
 	// Performance caches
 	LastStreamingContent string   // To avoid re-splitting if content hasn't changed
 	LastChunks           []string // Cached result of splitMarkdownChunks

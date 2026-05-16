@@ -399,7 +399,7 @@ func (m *Model) updateViewport() {
 	}
 
 	// Render Queued Messages
-	for _, msg := range s.QueuedMessages {
+	for _, msg := range m.Focused.QueuedMessages() {
 		blocks = append(blocks, queuedMsgStyle.Width(msgWidth+1).Render(msg))
 	}
 

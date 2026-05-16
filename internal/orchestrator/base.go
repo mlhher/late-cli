@@ -27,9 +27,11 @@ type BaseOrchestrator struct {
 	children []common.Orchestrator
 
 	// Running state tracker
-	acc    executor.StreamAccumulator
-	ctx    context.Context
-	cancel context.CancelFunc
+	isRunning   bool
+	pendingMsgs []client.ChatMessage
+	acc         executor.StreamAccumulator
+	ctx         context.Context
+	cancel      context.CancelFunc
 
 	// Stop mechanism
 	stopCh chan struct{}
@@ -84,18 +86,19 @@ func (o *BaseOrchestrator) RefreshContextSize(ctx context.Context) {
 	o.sess.Client().RefreshContextSize(ctx)
 }
 
+func (o *BaseOrchestrator) QueuedMessages() []string {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	var msgs []string
+	for _, m := range o.pendingMsgs {
+		msgs = append(msgs, m.Content.String())
+	}
+	return msgs
+}
+
 func (o *BaseOrchestrator) ID() string { return o.id }
 
 func (o *BaseOrchestrator) Submit(text string, images []string) error {
-	o.mu.Lock()
-	// Clear any old cancellation state so a new run isn't instantly aborted
-	o.cancel = nil
-	// Reset the base context if it was already cancelled
-	if o.ctx.Err() != nil {
-		o.ctx = context.Background()
-	}
-	o.mu.Unlock()
-
 	msg := client.ChatMessage{Role: "user", AttachedFiles: images}
 
 	if len(images) == 0 {
@@ -142,7 +145,27 @@ func (o *BaseOrchestrator) Submit(text string, images []string) error {
 		msg.Content = client.MessageContent{Parts: parts}
 	}
 
+	o.mu.Lock()
+	if o.isRunning {
+		o.pendingMsgs = append(o.pendingMsgs, msg)
+		o.mu.Unlock()
+		o.eventCh <- common.MessageQueuedEvent{ID: o.id, Text: text}
+		return nil
+	}
+
+	o.isRunning = true
+	// Clear any old cancellation state so a new run isn't instantly aborted
+	o.cancel = nil
+	// Reset the base context if it was already cancelled
+	if o.ctx.Err() != nil {
+		o.ctx = context.Background()
+	}
+	o.mu.Unlock()
+
 	if err := o.sess.AddMessage(msg); err != nil {
+		o.mu.Lock()
+		o.isRunning = false
+		o.mu.Unlock()
 		return err
 	}
 
@@ -154,6 +177,11 @@ func (o *BaseOrchestrator) Submit(text string, images []string) error {
 
 func (o *BaseOrchestrator) Execute(text string) (string, error) {
 	o.mu.Lock()
+	if o.isRunning {
+		o.mu.Unlock()
+		return "", fmt.Errorf("orchestrator is already running")
+	}
+	o.isRunning = true
 	if o.ctx.Err() != nil {
 		o.ctx = context.Background()
 	}
@@ -173,6 +201,10 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 
 	o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
 	defer func() {
+		o.mu.Lock()
+		o.isRunning = false
+		o.pendingMsgs = nil
+		o.mu.Unlock()
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"}
 	}()
 
@@ -182,8 +214,15 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 	onStartTurn := func() {
 		o.RefreshContextSize(ctx)
 		o.mu.Lock()
+		msgs := o.pendingMsgs
+		o.pendingMsgs = nil
 		o.acc.Reset()
 		o.mu.Unlock()
+
+		for _, msg := range msgs {
+			o.sess.AddMessage(msg)
+		}
+
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
 	}
 
@@ -229,9 +268,6 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 }
 
 func (o *BaseOrchestrator) run() {
-	// Build extra body
-	var extraBody map[string]any
-
 	o.mu.Lock()
 	if o.ctx.Err() != nil {
 		o.ctx = context.Background()
@@ -246,69 +282,89 @@ func (o *BaseOrchestrator) run() {
 	// Inject orchestrator ID into context for tool interactions
 	ctx = context.WithValue(ctx, common.OrchestratorIDKey, o.id)
 
-	onStartTurn := func() {
-		o.RefreshContextSize(ctx)
-		o.mu.Lock()
-		o.acc.Reset()
-		o.mu.Unlock()
-		o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
-	}
-
-	onEndTurn := func() {
-		o.RefreshContextSize(ctx)
-		o.mu.Lock()
-		usage := o.acc.Usage
-		o.acc.Reset()
-		o.mu.Unlock()
-		o.eventCh <- common.ContentEvent{ID: o.id, Usage: usage}
-	}
-
-	_, err := executor.RunLoop(
-		ctx,
-		o.sess,
-		o.maxTurns,
-		extraBody,
-		onStartTurn,
-		onEndTurn,
-		func(res common.StreamResult) {
+	for {
+		onStartTurn := func() {
+			o.RefreshContextSize(ctx)
 			o.mu.Lock()
-			o.acc.Append(res)
-			accCopy := o.acc // Copy for event
+			msgs := o.pendingMsgs
+			o.pendingMsgs = nil
+			o.acc.Reset()
 			o.mu.Unlock()
 
-			o.eventCh <- common.ContentEvent{
-				ID:               o.id,
-				Content:          accCopy.Content,
-				ReasoningContent: accCopy.Reasoning,
-				ToolCalls:        accCopy.ToolCalls,
-				Usage:            accCopy.Usage,
+			for _, msg := range msgs {
+				o.sess.AddMessage(msg)
 			}
-		},
-		o.middlewares,
-	)
 
-	// Reset accumulator after finished or ready for next turn
-	o.mu.Lock()
-	o.acc.Reset()
-	o.mu.Unlock()
-
-	if err != nil {
-		// If the error is about unsupported image input, roll back the user message
-		// so it doesn't poison the context for future requests.
-		errStr := err.Error()
-		if strings.Contains(errStr, "image input is not supported") ||
-			strings.Contains(errStr, "image_input") ||
-			strings.Contains(errStr, "does not support image") {
-			// Remove the last user message from history
-			if len(o.sess.History) > 0 && o.sess.History[len(o.sess.History)-1].Role == "user" {
-				o.sess.History = o.sess.History[:len(o.sess.History)-1]
-			}
-			o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: fmt.Errorf("image_unsupported")}
-		} else {
-			o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: err}
+			o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
 		}
-	} else {
-		o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"}
+
+		onEndTurn := func() {
+			o.RefreshContextSize(ctx)
+			o.mu.Lock()
+			usage := o.acc.Usage
+			o.acc.Reset()
+			o.mu.Unlock()
+			o.eventCh <- common.ContentEvent{ID: o.id, Usage: usage}
+		}
+
+		// Build extra body
+		var extraBody map[string]any
+
+		_, err := executor.RunLoop(
+			ctx,
+			o.sess,
+			o.maxTurns,
+			extraBody,
+			onStartTurn,
+			onEndTurn,
+			func(res common.StreamResult) {
+				o.mu.Lock()
+				o.acc.Append(res)
+				accCopy := o.acc // Copy for event
+				o.mu.Unlock()
+
+				o.eventCh <- common.ContentEvent{
+					ID:               o.id,
+					Content:          accCopy.Content,
+					ReasoningContent: accCopy.Reasoning,
+					ToolCalls:        accCopy.ToolCalls,
+					Usage:            accCopy.Usage,
+				}
+			},
+			o.middlewares,
+		)
+
+		// Reset accumulator after finished or ready for next turn
+		o.mu.Lock()
+		o.acc.Reset()
+		hasPending := len(o.pendingMsgs) > 0
+		if !hasPending {
+			o.isRunning = false
+		}
+		o.mu.Unlock()
+
+		if err != nil {
+			// If the error is about unsupported image input, roll back the user message
+			// so it doesn't poison the context for future requests.
+			errStr := err.Error()
+			if strings.Contains(errStr, "image input is not supported") ||
+				strings.Contains(errStr, "image_input") ||
+				strings.Contains(errStr, "does not support image") {
+				// Remove the last user message from history
+				if len(o.sess.History) > 0 && o.sess.History[len(o.sess.History)-1].Role == "user" {
+					o.sess.History = o.sess.History[:len(o.sess.History)-1]
+				}
+				o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: fmt.Errorf("image_unsupported")}
+			} else {
+				o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: err}
+			}
+			break
+		}
+		
+		if !hasPending {
+			o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"}
+			break
+		}
 	}
 
 	// Check if stop was requested and send StopRequestedEvent
