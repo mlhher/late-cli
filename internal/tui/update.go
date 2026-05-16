@@ -114,8 +114,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "up", "down", "pgup", "pgdown", "home", "end":
 			forwardToViewport = true
 		default:
-			// Only forward other keys if we are NOT typing (e.g. in a modal or viewing)
-			forwardToViewport = (m.GetAgentState(m.Focused.ID()).State != StateIdle)
+			// Never forward character keys to the viewport to prevent conflicts with textarea input.
+			// The viewport binds keys like space, j, k, d, u which cause shifting if typed.
+			forwardToViewport = false
 		}
 	case tea.MouseMsg:
 		forwardToViewport = true
@@ -153,7 +154,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err != nil {
 				m.Err = fmt.Errorf("failed to read file: %w", err)
 			} else {
-			mimeType := http.DetectContentType(data)
+				mimeType := http.DetectContentType(data)
 				isImage := strings.HasPrefix(mimeType, "image/")
 				if isImage && !m.Focused.SupportsVision() {
 					focusedState := m.GetAgentState(m.Focused.ID())
