@@ -42,3 +42,25 @@ func TestCompressWithSqz_Mocked(t *testing.T) {
 		t.Fatalf("expected original input, got %q", string(output))
 	}
 }
+
+func TestSetSqzEnabled(t *testing.T) {
+	// Reset state after test
+	originalIsSqzAvailable := isSqzAvailable
+	isSqzAvailable = func() bool { return true } // Force available for this test
+	defer func() {
+		isSqzAvailable = originalIsSqzAvailable
+		SetSqzEnabled(true) // Default back to true
+	}()
+
+	// Test disabling
+	SetSqzEnabled(false)
+	if IsSqzAvailable() {
+		t.Error("expected IsSqzAvailable to be false after SetSqzEnabled(false)")
+	}
+
+	// Test enabling
+	SetSqzEnabled(true)
+	if !IsSqzAvailable() {
+		t.Error("expected IsSqzAvailable to be true after SetSqzEnabled(true)")
+	}
+}

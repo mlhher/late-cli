@@ -11,15 +11,24 @@ import (
 )
 
 var (
+	sqzEnabled       = true
 	sqzAvailable     bool
 	sqzAvailableOnce sync.Once
-	
+
 	// isSqzAvailable is a variable holding the function to check for sqz, allowing it to be mocked in tests.
 	isSqzAvailable = defaultIsSqzAvailable
 )
 
-// IsSqzAvailable checks if the 'sqz' binary is available in the PATH.
+// SetSqzEnabled enables or disables sqz compression globally.
+func SetSqzEnabled(enabled bool) {
+	sqzEnabled = enabled
+}
+
+// IsSqzAvailable checks if the 'sqz' binary is available in the PATH and enabled.
 func IsSqzAvailable() bool {
+	if !sqzEnabled {
+		return false
+	}
 	return isSqzAvailable()
 }
 

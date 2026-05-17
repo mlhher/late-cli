@@ -39,6 +39,7 @@ func main() {
 	enableSubagentsReq := flag.Bool("enable-subagents", true, "Enable subagent usage")
 	gemmaThinkingReq := flag.Bool("gemma-thinking", false, "Prepend <|think|> token to system prompt for Gemma 4 models")
 	subagentMaxTurns := flag.Int("subagent-max-turns", 500, "Maximum number of turns for subagents (default: 500)")
+	enableSqzReq := flag.Bool("enable-sqz", true, "Enable sqz context compression (if available)")
 	appendSystemPromptReq := flag.String("append-system-prompt", "", "Append text to the system prompt after processing")
 	versionReq := flag.Bool("version", false, "Show version")
 	unsupervisedReq := flag.Bool("i-promise-i-have-backups-and-will-not-file-issues", false, "Unsupported: Execute all tools without supervision. Do not use this, bad things will happen. You have been warned.")
@@ -60,6 +61,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\n🌟 Enjoying Late? Consider leaving a star on GitHub: https://github.com/mlhher/late-cli\n")
 	}
 	flag.Parse()
+
+	tool.SetSqzEnabled(*enableSqzReq)
+
 	if *versionReq {
 		fmt.Printf("late %s\n", common.Version)
 		return
@@ -134,7 +138,11 @@ func main() {
 		systemPrompt = systemPrompt + *appendSystemPromptReq
 	}
 
-	fmt.Println("Starting late TUI (sqz-enabled build)...")
+	startMsg := "Starting late TUI..."
+	if tool.IsSqzAvailable() {
+		startMsg = "Starting late TUI (sqz-enabled)..."
+	}
+	fmt.Println(startMsg)
 
 	// Define history path with timestamp-based session ID
 	sessionsDir, err := session.SessionDir()
