@@ -21,9 +21,9 @@ func TestNewShellCommand(t *testing.T) {
 			expectedCmd: "echo test",
 		},
 		{
-			name:        "sqz available",
+			name:        "sqz available (should not add pipe here anymore)",
 			mockSqz:     true,
-			expectedCmd: "echo test | sqz compress",
+			expectedCmd: "echo test",
 		},
 	}
 

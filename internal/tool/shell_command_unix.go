@@ -29,9 +29,5 @@ func getUnixShellPath() string {
 }
 
 func newShellCommand(ctx context.Context, command string) *exec.Cmd {
-	cmd := command
-	if IsSqzAvailable() {
-		cmd = command + " | sqz compress"
-	}
-	return exec.CommandContext(ctx, getUnixShellPath(), "-c", cmd)
+	return exec.CommandContext(ctx, getUnixShellPath(), "-c", command)
 }

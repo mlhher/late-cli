@@ -42,11 +42,7 @@ func encodePSCommand(command string) string {
 
 func newShellCommand(ctx context.Context, command string) *exec.Cmd {
 	shell := getWindowsShellPath()
-	cmd := command
-	if IsSqzAvailable() {
-		cmd = command + " | sqz compress"
-	}
-	encoded := encodePSCommand(cmd)
+	encoded := encodePSCommand(command)
 	return exec.CommandContext(
 		ctx, shell,
 		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",

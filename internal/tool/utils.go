@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -28,6 +29,21 @@ func defaultIsSqzAvailable() bool {
 		sqzAvailable = (err == nil)
 	})
 	return sqzAvailable
+}
+
+// CompressWithSqz takes raw output and compresses it using the 'sqz' binary if available.
+func CompressWithSqz(ctx context.Context, input []byte, command string) ([]byte, error) {
+	if !IsSqzAvailable() {
+		return input, nil
+	}
+
+	// Use --cmd to label the compression for stats
+	cmd := exec.CommandContext(ctx, "sqz", "compress", "--cmd", command)
+	cmd.Stdin = strings.NewReader(string(input))
+	
+	// We only want the stdout (the compressed content). 
+	// Stderr contains sqz stats which we don't want to pollute the LLM context with.
+	return cmd.Output()
 }
 
 // getToolParam extracts a string parameter from tool arguments
