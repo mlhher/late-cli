@@ -4,75 +4,8 @@ import (
 	"late/internal/tool/ast"
 )
 
-// whitelistedWindowsCommands contains PowerShell cmdlets and aliases that are
-// considered read-only/safe and auto-approve without user allowlisting.
-var whitelistedWindowsCommands = map[string]bool{
-	"cat":            true,
-	"date":           true,
-	"dir":            true,
-	"echo":           true,
-	"gc":             true,
-	"gci":            true,
-	"get-childitem":  true,
-	"get-content":    true,
-	"get-date":       true,
-	"get-location":   true,
-	"ls":             true,
-	"measure-object": true,
-	"pwd":            true,
-	"select-string":  true,
-	"sls":            true,
-	"type":           true,
-	"whoami":         true,
-	"write-host":     true,
-	"write-output":   true,
-}
-
-// whitelistedUnixCommands contains Unix/shell commands that are considered
-// read-only/safe and auto-approve without user allowlisting.
-var whitelistedUnixCommands = map[string]map[string]bool{
-	"cat": {
-		"-n": true, "-b": true, "-v": true,
-	},
-	"date": {
-		"-u": true, "-R": true,
-	},
-	"echo": {
-		"-n": true, "-e": true,
-	},
-	"file": {
-		"-b": true, "-i": true,
-	},
-	"find": {
-		"-name": true, "-iname": true, "-type": true, "-maxdepth": true, "-mindepth": true,
-		"-size": true, "-mtime": true, "-atime": true, "-ctime": true, "-newer": true,
-		"-user": true, "-group": true, "-path": true, "-ipath": true, "-links": true,
-		"-empty": true, "-not": true, "-and": true, "-or": true,
-	},
-	"grep": {
-		"-i": true, "-v": true, "-l": true, "-n": true, "-r": true, "-R": true,
-		"-E": true, "-F": true, "-w": true, "-x": true, "-c": true,
-	},
-	"head": {
-		"-n": true, "-c": true, "-*": true, // -* allows numeric flags like -20
-	},
-	"ls": {
-		"-l": true, "-a": true, "-la": true, "-1": true, "-R": true, "-h": true,
-		"--color": true, "-F": true,
-	},
-	"pwd": {
-		"-P": true, "-L": true,
-	},
-	"tail": {
-		"-n": true, "-c": true, "-f": true, "-*": true, // -* allows numeric flags like -20
-	},
-	"wc": {
-		"-l": true, "-w": true, "-c": true, "-m": true,
-	},
-	"whoami": {},
-}
-
-// astAnalyzer wraps the AST pipeline and implements CommandAnalyzer.
+// astAnalyzer wraps the ast pipeline and implements CommandAnalyzer so it can
+// be dropped into ShellTool.getAnalyzer as a drop-in replacement (Phase 5).
 type astAnalyzer struct {
 	parser ast.Parser
 	policy *ast.PolicyEngine
@@ -80,8 +13,9 @@ type astAnalyzer struct {
 }
 
 func newASTAnalyzer(platform ast.Platform, cwd string, allowed map[string]map[string]bool) *astAnalyzer {
-	// Seed the policy engine with the built-in safe commands so that
-	// basic commands (ls, pwd, cat, etc.) auto-approve without user allowlisting.
+	// On Windows, seed the policy engine with the built-in safe cmdlets so
+	// that Get-ChildItem, ls, pwd etc. auto-approve without user allowlisting.
+	// Source of truth is whitelistedWindowsCommands in powershell_analyzer.go.
 	// Check the platform parameter (not runtime.GOOS) so behaviour is consistent
 	// when platform is overridden, e.g. in cross-platform tests.
 	if platform == ast.PlatformWindows {
@@ -90,19 +24,7 @@ func newASTAnalyzer(platform ast.Platform, cwd string, allowed map[string]map[st
 				allowed[cmd] = map[string]bool{}
 			}
 		}
-	} else {
-		// Unix: seed with commands and their common flags
-		for cmd, flags := range whitelistedUnixCommands {
-			if _, ok := allowed[cmd]; !ok {
-				allowed[cmd] = make(map[string]bool)
-			}
-			// Add all the whitelisted flags for this command
-			for flag := range flags {
-				allowed[cmd][flag] = true
-			}
-		}
 	}
-
 	return &astAnalyzer{
 		parser: ast.NewParser(platform, cwd),
 		policy: &ast.PolicyEngine{AllowedCommands: allowed},
@@ -118,12 +40,15 @@ func (a *astAnalyzer) Analyze(command string) CommandAnalysis {
 	}
 	d := a.policy.Decide(ir)
 
-	// Unsupervised mode: auto-approve mkdir/New-Item (new-path operations)
-	// without any restrictions. The operation is allowed regardless of
-	// target location or whether the path already exists.
-	if d.NeedsConfirmation && !d.IsBlocked {
+	// New-path carveout: PolicyEngine conservatively requires confirmation for
+	// mkdir/New-Item (it has no cwd context). Here we have the session cwd,
+	// so if the sole risk signal is ReasonNewPath and the target is within cwd,
+	// downgrade to auto-approve — matching the legacy PowerShellAnalyzer behaviour.
+	if d.NeedsConfirmation && !d.IsBlocked && ir.Platform == ast.PlatformWindows {
 		if ast.HasRiskOnly(ir, ast.ReasonNewPath) {
-			return CommandAnalysis{NeedsConfirmation: false}
+			if target := extractPowerShellTargetPath(command); target != "" && isNewPath(target, a.cwd) {
+				return CommandAnalysis{NeedsConfirmation: false}
+			}
 		}
 	}
 
@@ -131,5 +56,35 @@ func (a *astAnalyzer) Analyze(command string) CommandAnalysis {
 		IsBlocked:         d.IsBlocked,
 		BlockReason:       d.BlockReason,
 		NeedsConfirmation: d.NeedsConfirmation,
+	}
+}
+
+// shadowAnalyzerShim bridges the ast.LegacyAnalysis interface with the
+// concrete CommandAnalyzer types in this package so ShadowAnalyzer can wrap
+// them without importing tool (which would be circular).
+type shadowAnalyzerShim struct {
+	inner CommandAnalyzer
+}
+
+func (s *shadowAnalyzerShim) Analyze(command string) ast.LegacyAnalysis {
+	ca := s.inner.Analyze(command)
+	return ast.LegacyAnalysis{
+		IsBlocked:         ca.IsBlocked,
+		BlockReason:       ca.BlockReason,
+		NeedsConfirmation: ca.NeedsConfirmation,
+	}
+}
+
+// shadowWrapper wraps an ast.ShadowAnalyzer and implements CommandAnalyzer.
+type shadowWrapper struct {
+	shadow *ast.ShadowAnalyzer
+}
+
+func (sw *shadowWrapper) Analyze(command string) CommandAnalysis {
+	la := sw.shadow.Analyze(command)
+	return CommandAnalysis{
+		IsBlocked:         la.IsBlocked,
+		BlockReason:       la.BlockReason,
+		NeedsConfirmation: la.NeedsConfirmation,
 	}
 }

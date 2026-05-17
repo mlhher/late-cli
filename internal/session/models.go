@@ -20,6 +20,11 @@ type SessionMeta struct {
 	HistoryPath    string    `json:"history_path"`     // Full path to history file
 	LastUserPrompt string    `json:"last_user_prompt"` // Last 100 chars of last user message
 	MessageCount   int       `json:"message_count"`
+
+	// Archive compaction metadata (Phase 8 observability).
+	CompactionCount      int       `json:"compaction_count,omitempty"`
+	ArchivedMessageCount int       `json:"archived_message_count,omitempty"`
+	LastCompactionAt     time.Time `json:"last_compaction_at,omitempty"`
 }
 
 // SessionDir returns the directory where session metadata and histories are stored
