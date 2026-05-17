@@ -114,8 +114,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "up", "down", "pgup", "pgdown", "home", "end":
 			forwardToViewport = true
 		default:
-			// Only forward other keys if we are NOT typing (e.g. in a modal or viewing)
-			forwardToViewport = (m.GetAgentState(m.Focused.ID()).State != StateIdle)
+			// Never forward character keys to the viewport to prevent conflicts with textarea input.
+			// The viewport binds keys like space, j, k, d, u which cause shifting if typed.
+			forwardToViewport = false
 		}
 	case tea.MouseMsg:
 		forwardToViewport = true
@@ -153,7 +154,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err != nil {
 				m.Err = fmt.Errorf("failed to read file: %w", err)
 			} else {
-			mimeType := http.DetectContentType(data)
+				mimeType := http.DetectContentType(data)
 				isImage := strings.HasPrefix(mimeType, "image/")
 				if isImage && !m.Focused.SupportsVision() {
 					focusedState := m.GetAgentState(m.Focused.ID())
@@ -200,60 +201,55 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				return m, nil
 			}
 
-			if focusedState.State == StateIdle || focusedState.State == StateContextWarning {
-				// Preflight context check
-				maxTokens := m.Focused.MaxTokens()
-				if focusedState.State == StateIdle && maxTokens > 0 && !focusedState.ContextWarningShown {
-					// Use 10% safety margin (90% threshold)
-					threshold := 0.9
-					if float64(focusedState.CumulativeTokenCount) >= float64(maxTokens)*threshold {
-						focusedState.State = StateContextWarning
-						focusedState.ContextWarningShown = true
-						m.updateViewport()
-						return m, nil
-					}
-				}
-
-				// Re-validate attachments in case the model changed since file selection
-				if len(m.AttachedFiles) > 0 && !m.Focused.SupportsVision() {
-					var filtered []string
-					for _, f := range m.AttachedFiles {
-						data, err := os.ReadFile(f)
-						if err != nil {
-							continue
-						}
-						mimeType := http.DetectContentType(data)
-						if !strings.HasPrefix(mimeType, "image/") {
-							filtered = append(filtered, f)
-						}
-					}
-					if len(filtered) != len(m.AttachedFiles) {
-						m.AttachedFiles = filtered
-						focusedState.StatusText = "Images dropped: model no longer supports vision"
-						return m, nil
-					}
-				}
-
-				if err := m.Focused.Submit(input, m.AttachedFiles); err != nil {
-					m.Err = err
+			// Preflight context check
+			maxTokens := m.Focused.MaxTokens()
+			if focusedState.State == StateIdle && maxTokens > 0 && !focusedState.ContextWarningShown {
+				// Use 10% safety margin (90% threshold)
+				threshold := 0.9
+				if float64(focusedState.CumulativeTokenCount) >= float64(maxTokens)*threshold {
+					focusedState.State = StateContextWarning
+					focusedState.ContextWarningShown = true
+					m.updateViewport()
 					return m, nil
 				}
-				m.Input.Reset()
-				m.Input.SetValue("> ")
-				m.AttachedFiles = nil // Clear attachments after submit
-				focusedState.State = StateThinking
-				focusedState.ContextWarningShown = false // Reset after successful submission
-				// Token count will be calculated in ContentEvent handler
-				m.updateViewport()
-				return m, nil
-			} else {
-				// Queue message if agent is busy
-				focusedState.QueuedMessages = append(focusedState.QueuedMessages, input)
-				m.Input.Reset()
-				m.Input.SetValue("> ")
-				m.updateViewport()
+			}
+
+			// Re-validate attachments in case the model changed since file selection
+			if len(m.AttachedFiles) > 0 && !m.Focused.SupportsVision() {
+				var filtered []string
+				for _, f := range m.AttachedFiles {
+					data, err := os.ReadFile(f)
+					if err != nil {
+						continue
+					}
+					mimeType := http.DetectContentType(data)
+					if !strings.HasPrefix(mimeType, "image/") {
+						filtered = append(filtered, f)
+					}
+				}
+				if len(filtered) != len(m.AttachedFiles) {
+					m.AttachedFiles = filtered
+					focusedState.StatusText = "Images dropped: model no longer supports vision"
+					return m, nil
+				}
+			}
+
+			if err := m.Focused.Submit(input, m.AttachedFiles); err != nil {
+				m.Err = err
 				return m, nil
 			}
+			m.Input.Reset()
+			m.Input.SetValue("> ")
+			m.AttachedFiles = nil // Clear attachments after submit
+			
+			// Only update state to thinking if it was idle, else let it stay in its current busy state
+			if focusedState.State == StateIdle || focusedState.State == StateContextWarning {
+				focusedState.State = StateThinking
+				focusedState.ContextWarningShown = false // Reset after successful submission
+			}
+			// Token count will be calculated in ContentEvent handler
+			m.updateViewport()
+			return m, nil
 
 		case "alt+enter":
 			m.Input.InsertString("\n")
@@ -388,20 +384,6 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				s.State = StateIdle
 				s.StatusText = "Closed"
 				s.Closed = true
-				// Process next queued message if any
-				if len(s.QueuedMessages) > 0 {
-					next := s.QueuedMessages[0]
-					s.QueuedMessages = s.QueuedMessages[1:]
-					orch := m.FindOrchestrator(event.ID)
-					if orch != nil {
-						if err := orch.Submit(next, nil); err != nil {
-							m.Err = err
-						} else {
-							s.State = StateThinking
-							s.Closed = false // Re-open if we submit
-						}
-					}
-				}
 				// If the focused agent closed, switch back to parent (if any) or root
 				if event.ID == m.Focused.ID() && s.State == StateIdle {
 					if m.Focused.Parent() != nil {
@@ -427,20 +409,6 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				s.RenderedHistory = nil
 				s.StreamingStyledCache = ""
 				s.StreamingChunkCount = 0
-
-				// Process next queued message if any
-				if len(s.QueuedMessages) > 0 {
-					next := s.QueuedMessages[0]
-					s.QueuedMessages = s.QueuedMessages[1:]
-					orch := m.FindOrchestrator(event.ID)
-					if orch != nil {
-						if err := orch.Submit(next, nil); err != nil {
-							m.Err = err
-						} else {
-							s.State = StateThinking
-						}
-					}
-				}
 			}
 			if event.ID == m.Focused.ID() {
 				m.updateViewport()
@@ -455,6 +423,10 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			s.RenderedHistory = nil
 			s.StreamingStyledCache = ""
 			s.StreamingChunkCount = 0
+			if event.ID == m.Focused.ID() {
+				m.updateViewport()
+			}
+		case common.MessageQueuedEvent:
 			if event.ID == m.Focused.ID() {
 				m.updateViewport()
 			}

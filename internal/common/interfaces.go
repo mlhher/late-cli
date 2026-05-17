@@ -37,6 +37,7 @@ type Orchestrator interface {
 	RefreshContextSize(context.Context)
 	MaxTokens() int
 	SupportsVision() bool
+	QueuedMessages() []string
 }
 
 // Event represents something that happened in the orchestrator.
@@ -78,6 +79,14 @@ type StopRequestedEvent struct {
 }
 
 func (e StopRequestedEvent) OrchestratorID() string { return e.ID }
+
+// MessageQueuedEvent is sent when a user message is queued.
+type MessageQueuedEvent struct {
+	ID   string
+	Text string
+}
+
+func (e MessageQueuedEvent) OrchestratorID() string { return e.ID }
 
 // PromptRequest defines a generic requirement for user input.
 type PromptRequest struct {

@@ -2,17 +2,17 @@ package orchestrator
 
 import (
 	"context"
-	"late/internal/archive"
+	"encoding/base64"
+	"fmt"
 	"late/internal/client"
 	"late/internal/common"
-	"late/internal/config"
 	"late/internal/executor"
 	"late/internal/session"
-	"late/internal/tool"
-	"log"
+	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
-	"time"
 )
 
 // BaseOrchestrator implements common.Orchestrator and manages an agent's run loop.
@@ -27,24 +27,17 @@ type BaseOrchestrator struct {
 	children []common.Orchestrator
 
 	// Running state tracker
-	acc    executor.StreamAccumulator
-	ctx    context.Context
-	cancel context.CancelFunc
+	isRunning   bool
+	pendingMsgs []client.ChatMessage
+	acc         executor.StreamAccumulator
+	ctx         context.Context
+	cancel      context.CancelFunc
 
 	// Stop mechanism
 	stopCh chan struct{}
 
 	// Max turns configuration
 	maxTurns int
-
-	// Archive subsystem (nil when compaction is disabled)
-	archiveSub *archiveState
-}
-
-// archiveState holds loaded archive and search service for one session run.
-type archiveState struct {
-	sub *tool.ArchiveSubsystem
-	cfg config.ArchiveCompactionConfig
 }
 
 func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.ToolMiddleware, maxTurns int) *BaseOrchestrator {
@@ -83,14 +76,84 @@ func (o *BaseOrchestrator) MaxTokens() int {
 	return o.sess.Client().ContextSize()
 }
 
+func (o *BaseOrchestrator) SupportsVision() bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.sess.Client().SupportsVision()
+}
+
 func (o *BaseOrchestrator) RefreshContextSize(ctx context.Context) {
 	o.sess.Client().RefreshContextSize(ctx)
 }
 
+func (o *BaseOrchestrator) QueuedMessages() []string {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	var msgs []string
+	for _, m := range o.pendingMsgs {
+		msgs = append(msgs, m.Content.String())
+	}
+	return msgs
+}
+
 func (o *BaseOrchestrator) ID() string { return o.id }
 
-func (o *BaseOrchestrator) Submit(text string) error {
+func (o *BaseOrchestrator) Submit(text string, images []string) error {
+	msg := client.ChatMessage{Role: "user", AttachedFiles: images}
+
+	if len(images) == 0 {
+		msg.Content = client.TextContent(text)
+	} else {
+		parts := []client.ContentPart{
+			{Type: client.ContentPartText, Text: text},
+		}
+		supportsVision := o.SupportsVision()
+		for _, imgPath := range images {
+			data, err := os.ReadFile(imgPath)
+			if err != nil {
+				return fmt.Errorf("failed to read file %s: %w", imgPath, err)
+			}
+
+			mimeType := http.DetectContentType(data)
+			// Only attach to LLM content if it's an image AND the model supports vision
+			if strings.HasPrefix(mimeType, "image/") && supportsVision {
+				encoded := base64.StdEncoding.EncodeToString(data)
+				parts = append(parts, client.ContentPart{
+					Type: client.ContentPartImageURL,
+					ImageURL: &client.ImageURL{
+						URL: fmt.Sprintf("data:%s;base64,%s", mimeType, encoded),
+					},
+				})
+			} else {
+				// Treat as text if it looks like text or has a common extension.
+				// If it's an image but the model doesn't support vision, just include a note.
+				content := ""
+				isAttachment := true
+				if strings.HasPrefix(mimeType, "image/") {
+					content = fmt.Sprintf("\nAttached Image: %s (Vision not supported by current model)\n", filepath.Base(imgPath))
+				} else {
+					content = fmt.Sprintf("\nFilename: %s\nContent: ```\n%s\n```\n", filepath.Base(imgPath), string(data))
+				}
+
+				parts = append(parts, client.ContentPart{
+					Type:         client.ContentPartText,
+					Text:         content,
+					IsAttachment: isAttachment,
+				})
+			}
+		}
+		msg.Content = client.MessageContent{Parts: parts}
+	}
+
 	o.mu.Lock()
+	if o.isRunning {
+		o.pendingMsgs = append(o.pendingMsgs, msg)
+		o.mu.Unlock()
+		o.eventCh <- common.MessageQueuedEvent{ID: o.id, Text: text}
+		return nil
+	}
+
+	o.isRunning = true
 	// Clear any old cancellation state so a new run isn't instantly aborted
 	o.cancel = nil
 	// Reset the base context if it was already cancelled
@@ -99,7 +162,10 @@ func (o *BaseOrchestrator) Submit(text string) error {
 	}
 	o.mu.Unlock()
 
-	if err := o.sess.AddUserMessage(text); err != nil {
+	if err := o.sess.AddMessage(msg); err != nil {
+		o.mu.Lock()
+		o.isRunning = false
+		o.mu.Unlock()
 		return err
 	}
 
@@ -111,6 +177,11 @@ func (o *BaseOrchestrator) Submit(text string) error {
 
 func (o *BaseOrchestrator) Execute(text string) (string, error) {
 	o.mu.Lock()
+	if o.isRunning {
+		o.mu.Unlock()
+		return "", fmt.Errorf("orchestrator is already running")
+	}
+	o.isRunning = true
 	if o.ctx.Err() != nil {
 		o.ctx = context.Background()
 	}
@@ -130,20 +201,28 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 
 	o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
 	defer func() {
+		o.mu.Lock()
+		o.isRunning = false
+		o.pendingMsgs = nil
+		o.mu.Unlock()
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"}
 	}()
 
 	// Build extra body
 	var extraBody map[string]any
 
-	// Pre-run archive compaction hook (fail-open).
-	o.runArchivePreHook()
-
 	onStartTurn := func() {
 		o.RefreshContextSize(ctx)
 		o.mu.Lock()
+		msgs := o.pendingMsgs
+		o.pendingMsgs = nil
 		o.acc.Reset()
 		o.mu.Unlock()
+
+		for _, msg := range msgs {
+			o.sess.AddMessage(msg)
+		}
+
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
 	}
 
@@ -189,9 +268,6 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 }
 
 func (o *BaseOrchestrator) run() {
-	// Build extra body
-	var extraBody map[string]any
-
 	o.mu.Lock()
 	if o.ctx.Err() != nil {
 		o.ctx = context.Background()
@@ -206,59 +282,89 @@ func (o *BaseOrchestrator) run() {
 	// Inject orchestrator ID into context for tool interactions
 	ctx = context.WithValue(ctx, common.OrchestratorIDKey, o.id)
 
-	// Pre-run archive compaction hook (fail-open).
-	o.runArchivePreHook()
-
-	onStartTurn := func() {
-		o.RefreshContextSize(ctx)
-		o.mu.Lock()
-		o.acc.Reset()
-		o.mu.Unlock()
-		o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
-	}
-
-	onEndTurn := func() {
-		o.RefreshContextSize(ctx)
-		o.mu.Lock()
-		usage := o.acc.Usage
-		o.acc.Reset()
-		o.mu.Unlock()
-		o.eventCh <- common.ContentEvent{ID: o.id, Usage: usage}
-	}
-
-	_, err := executor.RunLoop(
-		ctx,
-		o.sess,
-		o.maxTurns,
-		extraBody,
-		onStartTurn,
-		onEndTurn,
-		func(res common.StreamResult) {
+	for {
+		onStartTurn := func() {
+			o.RefreshContextSize(ctx)
 			o.mu.Lock()
-			o.acc.Append(res)
-			accCopy := o.acc // Copy for event
+			msgs := o.pendingMsgs
+			o.pendingMsgs = nil
+			o.acc.Reset()
 			o.mu.Unlock()
 
-			o.eventCh <- common.ContentEvent{
-				ID:               o.id,
-				Content:          accCopy.Content,
-				ReasoningContent: accCopy.Reasoning,
-				ToolCalls:        accCopy.ToolCalls,
-				Usage:            accCopy.Usage,
+			for _, msg := range msgs {
+				o.sess.AddMessage(msg)
 			}
-		},
-		o.middlewares,
-	)
 
-	// Reset accumulator after finished or ready for next turn
-	o.mu.Lock()
-	o.acc.Reset()
-	o.mu.Unlock()
+			o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
+		}
 
-	if err != nil {
-		o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: err}
-	} else {
-		o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"}
+		onEndTurn := func() {
+			o.RefreshContextSize(ctx)
+			o.mu.Lock()
+			usage := o.acc.Usage
+			o.acc.Reset()
+			o.mu.Unlock()
+			o.eventCh <- common.ContentEvent{ID: o.id, Usage: usage}
+		}
+
+		// Build extra body
+		var extraBody map[string]any
+
+		_, err := executor.RunLoop(
+			ctx,
+			o.sess,
+			o.maxTurns,
+			extraBody,
+			onStartTurn,
+			onEndTurn,
+			func(res common.StreamResult) {
+				o.mu.Lock()
+				o.acc.Append(res)
+				accCopy := o.acc // Copy for event
+				o.mu.Unlock()
+
+				o.eventCh <- common.ContentEvent{
+					ID:               o.id,
+					Content:          accCopy.Content,
+					ReasoningContent: accCopy.Reasoning,
+					ToolCalls:        accCopy.ToolCalls,
+					Usage:            accCopy.Usage,
+				}
+			},
+			o.middlewares,
+		)
+
+		// Reset accumulator after finished or ready for next turn
+		o.mu.Lock()
+		o.acc.Reset()
+		hasPending := len(o.pendingMsgs) > 0
+		if !hasPending {
+			o.isRunning = false
+		}
+		o.mu.Unlock()
+
+		if err != nil {
+			// If the error is about unsupported image input, roll back the user message
+			// so it doesn't poison the context for future requests.
+			errStr := err.Error()
+			if strings.Contains(errStr, "image input is not supported") ||
+				strings.Contains(errStr, "image_input") ||
+				strings.Contains(errStr, "does not support image") {
+				// Remove the last user message from history
+				if len(o.sess.History) > 0 && o.sess.History[len(o.sess.History)-1].Role == "user" {
+					o.sess.History = o.sess.History[:len(o.sess.History)-1]
+				}
+				o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: fmt.Errorf("image_unsupported")}
+			} else {
+				o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: err}
+			}
+			break
+		}
+		
+		if !hasPending {
+			o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"}
+			break
+		}
 	}
 
 	// Check if stop was requested and send StopRequestedEvent
@@ -353,116 +459,5 @@ func (o *BaseOrchestrator) AddChild(child common.Orchestrator) {
 	o.eventCh <- common.ChildAddedEvent{
 		ParentID: o.id,
 		Child:    child,
-	}
-}
-
-// runArchivePreHook runs archive compaction before a run loop if enabled.
-// Fail-open: any error is logged but does not block execution.
-func (o *BaseOrchestrator) runArchivePreHook() {
-	histPath := o.sess.HistoryPath
-	if histPath == "" {
-		return
-	}
-
-	cfg, err := config.LoadConfig()
-	if err != nil || !cfg.IsArchiveCompactionEnabled() {
-		return
-	}
-	settings := cfg.ArchiveCompactionSettings()
-
-	// Phase 8: verify archive file permissions (warn only).
-	archPath := archive.ArchivePath(histPath)
-	if info, statErr := os.Stat(archPath); statErr == nil {
-		if perm := info.Mode().Perm(); perm&0o077 != 0 {
-			log.Printf("[archive] warning: archive file %s has loose permissions (%o); expected 0600", archPath, perm)
-		}
-	}
-
-	var arch *archive.SessionArchive
-	o.mu.Lock()
-	existing := o.archiveSub
-	o.mu.Unlock()
-
-	if existing != nil && existing.sub != nil && existing.sub.Archive != nil {
-		arch = existing.sub.Archive
-	} else {
-		arch, err = archive.Load(archPath, o.id)
-		if err != nil {
-			log.Printf("[archive] failed to load archive for hook: %v", err)
-			return
-		}
-	}
-
-	compactCfg := archive.CompactionConfig{
-		ThresholdMessages:  settings.CompactionThresholdMessages,
-		KeepRecentMessages: settings.KeepRecentMessages,
-		ChunkSize:          settings.ArchiveChunkSize,
-		StaleAfterSeconds:  settings.LockStaleAfterSeconds,
-	}
-
-	log.Printf("[archive] pre-run hook: history=%d msgs, threshold=%d", len(o.sess.History), settings.CompactionThresholdMessages)
-	compactStart := time.Now()
-
-	res, newActive, newArch, err := archive.Compact(
-		histPath, o.id,
-		o.sess.History,
-		arch,
-		compactCfg,
-	)
-	compactDur := time.Since(compactStart)
-
-	if err != nil {
-		log.Printf("[archive] compaction hook error: %v", err)
-		return
-	}
-	if res.LockHeld {
-		log.Printf("[archive] compaction skipped (lock held by another process)")
-	}
-	if !res.NoOp {
-		log.Printf("[archive] compaction complete: archived=%d msgs in %s", res.ArchivedCount, compactDur)
-		o.mu.Lock()
-		o.sess.History = newActive
-		o.mu.Unlock()
-		if err := session.SaveHistory(histPath, newActive); err != nil {
-			log.Printf("[archive] failed to persist compacted history: %v", err)
-		}
-
-		// Phase 8: update session meta counters.
-		metaID := archive.BaseSessionID(histPath)
-		if meta, loadErr := session.LoadSessionMeta(metaID); loadErr == nil && meta != nil {
-			meta.CompactionCount = newArch.CompactionCount
-			meta.ArchivedMessageCount = newArch.ArchivedMessageCount
-			meta.LastCompactionAt = time.Now().UTC()
-			if saveErr := session.SaveSessionMeta(*meta); saveErr != nil {
-				log.Printf("[archive] failed to save session meta counters: %v", saveErr)
-			}
-		}
-	}
-
-	svc := archive.NewSearchService(newArch)
-	if !res.NoOp {
-		svc.MarkDirty()
-	}
-	searchStart := time.Now()
-	_ = svc.Search("", 0, false) // warm the lazy index
-	log.Printf("[archive] search index ready in %s", time.Since(searchStart))
-
-	o.mu.Lock()
-	o.archiveSub = &archiveState{
-		sub: &tool.ArchiveSubsystem{
-			Archive: newArch,
-			Search:  svc,
-		},
-		cfg: settings,
-	}
-	o.mu.Unlock()
-
-	// Register archive tools into session registry (idempotent: only if not already present).
-	reg := o.sess.Registry
-	if reg != nil && reg.Get("search_session_archive") == nil {
-		tool.RegisterArchiveTools(reg, o.archiveSub.sub,
-			settings.ArchiveSearchMaxResults,
-			settings.ArchiveSearchCaseSensitive)
-		log.Printf("[archive] tools registered (search_session_archive, retrieve_archived_message)")
 	}
 }
