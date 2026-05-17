@@ -132,6 +132,27 @@ func TestBashTool_Execute(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix echo/pwd behavior tests skipped on Windows; see TestPSShellTool_* in implementations_cmd_test.go")
 	}
+
+	// Test sqz disabled explicitly
+	t.Run("sqz disabled", func(t *testing.T) {
+		SetSqzEnabled(false)
+		defer SetSqzEnabled(true)
+
+		tool := ShellTool{}
+		params := json.RawMessage(`{"command": "echo 'sqz test'"}`)
+		result, err := tool.Execute(approvedContext(), params)
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+		// When sqz is disabled, we should get the raw output without sqz headers/stats
+		if strings.Contains(result, "[sqz]") {
+			t.Errorf("expected no [sqz] in output when disabled, got %q", result)
+		}
+		if !strings.Contains(result, "sqz test") {
+			t.Errorf("expected output to contain 'sqz test', got %q", result)
+		}
+	})
+
 	tests := []struct {
 		name    string
 		params  json.RawMessage
