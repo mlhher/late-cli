@@ -3,9 +3,32 @@ package tool
 import (
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 )
+
+var (
+	sqzAvailable     bool
+	sqzAvailableOnce sync.Once
+	
+	// isSqzAvailable is a variable holding the function to check for sqz, allowing it to be mocked in tests.
+	isSqzAvailable = defaultIsSqzAvailable
+)
+
+// IsSqzAvailable checks if the 'sqz' binary is available in the PATH.
+func IsSqzAvailable() bool {
+	return isSqzAvailable()
+}
+
+func defaultIsSqzAvailable() bool {
+	sqzAvailableOnce.Do(func() {
+		_, err := exec.LookPath("sqz")
+		sqzAvailable = (err == nil)
+	})
+	return sqzAvailable
+}
 
 // getToolParam extracts a string parameter from tool arguments
 func getToolParam(args json.RawMessage, key string) string {

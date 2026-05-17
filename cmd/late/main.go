@@ -134,7 +134,7 @@ func main() {
 		systemPrompt = systemPrompt + *appendSystemPromptReq
 	}
 
-	fmt.Println("Starting late TUI...")
+	fmt.Println("Starting late TUI (sqz-enabled build)...")
 
 	// Define history path with timestamp-based session ID
 	sessionsDir, err := session.SessionDir()
