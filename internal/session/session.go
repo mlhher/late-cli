@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"late/internal/assets"
 	"late/internal/client"
 	"late/internal/common"
 	"late/internal/tool"
@@ -16,21 +17,40 @@ import (
 type Session struct {
 	client       *client.Client
 	HistoryPath  string
+	ID           string
+	onEvent      func(common.Event)
 	History      []client.ChatMessage
 	systemPrompt string
 	useTools     bool
+	compressionThreshold int
 	Registry     *tool.Registry
 }
 
-func New(c *client.Client, historyPath string, history []client.ChatMessage, systemPrompt string, useTools bool) *Session {
+func New(c *client.Client, historyPath string, history []client.ChatMessage, systemPrompt string, useTools bool, compressionThreshold int) *Session {
 	return &Session{
 		client:       c,
 		HistoryPath:  historyPath,
 		History:      history,
 		systemPrompt: systemPrompt,
 		useTools:     useTools,
+		compressionThreshold: compressionThreshold,
 		Registry:     tool.NewRegistry(),
 	}
+}
+
+// SetID sets the ID of the session.
+func (s *Session) SetID(id string) {
+	s.ID = id
+}
+
+// GetID returns the ID of the session.
+func (s *Session) GetID() string {
+	return s.ID
+}
+
+// SetOnEvent registers a callback function to be called when a relevant event occurs.
+func (s *Session) SetOnEvent(fn func(common.Event)) {
+	s.onEvent = fn
 }
 
 // ExecuteTool executes a tool call and returns the response as a string.
@@ -43,17 +63,27 @@ func (s *Session) ExecuteTool(ctx context.Context, tc client.ToolCall) (string, 
 	return t.Execute(ctx, json.RawMessage(tc.Function.Arguments))
 }
 
-// AddToolResultMessage adds a tool response message to history.
 func (s *Session) AddToolResultMessage(toolCallID, content string) error {
 	s.History = append(s.History, client.ChatMessage{
 		Role:       "tool",
 		ToolCallID: toolCallID,
 		Content:    client.TextContent(content),
 	})
-	return s.saveAndNotify()
+
+	if err := s.saveAndNotify(); err != nil {
+		return err
+	}
+
+	if s.compressionThreshold > 0 {
+		tokens := common.CalculateHistoryTokens(s.History, s.systemPrompt, s.GetToolDefinitions())
+		if tokens > s.compressionThreshold {
+			return s.SummarizeHistory(context.Background())
+		}
+	}
+
+	return nil
 }
 
-// AddAssistantMessageWithTools adds an assistant message with tool calls.
 func (s *Session) AddAssistantMessageWithTools(content string, reasoning string, toolCalls []client.ToolCall) error {
 	s.History = append(s.History, client.ChatMessage{
 		Role:             "assistant",
@@ -61,7 +91,19 @@ func (s *Session) AddAssistantMessageWithTools(content string, reasoning string,
 		ReasoningContent: reasoning,
 		ToolCalls:        toolCalls,
 	})
-	return s.saveAndNotify()
+
+	if err := s.saveAndNotify(); err != nil {
+		return err
+	}
+
+	if s.compressionThreshold > 0 {
+		tokens := common.CalculateHistoryTokens(s.History, s.systemPrompt, s.GetToolDefinitions())
+		if tokens > s.compressionThreshold {
+			return s.SummarizeHistory(context.Background())
+		}
+	}
+
+	return nil
 }
 
 func (s *Session) GetToolDefinitions() []client.ToolDefinition {
@@ -83,13 +125,37 @@ func (s *Session) GetToolDefinitions() []client.ToolDefinition {
 // AddUserMessage adds a user message to history and persists it.
 func (s *Session) AddUserMessage(content string) error {
 	s.History = append(s.History, client.ChatMessage{Role: "user", Content: client.TextContent(content)})
-	return s.saveAndNotify()
+
+	if err := s.saveAndNotify(); err != nil {
+		return err
+	}
+
+	if s.compressionThreshold > 0 {
+		tokens := common.CalculateHistoryTokens(s.History, s.systemPrompt, s.GetToolDefinitions())
+		if tokens > s.compressionThreshold {
+			return s.SummarizeHistory(context.Background())
+		}
+	}
+
+	return nil
 }
 
 // AddMessage adds an arbitrary message to history and persists it.
 func (s *Session) AddMessage(msg client.ChatMessage) error {
 	s.History = append(s.History, msg)
-	return s.saveAndNotify()
+
+	if err := s.saveAndNotify(); err != nil {
+		return err
+	}
+
+	if s.compressionThreshold > 0 {
+		tokens := common.CalculateHistoryTokens(s.History, s.systemPrompt, s.GetToolDefinitions())
+		if tokens > s.compressionThreshold {
+			return s.SummarizeHistory(context.Background())
+		}
+	}
+
+	return nil
 }
 
 // AddAssistantMessage adds an assistant message to history and persists it.
@@ -99,7 +165,19 @@ func (s *Session) AddAssistantMessage(content, reasoning string) error {
 		Content:          client.TextContent(content),
 		ReasoningContent: reasoning,
 	})
-	return s.saveAndNotify()
+
+	if err := s.saveAndNotify(); err != nil {
+		return err
+	}
+
+	if s.compressionThreshold > 0 {
+		tokens := common.CalculateHistoryTokens(s.History, s.systemPrompt, s.GetToolDefinitions())
+		if tokens > s.compressionThreshold {
+			return s.SummarizeHistory(context.Background())
+		}
+	}
+
+	return nil
 }
 
 // AppendToLastMessage appends content to the last message (continuation).
@@ -136,7 +214,19 @@ func (s *Session) AppendToLastMessage(content, reasoning string) error {
 			s.History[lastIdx].ReasoningContent = reasoning
 		}
 	}
-	return s.saveAndNotify()
+
+	if err := s.saveAndNotify(); err != nil {
+		return err
+	}
+
+	if s.compressionThreshold > 0 {
+		tokens := common.CalculateHistoryTokens(s.History, s.systemPrompt, s.GetToolDefinitions())
+		if tokens > s.compressionThreshold {
+			return s.SummarizeHistory(context.Background())
+		}
+	}
+
+	return nil
 }
 
 // StartStream initiates a streaming response.
@@ -290,6 +380,11 @@ func (s *Session) SystemPrompt() string {
 	return s.systemPrompt
 }
 
+// Client exposes the underlying LLM client.
+func (s *Session) Client() *client.Client {
+	return s.client
+}
+
 func (s *Session) saveAndNotify() error {
 	if len(s.History) == 0 {
 		return nil
@@ -303,10 +398,114 @@ func (s *Session) saveAndNotify() error {
 	return s.UpdateSessionMetadata()
 }
 
-func (s *Session) Client() *client.Client {
-	return s.client
-}
+// SummarizeHistory constructs a summary of the current conversation history using the LLM client.
+// The history is compressed and replaced in the session state.
+func (s *Session) SummarizeHistory(ctx context.Context) error {
+	if len(s.History) == 0 {
+		return nil // Nothing to summarize
+	}
 
-func (s *Session) IsLlamaCPP() bool {
-	return s.client.IsLlamaCPP()
+	if s.onEvent != nil {
+		s.onEvent(common.CompressionStartedEvent{ID: s.GetID()})
+	}
+
+	oldTokens := common.CalculateHistoryTokens(s.History, s.systemPrompt, s.GetToolDefinitions())
+
+	compressionPromptPath := "prompts/compression-prompt.md"
+	summaryPrefixPath := "prompts/compression-summary-prefix.md"
+
+	// Load Assets
+	templateBytes, err := assets.PromptsFS.ReadFile(compressionPromptPath)
+	if err != nil {
+		return fmt.Errorf("failed to load compression prompt template (%s): %w", compressionPromptPath, err)
+	}
+	templateContent := string(templateBytes)
+
+	prefixBytes, err := assets.PromptsFS.ReadFile(summaryPrefixPath)
+	if err != nil {
+		return fmt.Errorf("failed to load compression summary prefix (%s): %w", summaryPrefixPath, err)
+	}
+	prefixContent := string(prefixBytes)
+
+	// Token Selection (Max 10k tokens)
+	const maxTokens = 10000
+	selectedUserMessages := make([]client.ChatMessage, 0)
+	totalTokens := 0
+	userMessageIndices := []int{}
+
+	// Iterate backward to find the most recent user messages
+	for i := len(s.History) - 1; i >= 0; i-- {
+		msg := s.History[i]
+		if msg.Role != "user" {
+			continue
+		}
+
+		// Calculate tokens for this message against the current history context
+		currentMsgTokens := common.CalculateHistoryTokens([]client.ChatMessage{msg}, s.systemPrompt, s.GetToolDefinitions())
+
+		if totalTokens+currentMsgTokens > maxTokens && len(selectedUserMessages) > 0 {
+			break // Stop selection once limit is hit, having already included some messages
+		}
+
+		// Select the message (add to front to maintain original order later)
+		userMessageIndices = append([]int{i}, userMessageIndices...)
+		totalTokens += currentMsgTokens
+	}
+
+	// Extract selected messages in their original order
+	for _, idx := range userMessageIndices {
+		selectedUserMessages = append(selectedUserMessages, s.History[idx])
+	}
+
+	// Summarization Prompt Construction
+	userMessagesContent := make([]string, len(selectedUserMessages))
+	for i, msg := range selectedUserMessages {
+		userMessagesContent[i] = msg.Content.String()
+	}
+
+	historyStrBuilder := strings.Builder{}
+	for i, content := range userMessagesContent {
+		historyStrBuilder.WriteString(content)
+		if i < len(userMessagesContent)-1 {
+			historyStrBuilder.WriteString("\n\n---\n\n") // Use a clear delimiter between messages in the prompt
+		}
+	}
+
+	summarizationPrompt := fmt.Sprintf("%s\n\n--- Conversation History ---\n%s", templateContent, historyStrBuilder.String())
+
+	// Call LLM and Reconstruct History
+	req := client.ChatCompletionRequest{
+		Messages: []client.ChatMessage{
+			{
+				Role:    "user",
+				Content: client.TextContent(summarizationPrompt),
+			},
+		},
+	}
+
+	resp, err := s.client.ChatCompletion(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to get history summary: %w", err)
+	}
+
+	summaryText := resp.Choices[0].Message.Content.String()
+	finalUserInstruction := fmt.Sprintf("%s %s", prefixContent, summaryText)
+	summaryInstructionMsg := client.ChatMessage{
+		Role:    "user",
+		Content: client.TextContent(finalUserInstruction),
+	}
+
+	// Reconstruct new history: [selected_user_messages..., new_summary_instruction_message]
+	var newHistory []client.ChatMessage
+	newHistory = append(newHistory, selectedUserMessages...)
+	newHistory = append(newHistory, summaryInstructionMsg)
+
+	s.History = newHistory
+	newTokens := common.CalculateHistoryTokens(s.History, s.systemPrompt, s.GetToolDefinitions())
+
+	if s.onEvent != nil {
+		s.onEvent(common.CompressionSummaryEvent{ID: s.GetID(), Gains: oldTokens - newTokens})
+	}
+
+	return s.saveAndNotify()
 }

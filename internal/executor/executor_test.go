@@ -127,7 +127,7 @@ func TestStreamAccumulator_NameUpdate(t *testing.T) {
 func TestExecuteToolCalls_NotFound(t *testing.T) {
 	c := client.NewClient(client.Config{BaseURL: "http://localhost:0"})
 	histPath := filepath.Join(t.TempDir(), "history.json")
-	sess := session.New(c, histPath, nil, "", false)
+	sess := session.New(c, histPath, nil, "", false, 4000)
 
 	toolCalls := []client.ToolCall{
 		{ID: "tc_1", Function: client.FunctionCall{Name: "nonexistent", Arguments: "{}"}},
@@ -151,7 +151,7 @@ func TestExecuteToolCalls_NotFound(t *testing.T) {
 func TestExecuteToolCalls_Denied(t *testing.T) {
 	c := client.NewClient(client.Config{BaseURL: "http://localhost:0"})
 	histPath := filepath.Join(t.TempDir(), "history.json")
-	sess := session.New(c, histPath, nil, "", true)
+	sess := session.New(c, histPath, nil, "", true, 4000)
 
 	// Register bash tool which requires confirmation
 	RegisterTools(sess.Registry, nil, false)
@@ -184,7 +184,7 @@ func TestExecuteToolCalls_Denied(t *testing.T) {
 func TestExecuteToolCalls_NoMiddlewareFailsClosed(t *testing.T) {
 	c := client.NewClient(client.Config{BaseURL: "http://localhost:0"})
 	histPath := filepath.Join(t.TempDir(), "history.json")
-	sess := session.New(c, histPath, nil, "", true)
+	sess := session.New(c, histPath, nil, "", true, 4000)
 
 	RegisterTools(sess.Registry, map[string]bool{"bash": true}, false)
 
@@ -258,7 +258,7 @@ func TestConsumeStream_WithError(t *testing.T) {
 func TestRegisterTools(t *testing.T) {
 	c := client.NewClient(client.Config{BaseURL: "http://localhost:0"})
 	histPath := filepath.Join(t.TempDir(), "history.json")
-	sess := session.New(c, histPath, nil, "", false)
+	sess := session.New(c, histPath, nil, "", false, 4000)
 
 	enabledTools := map[string]bool{
 		"read_file":   true,
@@ -285,7 +285,7 @@ func TestRegisterTools(t *testing.T) {
 func TestRegisterTools_WithBash(t *testing.T) {
 	c := client.NewClient(client.Config{BaseURL: "http://localhost:0"})
 	histPath := filepath.Join(t.TempDir(), "history.json")
-	sess := session.New(c, histPath, nil, "", false)
+	sess := session.New(c, histPath, nil, "", false, 4000)
 
 	enabledTools := map[string]bool{
 		"bash": true,
@@ -300,7 +300,7 @@ func TestRegisterTools_WithBash(t *testing.T) {
 func TestRegisterTools_WithReadFile(t *testing.T) {
 	c := client.NewClient(client.Config{BaseURL: "http://localhost:0"})
 	histPath := filepath.Join(t.TempDir(), "history.json")
-	sess := session.New(c, histPath, nil, "", false)
+	sess := session.New(c, histPath, nil, "", false, 4000)
 
 	enabledTools := map[string]bool{
 		"read_file": true,
@@ -317,7 +317,7 @@ func TestRegisterTools_WithReadFile(t *testing.T) {
 func TestRegisterTools_Planning(t *testing.T) {
 	c := client.NewClient(client.Config{BaseURL: "http://localhost:0"})
 	histPath := filepath.Join(t.TempDir(), "history.json")
-	sess := session.New(c, histPath, nil, "", false)
+	sess := session.New(c, histPath, nil, "", false, 4000)
 
 	enabledTools := map[string]bool{
 		"read_file":  true,

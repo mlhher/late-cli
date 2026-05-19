@@ -39,6 +39,7 @@ func main() {
 	enableSubagentsReq := flag.Bool("enable-subagents", true, "Enable subagent usage")
 	gemmaThinkingReq := flag.Bool("gemma-thinking", false, "Prepend <|think|> token to system prompt for Gemma 4 models")
 	subagentMaxTurns := flag.Int("subagent-max-turns", 500, "Maximum number of turns for subagents (default: 500)")
+	compressionThresholdReq := flag.Int("compression-threshold", 0, "Threshold for automatic conversation compression (in tokens)")
 	appendSystemPromptReq := flag.String("append-system-prompt", "", "Append text to the system prompt after processing")
 	versionReq := flag.Bool("version", false, "Show version")
 	unsupervisedReq := flag.Bool("i-promise-i-have-backups-and-will-not-file-issues", false, "Unsupported: Execute all tools without supervision. Do not use this, bad things will happen. You have been warned.")
@@ -177,6 +178,14 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Failed to load app config: %v\n", err)
 	}
+
+	// Determine final compression threshold
+	threshold := *compressionThresholdReq
+	// If the flag was not set (0) and appConfig exists, use the configured default.
+	if threshold == 0 && appConfig != nil {
+		threshold = appConfig.CompressionThreshold
+	}
+
 	enabledTools := make(map[string]bool)
 	if appConfig != nil {
 		for toolName, enabled := range appConfig.EnabledTools {
@@ -214,7 +223,7 @@ func main() {
 		enabledTools["bash"] = false
 	}
 
-	sess := session.New(c, historyPath, history, systemPrompt, *useToolsReq)
+	sess := session.New(c, historyPath, history, systemPrompt, *useToolsReq, threshold)
 	executor.RegisterTools(sess.Registry, enabledTools, true)
 
 	// Register MCP tools into the session registry
@@ -263,7 +272,7 @@ func main() {
 
 	if *enableSubagentsReq {
 		runner := func(ctx context.Context, goal string, ctxFiles []string, agentType string) (string, error) {
-			child, err := agent.NewSubagentOrchestrator(subagentClient, goal, ctxFiles, agentType, enabledTools, *injectCWDReq, *gemmaThinkingReq, *subagentMaxTurns, rootAgent, p)
+			child, err := agent.NewSubagentOrchestratorWithCompression(subagentClient, goal, ctxFiles, agentType, enabledTools, *injectCWDReq, *gemmaThinkingReq, *subagentMaxTurns, threshold, rootAgent, p, ctx)
 			if err != nil {
 				return "", err
 			}

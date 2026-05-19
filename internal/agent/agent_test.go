@@ -8,10 +8,11 @@ import (
 	"late/internal/client"
 	"late/internal/orchestrator"
 	"late/internal/session"
+
 )
 
 // TestNewSubagentOrchestratorWithGemmaThinking verifies that the gemmaThinking
-// parameter correctly prepends the <|think|> token to the system prompt
+// parameter correctly prepends the <thought> token to the system prompt
 func TestNewSubagentOrchestratorWithGemmaThinking(t *testing.T) {
 	// Create a mock client
 	cfg := client.Config{BaseURL: "http://localhost:8080"}
@@ -20,7 +21,7 @@ func TestNewSubagentOrchestratorWithGemmaThinking(t *testing.T) {
 	// Create a mock parent session
 	mockHistoryPath := "/tmp/mock-session.json"
 	mockHistory := []client.ChatMessage{}
-	mockSession := session.New(c, mockHistoryPath, mockHistory, "mock system prompt", true)
+	mockSession := session.New(c, mockHistoryPath, mockHistory, "mock system prompt", true, 4000)
 	parent := orchestrator.NewBaseOrchestrator("parent", mockSession, nil, 100)
 
 	// Test with gemmaThinking = true
@@ -34,6 +35,7 @@ func TestNewSubagentOrchestratorWithGemmaThinking(t *testing.T) {
 		false, // injectCWD
 		true,  // gemmaThinking
 		100,   // maxTurns
+		0,
 		parent,
 		nil,   // messenger
 	)
@@ -50,10 +52,10 @@ func TestNewSubagentOrchestratorWithGemmaThinking(t *testing.T) {
 
 	sess := childBase.Session()
 
-	// Check that the system prompt has the <|think|> prefix
+	// Check that the system prompt has the <thought> prefix
 	systemPrompt := sess.SystemPrompt()
-	if !strings.HasPrefix(systemPrompt, "<|think|>") {
-		t.Errorf("Expected system prompt to start with '<|think|>', got: %s", systemPrompt[:min(50, len(systemPrompt))]+"...")
+	if !strings.HasPrefix(systemPrompt, "<thought>") {
+		t.Errorf("Expected system prompt to start with '<thought>', got: %s", systemPrompt[:min(50, len(systemPrompt))]+"...")
 	}
 
 	// Test with gemmaThinking = false
@@ -66,6 +68,7 @@ func TestNewSubagentOrchestratorWithGemmaThinking(t *testing.T) {
 		false, // injectCWD
 		false, // gemmaThinking
 		100,   // maxTurns
+		0,
 		parent,
 		nil,   // messenger
 	)
@@ -81,10 +84,10 @@ func TestNewSubagentOrchestratorWithGemmaThinking(t *testing.T) {
 
 	sess2 := childBase2.Session()
 
-	// Check that the system prompt does NOT have the <|think|> prefix
+	// Check that the system prompt does NOT have the <thought> prefix
 	systemPrompt2 := sess2.SystemPrompt()
-	if strings.HasPrefix(systemPrompt2, "<|think|>") {
-		t.Errorf("Expected system prompt NOT to start with '<|think|>', got: %s", systemPrompt2[:min(50, len(systemPrompt2))]+"...")
+	if strings.HasPrefix(systemPrompt2, "<thought>") {
+		t.Errorf("Expected system prompt NOT to start with '<thought>', got: %s", systemPrompt2[:min(50, len(systemPrompt2))]+"...")
 	}
 }
 
@@ -97,7 +100,7 @@ func TestNewSubagentOrchestratorGemmaThinkingWithCWD(t *testing.T) {
 	// Create a mock parent session
 	mockHistoryPath := "/tmp/mock-session.json"
 	mockHistory := []client.ChatMessage{}
-	mockSession := session.New(c, mockHistoryPath, mockHistory, "mock system prompt", true)
+	mockSession := session.New(c, mockHistoryPath, mockHistory, "mock system prompt", true, 4000)
 	parent := orchestrator.NewBaseOrchestrator("parent", mockSession, nil, 100)
 
 	enabledTools := map[string]bool{"bash": true}
@@ -110,6 +113,7 @@ func TestNewSubagentOrchestratorGemmaThinkingWithCWD(t *testing.T) {
 		true,  // injectCWD
 		true,  // gemmaThinking
 		100,   // maxTurns
+		0,
 		parent,
 		nil,   // messenger
 	)
@@ -126,9 +130,9 @@ func TestNewSubagentOrchestratorGemmaThinkingWithCWD(t *testing.T) {
 	sess := childBase.Session()
 	systemPrompt := sess.SystemPrompt()
 
-	// Verify <|think|> is at the very beginning
-	if !strings.HasPrefix(systemPrompt, "<|think|>") {
-		t.Errorf("Expected system prompt to start with '<|think|>'")
+	// Verify <thought> is at the very beginning
+	if !strings.HasPrefix(systemPrompt, "<thought>") {
+		t.Errorf("Expected system prompt to start with '<thought>'")
 	}
 
 	// Verify ${{CWD}} was replaced with actual CWD

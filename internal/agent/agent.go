@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"late/internal/assets"
@@ -23,6 +24,7 @@ func NewSubagentOrchestrator(
 	injectCWD bool,
 	gemmaThinking bool,
 	maxTurns int,
+	compressionThreshold int,
 	parent common.Orchestrator,
 	messenger tui.Messenger,
 ) (common.Orchestrator, error) {
@@ -45,7 +47,7 @@ func NewSubagentOrchestrator(
 		}
 
 		if gemmaThinking {
-			systemPrompt = "<|think|>" + systemPrompt
+			systemPrompt = "<thought>" + systemPrompt
 		}
 	} else {
 		// TODO: reviewer, committer
@@ -54,7 +56,7 @@ func NewSubagentOrchestrator(
 
 	// 2. Create Session
 	// Subagents should not persist their history to the sessions directory
-	sess := session.New(c, "", []client.ChatMessage{}, systemPrompt, true)
+	sess := session.New(c, "", []client.ChatMessage{}, systemPrompt, true, compressionThreshold)
 
 	// Inherit all tools from parent (including MCP tools)
 	if parent != nil && parent.Registry() != nil {
@@ -108,6 +110,45 @@ func NewSubagentOrchestrator(
 
 	return child, nil
 }
+
+// NewSubagentOrchestratorWithCompression creates a new BaseOrchestrator for a subagent,
+// potentially compressing the parent's history if the threshold is exceeded.
+func NewSubagentOrchestratorWithCompression(
+	c *client.Client,
+	goal string,
+	ctxFiles []string,
+	agentType string,
+	enabledTools map[string]bool,
+	injectCWD bool,
+	gemmaThinking bool,
+	maxTurns int,
+	compressionThreshold int,
+	parent common.Orchestrator,
+	messenger tui.Messenger,
+	ctx context.Context,
+) (common.Orchestrator, error) {
+	// 1. Compression Check/Execution based on parent state
+	if compressionThreshold > 0 {
+		baseParent, ok := parent.(*orchestrator.BaseOrchestrator)
+		if ok {
+			sess := baseParent.Session()
+
+			// Calculate history tokens using the parent's session context
+			tokens := common.CalculateHistoryTokens(sess.History, sess.SystemPrompt(), sess.GetToolDefinitions())
+
+			if tokens > compressionThreshold {
+				// Summarize history on the parent's session
+				if err := sess.SummarizeHistory(ctx); err != nil {
+					return nil, fmt.Errorf("failed to summarize history in parent orchestrator: %w", err)
+				}
+			}
+		}
+	}
+
+	// 2. Create and return the subagent orchestrator using original parameters
+	return NewSubagentOrchestrator(c, goal, ctxFiles, agentType, enabledTools, injectCWD, gemmaThinking, maxTurns, compressionThreshold, parent, messenger)
+}
+
 
 func FormatToolConfirmPrompt(tc client.ToolCall) string {
 	var jsonObj map[string]interface{}

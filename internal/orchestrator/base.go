@@ -41,7 +41,7 @@ type BaseOrchestrator struct {
 }
 
 func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.ToolMiddleware, maxTurns int) *BaseOrchestrator {
-	return &BaseOrchestrator{
+	o := &BaseOrchestrator{
 		id:          id,
 		sess:        sess,
 		middlewares: middlewares,
@@ -50,6 +50,13 @@ func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.
 		stopCh:      make(chan struct{}),
 		maxTurns:    maxTurns,
 	}
+
+	o.sess.SetID(o.id)
+	o.sess.SetOnEvent(func(e common.Event) {
+		o.eventCh <- e
+	})
+
+	return o
 }
 
 func (o *BaseOrchestrator) SetMiddlewares(middlewares []common.ToolMiddleware) {

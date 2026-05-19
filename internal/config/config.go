@@ -33,6 +33,7 @@ const (
 // Config represents the application configuration.
 type Config struct {
 	EnabledTools    map[string]bool `json:"enabled_tools"`
+	CompressionThreshold int `json:"compression_threshold,omitempty"`
 	OpenAIBaseURL   string          `json:"openai_base_url,omitempty"`
 	OpenAIAPIKey    string          `json:"openai_api_key,omitempty"`
 	OpenAIModel     string          `json:"openai_model,omitempty"`
@@ -57,6 +58,7 @@ func defaultConfig() Config {
 			"spawn_subagent": true,
 			"bash":           true,
 		},
+		CompressionThreshold: 15000,
 	}
 }
 

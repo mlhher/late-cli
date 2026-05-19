@@ -24,7 +24,7 @@ func TestSessionMeta(t *testing.T) {
 	historyPath := filepath.Join(tmpDir, "session-test.json")
 	history := []client.ChatMessage{{Role: "user", Content: client.TextContent("Hello")}}
 
-	s := New(nil, historyPath, history, "", false)
+	s := New(nil, historyPath, history, "", false, 0)
 	meta := s.GenerateSessionMeta()
 
 	if meta.ID != "session-test" {

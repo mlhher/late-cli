@@ -66,6 +66,7 @@ Late manages the KV cache and context window carefully, leaving more room for re
 - **Agent Skills:** Drop in reusable sets of instructions and scripts. Zero configuration or boilerplate required.
 - **Git Worktree Support:** Run independent, parallel agent instances across multiple branches without context bleeding.
 - **Gemma 4 Thinking Mode:** Standard wrappers just pipe text to an API, which means they can't trigger Gemma's reasoning. Late includes a dedicated flag to inject the exact tokens required to actually make it think.
+- **Context Compression:** Avoid exceeding the context size by forcing the Architect to summarize the conversation once a certain threshold (in tokens) has been passed.
 
 ---
 

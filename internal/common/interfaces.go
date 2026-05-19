@@ -86,6 +86,21 @@ type MessageQueuedEvent struct {
 	Text string
 }
 
+// CompressionStartedEvent is sent when compression starts for an orchestrator.
+type CompressionStartedEvent struct {
+	ID string
+}
+
+func (e CompressionStartedEvent) OrchestratorID() string { return e.ID }
+
+// CompressionSummaryEvent is sent when compression finishes and summarizes gains.
+type CompressionSummaryEvent struct {
+	ID    string
+	Gains int
+}
+
+func (e CompressionSummaryEvent) OrchestratorID() string { return e.ID }
+
 func (e MessageQueuedEvent) OrchestratorID() string { return e.ID }
 
 // PromptRequest defines a generic requirement for user input.
