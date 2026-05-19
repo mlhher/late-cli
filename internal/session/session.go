@@ -15,26 +15,26 @@ import (
 
 // Session manages the chat state and interacts with the LLM client.
 type Session struct {
-	client       *client.Client
-	HistoryPath  string
-	ID           string
-	onEvent      func(common.Event)
-	History      []client.ChatMessage
-	systemPrompt string
-	useTools     bool
+	client               *client.Client
+	HistoryPath          string
+	ID                   string
+	onEvent              func(common.Event)
+	History              []client.ChatMessage
+	systemPrompt         string
+	useTools             bool
 	compressionThreshold int
-	Registry     *tool.Registry
+	Registry             *tool.Registry
 }
 
 func New(c *client.Client, historyPath string, history []client.ChatMessage, systemPrompt string, useTools bool, compressionThreshold int) *Session {
 	return &Session{
-		client:       c,
-		HistoryPath:  historyPath,
-		History:      history,
-		systemPrompt: systemPrompt,
-		useTools:     useTools,
+		client:               c,
+		HistoryPath:          historyPath,
+		History:              history,
+		systemPrompt:         systemPrompt,
+		useTools:             useTools,
 		compressionThreshold: compressionThreshold,
-		Registry:     tool.NewRegistry(),
+		Registry:             tool.NewRegistry(),
 	}
 }
 
@@ -380,11 +380,6 @@ func (s *Session) SystemPrompt() string {
 	return s.systemPrompt
 }
 
-// Client exposes the underlying LLM client.
-func (s *Session) Client() *client.Client {
-	return s.client
-}
-
 func (s *Session) saveAndNotify() error {
 	if len(s.History) == 0 {
 		return nil
@@ -396,6 +391,15 @@ func (s *Session) saveAndNotify() error {
 		return err
 	}
 	return s.UpdateSessionMetadata()
+}
+
+// Client exposes the underlying LLM client.
+func (s *Session) Client() *client.Client {
+	return s.client
+}
+
+func (s *Session) IsLlamaCPP() bool {
+	return s.client.IsLlamaCPP()
 }
 
 // SummarizeHistory constructs a summary of the current conversation history using the LLM client.

@@ -47,7 +47,7 @@ func NewSubagentOrchestrator(
 		}
 
 		if gemmaThinking {
-			systemPrompt = "<thought>" + systemPrompt
+			systemPrompt = "<|think|>" + systemPrompt
 		}
 	} else {
 		// TODO: reviewer, committer
