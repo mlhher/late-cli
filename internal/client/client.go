@@ -50,6 +50,18 @@ func NewClient(cfg Config) *Client {
 	}
 }
 
+// chatCompletionURL builds the chat completions endpoint from BaseURL.
+// It strips a trailing /v1 from BaseURL before appending /v1/chat/completions,
+// so both plain bases (http://localhost:8080) and bases that already include
+// the version segment (http://localhost:8080/v1) produce the correct URL,
+// and providers with a non-standard path prefix (https://api.z.ai/api/coding/paas/v4)
+// are not broken by a spurious extra /v1.
+func (c *Client) chatCompletionURL() string {
+	base := strings.TrimSuffix(c.cfg.BaseURL, "/")
+	base = strings.TrimSuffix(base, "/v1")
+	return base + "/v1/chat/completions"
+}
+
 // ChatCompletion sends a chat prompt to the OpenAI-compatible endpoint.
 func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) (*ChatCompletionResponse, error) {
 	if c.getBackend() == BackendUnknown || (c.getBackend() == BackendLlamaCPP && c.ContextSize() == -1) {
@@ -65,7 +77,7 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 		return nil, err
 	}
 
-	url := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/v1/chat/completions"
+	url := c.chatCompletionURL()
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
 	if err != nil {
 		return nil, err
@@ -117,7 +129,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 			return
 		}
 
-		url := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/v1/chat/completions"
+		url := c.chatCompletionURL()
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
 		if err != nil {
 			errCh <- err
