@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	sqzEnabled       = true
+	sqzEnabled       = false
 	sqzAvailable     bool
 	sqzAvailableOnce sync.Once
 

@@ -133,11 +133,8 @@ func TestBashTool_Execute(t *testing.T) {
 		t.Skip("Unix echo/pwd behavior tests skipped on Windows; see TestPSShellTool_* in implementations_cmd_test.go")
 	}
 
-	// Test sqz disabled explicitly
+	// Verify no sqz interference with default settings
 	t.Run("sqz disabled", func(t *testing.T) {
-		SetSqzEnabled(false)
-		defer SetSqzEnabled(true)
-
 		tool := ShellTool{}
 		params := json.RawMessage(`{"command": "echo 'sqz test'"}`)
 		result, err := tool.Execute(approvedContext(), params)
