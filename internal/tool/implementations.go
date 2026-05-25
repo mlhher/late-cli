@@ -300,6 +300,15 @@ func (t ShellTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 
 	output, err := cmd.CombinedOutput()
 
+	// If sqz is available, compress the output
+	if IsSqzAvailable() && len(output) > 0 {
+		compressed, sqzErr := CompressWithSqz(ctx, output, params.Command)
+		if sqzErr == nil {
+			output = compressed
+		}
+		// If sqz fails, we just fall back to the raw output
+	}
+
 	// Check for binary output
 	if IsBinary(output) {
 		return "(binary output detected)", nil
