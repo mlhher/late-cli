@@ -54,7 +54,9 @@ func main() {
 	defer client.Close()
 
 	fmt.Println("Connecting to server...")
-	if err := client.Connect(ctx, transport); err != nil {
+	// "default" is used as the server name for ad-hoc single-server connections
+	// that are not configured via mcp_config.json.
+	if err := client.Connect(ctx, transport, "default"); err != nil {
 		fmt.Printf("Error connecting to server: %v\n", err)
 		os.Exit(1)
 	}
