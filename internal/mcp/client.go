@@ -45,6 +45,13 @@ func (t *ToolAdapter) Name() string {
 	return t.mcpTool.Name
 }
 
+// BareName returns the bare (unnamespaced) tool name as reported by the MCP
+// server. Used by the tool-enable config check for backwards compatibility
+// with configs written before namespacing was introduced.
+func (t *ToolAdapter) BareName() string {
+	return t.mcpTool.Name
+}
+
 // Description returns the tool description.
 func (t *ToolAdapter) Description() string {
 	return t.mcpTool.Description
@@ -117,8 +124,9 @@ func (c *Client) Connect(ctx context.Context, transport mcp.Transport, serverNam
 		return fmt.Errorf("failed to connect to MCP server: %w", err)
 	}
 
-	// Store session
-	c.sessions["default"] = session
+	// Store session keyed by server name so Close() shuts down every
+	// subprocess, not just the last one connected.
+	c.sessions[serverName] = session
 
 	// List and store tools using iterator
 	for tool := range session.Tools(ctx, &mcp.ListToolsParams{}) {
