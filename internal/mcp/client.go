@@ -30,12 +30,18 @@ func NewClient() *Client {
 
 // ToolAdapter adapts MCP tools to the Tool interface.
 type ToolAdapter struct {
-	mcpTool *mcp.Tool
-	session *mcp.ClientSession
+	mcpTool    *mcp.Tool
+	session    *mcp.ClientSession
+	serverName string // the MCP server name from mcp_config.json
 }
 
-// Name returns the tool name.
+// Name returns the namespaced tool name in the form "{server}:{tool}".
+// Namespacing prevents allowed_tools.json collisions when multiple MCP
+// servers expose tools with the same bare name.
 func (t *ToolAdapter) Name() string {
+	if t.serverName != "" {
+		return t.serverName + ":" + t.mcpTool.Name
+	}
 	return t.mcpTool.Name
 }
 
@@ -93,11 +99,14 @@ func (t *ToolAdapter) RequiresConfirmation(args json.RawMessage) bool {
 
 // CallString returns a string representation for calling the tool.
 func (t *ToolAdapter) CallString(args json.RawMessage) string {
-	return fmt.Sprintf("Calling MCP tool '%s'...", t.mcpTool.Name)
+	return fmt.Sprintf("Calling MCP tool '%s'...", t.Name())
 }
 
 // Connect establishes a connection to an MCP server.
-func (c *Client) Connect(ctx context.Context, transport mcp.Transport) error {
+// serverName is stored on each ToolAdapter so that tool names are namespaced
+// as "{server}:{tool}" in allowed_tools.json, preventing collisions between
+// servers that expose tools with the same bare name.
+func (c *Client) Connect(ctx context.Context, transport mcp.Transport, serverName string) error {
 	client := mcp.NewClient(&mcp.Implementation{
 		Name:    "late",
 		Version: common.Version,
@@ -115,10 +124,11 @@ func (c *Client) Connect(ctx context.Context, transport mcp.Transport) error {
 	for tool := range session.Tools(ctx, &mcp.ListToolsParams{}) {
 		if tool != nil {
 			adapter := &ToolAdapter{
-				mcpTool: tool,
-				session: session,
+				mcpTool:    tool,
+				session:    session,
+				serverName: serverName,
 			}
-			c.tools[tool.Name] = adapter
+			c.tools[adapter.Name()] = adapter
 		}
 	}
 
@@ -204,14 +214,22 @@ func (c *Client) ConnectFromConfig(ctx context.Context, config *MCPConfig) error
 		// Expand environment variables in server configuration
 		ExpandServerEnvVars(&server)
 
+		// Convert server.Env map to KEY=VALUE slice for the subprocess
+		envSlice := make([]string, 0, len(server.Env))
+		for k, v := range server.Env {
+			envSlice = append(envSlice, k+"="+v)
+		}
+
 		// Create transport for this server
-		transport, err := NewStdioTransport(ctx, server.Command, server.Args, nil)
+		transport, err := NewStdioTransport(ctx, server.Command, server.Args, envSlice)
 		if err != nil {
 			return fmt.Errorf("failed to create transport for server %s: %w", name, err)
 		}
 
-		// Connect to the server
-		if err := c.Connect(ctx, transport); err != nil {
+		// Connect to the server, passing the server name so tools are registered
+		// with namespaced names ("{server}:{tool}") in the tool registry and
+		// allowed_tools.json.
+		if err := c.Connect(ctx, transport, name); err != nil {
 			return fmt.Errorf("failed to connect to server %s: %w", name, err)
 		}
 	}
