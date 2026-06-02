@@ -217,10 +217,24 @@ func main() {
 	sess := session.New(c, historyPath, history, systemPrompt, *useToolsReq)
 	executor.RegisterTools(sess.Registry, enabledTools, true)
 
-	// Register MCP tools into the session registry
+	// Register MCP tools into the session registry.
+	// MCP tool names are now namespaced as "{server}:{tool}" (e.g. "graph-rag:list_files").
+	// For backwards compatibility with configs that disable tools by bare name
+	// (e.g. "list_files": false), we check the namespaced name first, then fall
+	// back to the bare name so existing configs keep working without modification.
 	for _, t := range mcpClient.GetTools() {
-		// MCP tools are enabled by default unless explicitly set to false in config.json
-		if enabled, exists := enabledTools[t.Name()]; exists && !enabled {
+		name := t.Name()
+		// Derive the bare name by stripping the server prefix.
+		bareName := name
+		if idx := strings.LastIndex(name, ":"); idx >= 0 {
+			bareName = name[idx+1:]
+		}
+		// Namespaced entry takes priority over bare-name entry.
+		if enabled, exists := enabledTools[name]; exists {
+			if !enabled {
+				continue
+			}
+		} else if enabled, exists := enabledTools[bareName]; exists && !enabled {
 			continue
 		}
 		sess.Registry.Register(t)
