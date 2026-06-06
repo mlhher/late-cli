@@ -9,14 +9,19 @@
 **Drop into any project and start building.** Get to your first prompt in less than 10 seconds.
 
 ```bash
+# Linux / macOS
 brew tap mlhher/late && brew install late
+
+# Universal Fallback (Linux / macOS / Windows WSL)
+curl -sfL https://raw.githubusercontent.com/mlhher/late-cli/main/install.sh | bash
+
 cd your-project
 late
 ```
 
-> **Not using Homebrew?**
+> **Other Installation Methods**
 > - **Arch Linux:** `yay -S late-cli-bin`
-> - **Linux / macOS / Windows:** Download the [latest binary](https://github.com/mlhher/late-cli/releases) and drop it in your PATH. *(macOS manual download: if blocked, run `xattr -d com.apple.quarantine /path/to/late`)*
+> - **Linux / macOS / Native Windows:** Download the [latest binary](https://github.com/mlhher/late-cli/releases) and drop it in your PATH. *(macOS manual download: if blocked, run `xattr -d com.apple.quarantine /path/to/late`)*
 > 
 > **Connecting to Cloud Models?**
 > Local models (llama.cpp on `:8080`, the default for llama-server) work out-of-the-box. No configuration required. For cloud providers (DeepSeek, Claude, Gemini, OpenRouter), set your `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL` environment variables.

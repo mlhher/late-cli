@@ -7,16 +7,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 )
 
 type Config struct {
-	BaseURL string
-	APIKey  string
-	Model   string
-	Timeout time.Duration
+	BaseURL      string
+	APIKey       string
+	Model        string
+	Timeout      time.Duration
+	EnableImages bool
 }
 
 type BackendType string
@@ -50,6 +52,20 @@ func NewClient(cfg Config) *Client {
 	}
 }
 
+// chatCompletionURL builds the chat completions endpoint from BaseURL.
+// If the base URL has no path (e.g. "http://localhost:8080"), /v1 is
+// appended automatically for backwards compatibility. If a path is already
+// present (e.g. "https://api.z.ai/api/coding/paas/v4"), it is used as-is
+// and only /chat/completions is appended — consistent with the OpenAI SDK
+// convention that base_url is a true base the caller controls.
+func (c *Client) chatCompletionURL() string {
+	base := strings.TrimSuffix(c.cfg.BaseURL, "/")
+	if u, err := url.Parse(base); err == nil && (u.Path == "" || u.Path == "/") {
+		base += "/v1"
+	}
+	return base + "/chat/completions"
+}
+
 // ChatCompletion sends a chat prompt to the OpenAI-compatible endpoint.
 func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) (*ChatCompletionResponse, error) {
 	if c.getBackend() == BackendUnknown || (c.getBackend() == BackendLlamaCPP && c.ContextSize() == -1) {
@@ -65,7 +81,7 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 		return nil, err
 	}
 
-	url := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/v1/chat/completions"
+	url := c.chatCompletionURL()
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
 	if err != nil {
 		return nil, err
@@ -117,7 +133,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 			return
 		}
 
-		url := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/v1/chat/completions"
+		url := c.chatCompletionURL()
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
 		if err != nil {
 			errCh <- err
@@ -332,7 +348,7 @@ func (c *Client) IsLlamaCPP() bool {
 func (c *Client) SupportsVision() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.supportsVision
+	return c.cfg.EnableImages || c.supportsVision
 }
 
 func (c *Client) marshalFlattened(req ChatCompletionRequest) ([]byte, error) {
@@ -359,6 +375,7 @@ func (c *Client) marshalFlattened(req ChatCompletionRequest) ([]byte, error) {
 
 	return json.Marshal(m)
 }
+
 func (c *Client) formatError(resp *http.Response) error {
 	var apiErr APIErrorResponse
 	if err := json.NewDecoder(resp.Body).Decode(&apiErr); err == nil && apiErr.Error.Message != "" {

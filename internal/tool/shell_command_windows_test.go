@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build windows
 
 package tool
 
@@ -8,7 +8,7 @@ import (
 )
 
 func TestNewShellCommand(t *testing.T) {
-	expectedShell := getUnixShellPath()
+	expectedShell := getWindowsShellPath()
 
 	tests := []struct {
 		name         string
@@ -39,14 +39,19 @@ func TestNewShellCommand(t *testing.T) {
 			if cmd.Path != expectedShell {
 				t.Fatalf("expected cmd.Path %q, got %q", expectedShell, cmd.Path)
 			}
-			if len(cmd.Args) < 3 {
-				t.Fatalf("expected at least 3 args for unix shell command, got %v", cmd.Args)
+
+			// Validate arguments based on how it's built in shell_command_windows.go
+			// Expected args: shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", <encoded_command>
+			if len(cmd.Args) != 7 {
+				t.Fatalf("expected 7 args for windows shell command, got %v (%d args)", cmd.Args, len(cmd.Args))
 			}
-			if cmd.Args[1] != "-c" {
-				t.Fatalf("expected cmd.Args[1] to be -c, got %q", cmd.Args[1])
+			if cmd.Args[1] != "-NoProfile" || cmd.Args[2] != "-NonInteractive" || cmd.Args[3] != "-ExecutionPolicy" || cmd.Args[4] != "Bypass" || cmd.Args[5] != "-EncodedCommand" {
+				t.Fatalf("unexpected arguments: %v", cmd.Args[1:6])
 			}
-			if cmd.Args[2] != tt.expectedCmd {
-				t.Fatalf("expected cmd.Args[2] to be %q, got %q", tt.expectedCmd, cmd.Args[2])
+
+			expectedEncoded := encodePSCommand(tt.expectedCmd)
+			if cmd.Args[6] != expectedEncoded {
+				t.Fatalf("expected encoded command %q, got %q", expectedEncoded, cmd.Args[6])
 			}
 		})
 	}

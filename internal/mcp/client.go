@@ -207,8 +207,14 @@ func (c *Client) ConnectFromConfig(ctx context.Context, config *MCPConfig) error
 		// Expand environment variables in server configuration
 		ExpandServerEnvVars(&server)
 
+		// Convert server.Env map to KEY=VALUE slice for the subprocess
+		envSlice := make([]string, 0, len(server.Env))
+		for k, v := range server.Env {
+			envSlice = append(envSlice, k+"="+v)
+		}
+
 		// Create transport for this server
-		transport, err := NewStdioTransport(ctx, server.Command, server.Args, nil)
+		transport, err := NewStdioTransport(ctx, server.Command, server.Args, envSlice)
 		if err != nil {
 			return fmt.Errorf("failed to create transport for server %s: %w", name, err)
 		}

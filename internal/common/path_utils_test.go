@@ -27,7 +27,14 @@ func TestLateConfigDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LateConfigDir() error = %v", err)
 	}
-	want := filepath.Join("/tmp/late-home", ".config", "late")
+
+	var want string
+	if runtime.GOOS == "darwin" {
+		want = filepath.Join("/tmp/late-home", "Library", "Application Support", "late")
+	} else {
+		want = filepath.Join("/tmp/late-home", ".config", "late")
+	}
+
 	if got != want {
 		t.Fatalf("LateConfigDir() = %q, want %q", got, want)
 	}
