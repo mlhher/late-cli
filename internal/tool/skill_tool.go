@@ -81,8 +81,10 @@ type ActivateSkillTool struct {
 	Reg    *common.ToolRegistry
 }
 
-func (t ActivateSkillTool) Name() string        { return "activate_skill" }
-func (t ActivateSkillTool) Description() string { return "Activate a skill by name to see its instructions and enable its scripts as tools." }
+func (t ActivateSkillTool) Name() string { return "activate_skill" }
+func (t ActivateSkillTool) Description() string {
+	return "Activate a skill by name to see its instructions and enable its scripts as tools."
+}
 func (t ActivateSkillTool) Parameters() json.RawMessage {
 	names := make([]string, 0, len(t.Skills))
 	var descBuilder strings.Builder

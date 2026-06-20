@@ -11,15 +11,15 @@ import (
 // using mock output data since we cannot easily mock exec.Command in unit tests
 func TestListWorktrees_Parsing(t *testing.T) {
 	tests := []struct {
-		name         string
-		mockOutput   string
-		expected     []WorktreeInfo
-		expectError  bool
-		description  string
+		name        string
+		mockOutput  string
+		expected    []WorktreeInfo
+		expectError bool
+		description string
 	}{
 		{
-			name:         "single normal worktree",
-			mockOutput:   "/path/to/repo (main)\n# main branch, unmodified files\n",
+			name:       "single normal worktree",
+			mockOutput: "/path/to/repo (main)\n# main branch, unmodified files\n",
 			expected: []WorktreeInfo{
 				{
 					Path:       "/path/to/repo",
@@ -32,8 +32,8 @@ func TestListWorktrees_Parsing(t *testing.T) {
 			description: "Test parsing of a single normal worktree with branch and status",
 		},
 		{
-			name:         "single detached worktree",
-			mockOutput:   "/path/to/repo (detached from abc123)\n# detached HEAD, unmodified files\n",
+			name:       "single detached worktree",
+			mockOutput: "/path/to/repo (detached from abc123)\n# detached HEAD, unmodified files\n",
 			expected: []WorktreeInfo{
 				{
 					Path:       "/path/to/repo",
@@ -46,8 +46,8 @@ func TestListWorktrees_Parsing(t *testing.T) {
 			description: "Test parsing of a detached worktree",
 		},
 		{
-			name:         "multiple worktrees",
-			mockOutput:   "/path/to/repo (main)\n# main branch, unmodified files\n/path/to/other-worktree (feature-branch)\n# feature branch, 1 file modified\n",
+			name:       "multiple worktrees",
+			mockOutput: "/path/to/repo (main)\n# main branch, unmodified files\n/path/to/other-worktree (feature-branch)\n# feature branch, 1 file modified\n",
 			expected: []WorktreeInfo{
 				{
 					Path:       "/path/to/repo",
@@ -66,8 +66,8 @@ func TestListWorktrees_Parsing(t *testing.T) {
 			description: "Test parsing of multiple worktrees",
 		},
 		{
-			name:         "mixed detached and normal worktrees",
-			mockOutput:   "/path/to/main (main)\n# main branch, clean\n/path/to/detached (detached from def456)\n# HEAD detached at def456\n",
+			name:       "mixed detached and normal worktrees",
+			mockOutput: "/path/to/main (main)\n# main branch, clean\n/path/to/detached (detached from def456)\n# HEAD detached at def456\n",
 			expected: []WorktreeInfo{
 				{
 					Path:       "/path/to/main",
@@ -86,8 +86,8 @@ func TestListWorktrees_Parsing(t *testing.T) {
 			description: "Test parsing of mixed detached and normal worktrees",
 		},
 		{
-			name:         "worktree with empty status",
-			mockOutput:   "/path/to/repo (develop)\n",
+			name:       "worktree with empty status",
+			mockOutput: "/path/to/repo (develop)\n",
 			expected: []WorktreeInfo{
 				{
 					Path:       "/path/to/repo",
@@ -100,8 +100,8 @@ func TestListWorktrees_Parsing(t *testing.T) {
 			description: "Test parsing when status line is missing",
 		},
 		{
-			name:         "worktree with complex branch name",
-			mockOutput:   "/path/to/repo (feature/user/login-improvement)\n# feature branch, 3 files modified, 1 file deleted\n",
+			name:       "worktree with complex branch name",
+			mockOutput: "/path/to/repo (feature/user/login-improvement)\n# feature branch, 3 files modified, 1 file deleted\n",
 			expected: []WorktreeInfo{
 				{
 					Path:       "/path/to/repo",
@@ -114,8 +114,8 @@ func TestListWorktrees_Parsing(t *testing.T) {
 			description: "Test parsing of worktree with complex branch name",
 		},
 		{
-			name:         "worktree with long commit hash",
-			mockOutput:   "/path/to/repo (detached from 1234567890abcdef1234567890abcdef12345678)\n# detached HEAD\n",
+			name:       "worktree with long commit hash",
+			mockOutput: "/path/to/repo (detached from 1234567890abcdef1234567890abcdef12345678)\n# detached HEAD\n",
 			expected: []WorktreeInfo{
 				{
 					Path:       "/path/to/repo",
@@ -128,15 +128,15 @@ func TestListWorktrees_Parsing(t *testing.T) {
 			description: "Test parsing of detached worktree with full commit hash",
 		},
 		{
-			name:         "no worktrees (empty output)",
-			mockOutput:   "",
-			expected:     []WorktreeInfo{},
-			expectError:  false,
-			description:  "Test parsing of empty output",
+			name:        "no worktrees (empty output)",
+			mockOutput:  "",
+			expected:    []WorktreeInfo{},
+			expectError: false,
+			description: "Test parsing of empty output",
 		},
 		{
-			name:         "worktree at root",
-			mockOutput:   "/ (main)\n# main branch, unmodified files\n",
+			name:       "worktree at root",
+			mockOutput: "/ (main)\n# main branch, unmodified files\n",
 			expected: []WorktreeInfo{
 				{
 					Path:       "/",
@@ -313,68 +313,68 @@ func TestGetActiveWorktree(t *testing.T) {
 // TestCreateWorktree tests the CreateWorktree function
 func TestCreateWorktree(t *testing.T) {
 	tests := []struct {
-		name         string
-		path         string
-		branch       string
-		mockError    error
-		expectError  bool
-		description  string
+		name        string
+		path        string
+		branch      string
+		mockError   error
+		expectError bool
+		description string
 	}{
 		{
-			name:         "valid path and branch",
-			path:         "/path/to/new-worktree",
-			branch:       "main",
-			mockError:    nil,
-			expectError:  false,
-			description:  "Test successful worktree creation",
+			name:        "valid path and branch",
+			path:        "/path/to/new-worktree",
+			branch:      "main",
+			mockError:   nil,
+			expectError: false,
+			description: "Test successful worktree creation",
 		},
 		{
-			name:         "relative path",
-			path:         "./relative-worktree",
-			branch:       "develop",
-			mockError:    nil,
-			expectError:  false,
-			description:  "Test creation with relative path",
+			name:        "relative path",
+			path:        "./relative-worktree",
+			branch:      "develop",
+			mockError:   nil,
+			expectError: false,
+			description: "Test creation with relative path",
 		},
 		{
-			name:         "empty path",
-			path:         "",
-			branch:       "main",
-			mockError:    execError("failed to create worktree"),
-			expectError:  true,
-			description:  "Test error handling with empty path",
+			name:        "empty path",
+			path:        "",
+			branch:      "main",
+			mockError:   execError("failed to create worktree"),
+			expectError: true,
+			description: "Test error handling with empty path",
 		},
 		{
-			name:         "empty branch",
-			path:         "/path/to/worktree",
-			branch:       "",
-			mockError:    execError("failed to create worktree"),
-			expectError:  true,
-			description:  "Test error handling with empty branch",
+			name:        "empty branch",
+			path:        "/path/to/worktree",
+			branch:      "",
+			mockError:   execError("failed to create worktree"),
+			expectError: true,
+			description: "Test error handling with empty branch",
 		},
 		{
-			name:         "path with spaces",
-			path:         "/path/to/worktree with spaces",
-			branch:       "main",
-			mockError:    nil,
-			expectError:  false,
-			description:  "Test handling of paths with spaces",
+			name:        "path with spaces",
+			path:        "/path/to/worktree with spaces",
+			branch:      "main",
+			mockError:   nil,
+			expectError: false,
+			description: "Test handling of paths with spaces",
 		},
 		{
-			name:         "branch with slashes",
-			path:         "/path/to/worktree",
-			branch:       "feature/user/login",
-			mockError:    nil,
-			expectError:  false,
-			description:  "Test handling of branch names with slashes",
+			name:        "branch with slashes",
+			path:        "/path/to/worktree",
+			branch:      "feature/user/login",
+			mockError:   nil,
+			expectError: false,
+			description: "Test handling of branch names with slashes",
 		},
 		{
-			name:         "command execution error",
-			path:         "/path/to/worktree",
-			branch:       "main",
-			mockError:    execError("fatal: '/path/to/worktree' already exists"),
-			expectError:  true,
-			description:  "Test error handling when worktree already exists",
+			name:        "command execution error",
+			path:        "/path/to/worktree",
+			branch:      "main",
+			mockError:   execError("fatal: '/path/to/worktree' already exists"),
+			expectError: true,
+			description: "Test error handling when worktree already exists",
 		},
 	}
 
@@ -405,53 +405,53 @@ func TestCreateWorktree(t *testing.T) {
 // TestRemoveWorktree tests the RemoveWorktree function
 func TestRemoveWorktree(t *testing.T) {
 	tests := []struct {
-		name         string
-		path         string
-		mockError    error
-		expectError  bool
-		description  string
+		name        string
+		path        string
+		mockError   error
+		expectError bool
+		description string
 	}{
 		{
-			name:         "valid worktree path",
-			path:         "/path/to/worktree",
-			mockError:    nil,
-			expectError:  false,
-			description:  "Test successful worktree removal",
+			name:        "valid worktree path",
+			path:        "/path/to/worktree",
+			mockError:   nil,
+			expectError: false,
+			description: "Test successful worktree removal",
 		},
 		{
-			name:         "relative path",
-			path:         "./worktree",
-			mockError:    nil,
-			expectError:  false,
-			description:  "Test removal with relative path",
+			name:        "relative path",
+			path:        "./worktree",
+			mockError:   nil,
+			expectError: false,
+			description: "Test removal with relative path",
 		},
 		{
-			name:         "empty path",
-			path:         "",
-			mockError:    execError("failed to remove worktree"),
-			expectError:  true,
-			description:  "Test error handling with empty path",
+			name:        "empty path",
+			path:        "",
+			mockError:   execError("failed to remove worktree"),
+			expectError: true,
+			description: "Test error handling with empty path",
 		},
 		{
-			name:         "non-existent worktree",
-			path:         "/non-existent/path",
-			mockError:    execError("fatal: '/non-existent/path' is not a git worktree"),
-			expectError:  true,
-			description:  "Test error handling when worktree doesn't exist",
+			name:        "non-existent worktree",
+			path:        "/non-existent/path",
+			mockError:   execError("fatal: '/non-existent/path' is not a git worktree"),
+			expectError: true,
+			description: "Test error handling when worktree doesn't exist",
 		},
 		{
-			name:         "path with special characters",
-			path:         "/path/to/worktree-special",
-			mockError:    nil,
-			expectError:  false,
-			description:  "Test handling of paths with special characters",
+			name:        "path with special characters",
+			path:        "/path/to/worktree-special",
+			mockError:   nil,
+			expectError: false,
+			description: "Test handling of paths with special characters",
 		},
 		{
-			name:         "command execution error",
-			path:         "/path/to/worktree",
-			mockError:    execError("fatal: must be in a worktree to remove a worktree"),
-			expectError:  true,
-			description:  "Test error handling when no worktree is active",
+			name:        "command execution error",
+			path:        "/path/to/worktree",
+			mockError:   execError("fatal: must be in a worktree to remove a worktree"),
+			expectError: true,
+			description: "Test error handling when no worktree is active",
 		},
 	}
 
@@ -551,39 +551,39 @@ func TestWorktreeInfo_Structure(t *testing.T) {
 // TestEdgeCases tests edge cases for worktree parsing
 func TestEdgeCases(t *testing.T) {
 	tests := []struct {
-		name         string
-		input        string
-		expectError  bool
+		name          string
+		input         string
+		expectError   bool
 		expectedCount int
-		description  string
+		description   string
 	}{
 		{
-			name:         "malformed line without parentheses",
-			input:        "/path/to/worktree\n",
-			expectError:  false,
+			name:          "malformed line without parentheses",
+			input:         "/path/to/worktree\n",
+			expectError:   false,
 			expectedCount: 0,
-			description:  "Test parsing of line without branch info",
+			description:   "Test parsing of line without branch info",
 		},
 		{
-			name:         "line with empty branch name",
-			input:        "/path/to/worktree ()\n",
-			expectError:  false,
+			name:          "line with empty branch name",
+			input:         "/path/to/worktree ()\n",
+			expectError:   false,
 			expectedCount: 0,
-			description:  "Test parsing of line with empty branch name (should not match)",
+			description:   "Test parsing of line with empty branch name (should not match)",
 		},
 		{
-			name:         "status line without hash",
-			input:        "/path/to/worktree (main)\nmain branch, unmodified\n",
-			expectError:  false,
+			name:          "status line without hash",
+			input:         "/path/to/worktree (main)\nmain branch, unmodified\n",
+			expectError:   false,
 			expectedCount: 1,
-			description:  "Test parsing when status line doesn't start with #",
+			description:   "Test parsing when status line doesn't start with #",
 		},
 		{
-			name:         "multiple consecutive status lines",
-			input:        "/path/to/worktree (main)\n# main branch, unmodified\n# extra status line\n",
-			expectError:  false,
+			name:          "multiple consecutive status lines",
+			input:         "/path/to/worktree (main)\n# main branch, unmodified\n# extra status line\n",
+			expectError:   false,
 			expectedCount: 1,
-			description:  "Test parsing with multiple status lines",
+			description:   "Test parsing with multiple status lines",
 		},
 	}
 
@@ -605,52 +605,52 @@ func TestEdgeCases(t *testing.T) {
 // TestWorktreeParsing_RegexEdgeCases tests regex edge cases
 func TestWorktreeParsing_RegexEdgeCases(t *testing.T) {
 	tests := []struct {
-		name         string
-		input        string
-		expectMatch  bool
-		description  string
+		name        string
+		input       string
+		expectMatch bool
+		description string
 	}{
 		{
-			name:         "valid worktree path",
-			input:        "/path/to/repo (main)",
-			expectMatch:  true,
-			description:  "Test valid worktree path with branch",
+			name:        "valid worktree path",
+			input:       "/path/to/repo (main)",
+			expectMatch: true,
+			description: "Test valid worktree path with branch",
 		},
 		{
-			name:         "valid detached worktree",
-			input:        "/path/to/repo (detached from abc123)",
-			expectMatch:  true,
-			description:  "Test valid detached worktree",
+			name:        "valid detached worktree",
+			input:       "/path/to/repo (detached from abc123)",
+			expectMatch: true,
+			description: "Test valid detached worktree",
 		},
 		{
-			name:         "path with spaces",
-			input:        "/path/to/repo with spaces (main)",
-			expectMatch:  false,
-			description:  "Test that paths with spaces don't match (regex uses \\S+ for path)",
+			name:        "path with spaces",
+			input:       "/path/to/repo with spaces (main)",
+			expectMatch: false,
+			description: "Test that paths with spaces don't match (regex uses \\S+ for path)",
 		},
 		{
-			name:         "branch with special chars",
-			input:        "/path/to/repo (feature/user-login)",
-			expectMatch:  true,
-			description:  "Test branch with hyphens and slashes",
+			name:        "branch with special chars",
+			input:       "/path/to/repo (feature/user-login)",
+			expectMatch: true,
+			description: "Test branch with hyphens and slashes",
 		},
 		{
-			name:         "missing space before parenthesis",
-			input:        "/path/to/repo(main)",
-			expectMatch:  false,
-			description:  "Test that missing space before parenthesis fails to match",
+			name:        "missing space before parenthesis",
+			input:       "/path/to/repo(main)",
+			expectMatch: false,
+			description: "Test that missing space before parenthesis fails to match",
 		},
 		{
-			name:         "multiple spaces",
-			input:        "/path/to/repo  (main)",
-			expectMatch:  true,
-			description:  "Test that multiple spaces are handled",
+			name:        "multiple spaces",
+			input:       "/path/to/repo  (main)",
+			expectMatch: true,
+			description: "Test that multiple spaces are handled",
 		},
 		{
-			name:         "nested parentheses in branch name",
-			input:        "/path/to/repo (feature(v2))",
-			expectMatch:  true,
-			description:  "Test branch name with nested parentheses",
+			name:        "nested parentheses in branch name",
+			input:       "/path/to/repo (feature(v2))",
+			expectMatch: true,
+			description: "Test branch name with nested parentheses",
 		},
 	}
 

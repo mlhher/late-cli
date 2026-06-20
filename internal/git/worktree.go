@@ -9,10 +9,10 @@ import (
 
 // WorktreeInfo contains information about a git worktree
 type WorktreeInfo struct {
-	Path     string
-	Branch   string
+	Path       string
+	Branch     string
 	IsDetached bool
-	Status   string
+	Status     string
 }
 
 // ListWorktrees executes `git worktree list` and parses the output

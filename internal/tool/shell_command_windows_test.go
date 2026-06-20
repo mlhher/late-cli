@@ -11,9 +11,9 @@ func TestNewShellCommand(t *testing.T) {
 	expectedShell := getWindowsShellPath()
 
 	tests := []struct {
-		name         string
-		mockSqz      bool
-		expectedCmd  string
+		name        string
+		mockSqz     bool
+		expectedCmd string
 	}{
 		{
 			name:        "sqz not available",

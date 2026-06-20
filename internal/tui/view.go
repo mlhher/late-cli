@@ -305,14 +305,14 @@ func (m *Model) statusBarView() string {
 	spaceWidth := usableW - leftWidth - rightWidth
 	if status != "" {
 		statusWidth := lipgloss.Width(status)
-		if statusWidth + 3 > spaceWidth {
+		if statusWidth+3 > spaceWidth {
 			// Truncate status text to fit
 			maxStatusW := spaceWidth - 3
 			if maxStatusW < 0 {
 				maxStatusW = 0
 			}
 			if hasToast {
-				truncated := m.truncateWithEllipsis("✓ " + m.ToastMessage, maxStatusW)
+				truncated := m.truncateWithEllipsis("✓ "+m.ToastMessage, maxStatusW)
 				status = lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true).Render(truncated)
 			} else {
 				truncated := m.truncateWithEllipsis(statusText, maxStatusW)
@@ -346,7 +346,6 @@ func (m *Model) statusBarView() string {
 	paddedContent := statusBg(" ") + content + statusBg(" ")
 	return statusBarBaseStyle.Width(w).Render(paddedContent)
 }
-
 
 func (m *Model) updateViewport() {
 	if m.Focused == nil {
@@ -470,12 +469,12 @@ Press **ctrl+h** or **esc** to return to the chat.`
 		if r != "" {
 			blocks = append(blocks, r)
 			linesCount := strings.Count(r, "\n") + 1
-			
+
 			copyText := history[idx].Content.String()
 			if history[idx].Role == "user" {
 				copyText = history[idx].Content.UIString()
 			}
-			
+
 			s.RenderBlocks = append(s.RenderBlocks, RenderBlock{
 				MessageIndex: idx,
 				Content:      copyText,
@@ -574,7 +573,7 @@ Press **ctrl+h** or **esc** to return to the chat.`
 			r := strings.Join(activeParts, "\n")
 			blocks = append(blocks, r)
 			linesCount := strings.Count(r, "\n") + 1
-			
+
 			s.RenderBlocks = append(s.RenderBlocks, RenderBlock{
 				MessageIndex: -1,
 				Content:      s.StreamingState.Content,
@@ -586,7 +585,7 @@ Press **ctrl+h** or **esc** to return to the chat.`
 			r := m.renderAnimatedTag("Thinking", thinkingStyle, msgWidth-2, true)
 			blocks = append(blocks, r)
 			linesCount := strings.Count(r, "\n") + 1
-			
+
 			s.RenderBlocks = append(s.RenderBlocks, RenderBlock{
 				MessageIndex: -1,
 				Content:      "Thinking...",
@@ -606,10 +605,10 @@ Press **ctrl+h** or **esc** to return to the chat.`
 		}
 		prompt := fmt.Sprintf("The agent wants to execute a **%s** command.\n\n```json\n%s\n```\n\n> Press **[y]** Allow once | **[s]** Allow always (session) | **[p]** Allow always (project) | **[g]** Allow always (global) | **[n]** Deny", displayName, tc.Function.Arguments)
 		md, _ := m.Renderer.Render(prompt)
-		r := aiMsgStyle.Width(msgWidth+1).Border(lipgloss.DoubleBorder()).BorderForeground(warningColor).Render(md)
+		r := aiMsgStyle.Width(msgWidth + 1).Border(lipgloss.DoubleBorder()).BorderForeground(warningColor).Render(md)
 		blocks = append(blocks, r)
 		linesCount := strings.Count(r, "\n") + 1
-		
+
 		s.RenderBlocks = append(s.RenderBlocks, RenderBlock{
 			MessageIndex: -1,
 			Content:      tc.Function.Arguments,
@@ -622,10 +621,10 @@ Press **ctrl+h** or **esc** to return to the chat.`
 	if s.State == StateContextWarning {
 		prompt := "⚠️ **Context Limit Warning**\n\nYou are approaching the maximum context size for this session (over 90% used). It is highly recommended to **start a new session** to ensure the agent maintains full context and accuracy.\n\n> Press **[Enter]** again to proceed anyway, or start a new session."
 		md, _ := m.Renderer.Render(prompt)
-		r := aiMsgStyle.Width(msgWidth+1).Border(lipgloss.DoubleBorder()).BorderForeground(warningColor).Render(md)
+		r := aiMsgStyle.Width(msgWidth + 1).Border(lipgloss.DoubleBorder()).BorderForeground(warningColor).Render(md)
 		blocks = append(blocks, r)
 		linesCount := strings.Count(r, "\n") + 1
-		
+
 		s.RenderBlocks = append(s.RenderBlocks, RenderBlock{
 			MessageIndex: -1,
 			Content:      prompt,
@@ -642,14 +641,14 @@ Press **ctrl+h** or **esc** to return to the chat.`
 		if strings.Contains(errStr, "exceeds the available context size") || strings.Contains(errStr, "context_length_exceeded") {
 			prompt = "🛑 **Context Limit Exceeded**\n\nThis session has hit the model's absolute context limit. The agent cannot proceed further in this session.\n\n**Action Required:** Please **start a new session** to continue your work."
 			md, _ := m.Renderer.Render(prompt)
-			r = aiMsgStyle.Width(msgWidth+1).Border(lipgloss.DoubleBorder()).BorderForeground(lipgloss.Color("#FF0000")).Render(md)
+			r = aiMsgStyle.Width(msgWidth + 1).Border(lipgloss.DoubleBorder()).BorderForeground(lipgloss.Color("#FF0000")).Render(md)
 		} else {
 			prompt = fmt.Sprintf("Error: %v", s.Error)
 			r = thinkingStyle.Foreground(lipgloss.Color("#FF0000")).Render(prompt)
 		}
 		blocks = append(blocks, r)
 		linesCount := strings.Count(r, "\n") + 1
-		
+
 		s.RenderBlocks = append(s.RenderBlocks, RenderBlock{
 			MessageIndex: -1,
 			Content:      prompt,
@@ -662,7 +661,7 @@ Press **ctrl+h** or **esc** to return to the chat.`
 		r := thinkingStyle.Foreground(lipgloss.Color("#FF0000")).Render(prompt)
 		blocks = append(blocks, r)
 		linesCount := strings.Count(r, "\n") + 1
-		
+
 		s.RenderBlocks = append(s.RenderBlocks, RenderBlock{
 			MessageIndex: -1,
 			Content:      prompt,
@@ -674,10 +673,10 @@ Press **ctrl+h** or **esc** to return to the chat.`
 
 	// Render Queued Messages
 	for _, msg := range m.Focused.QueuedMessages() {
-		r := queuedMsgStyle.Width(msgWidth+1).Render(msg)
+		r := queuedMsgStyle.Width(msgWidth + 1).Render(msg)
 		blocks = append(blocks, r)
 		linesCount := strings.Count(r, "\n") + 1
-		
+
 		s.RenderBlocks = append(s.RenderBlocks, RenderBlock{
 			MessageIndex: -1,
 			Content:      msg,

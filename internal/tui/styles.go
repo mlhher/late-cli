@@ -127,12 +127,12 @@ var (
 			Bold(true)
 
 	statusAttachedStyle = lipgloss.NewStyle().
-			Foreground(secondaryColor).
-			Background(appBgColor).
-			Bold(true)
+				Foreground(secondaryColor).
+				Background(appBgColor).
+				Bold(true)
 
 	statusTokenStyle = lipgloss.NewStyle().
-			Foreground(subtextColor)
+				Foreground(subtextColor)
 
 	// Breadcrumb styles
 	breadcrumbLateStyle = lipgloss.NewStyle().

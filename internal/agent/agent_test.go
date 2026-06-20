@@ -35,7 +35,7 @@ func TestNewSubagentOrchestratorWithGemmaThinking(t *testing.T) {
 		true,  // gemmaThinking
 		100,   // maxTurns
 		parent,
-		nil,   // messenger
+		nil, // messenger
 	)
 
 	if err != nil {
@@ -67,7 +67,7 @@ func TestNewSubagentOrchestratorWithGemmaThinking(t *testing.T) {
 		false, // gemmaThinking
 		100,   // maxTurns
 		parent,
-		nil,   // messenger
+		nil, // messenger
 	)
 
 	if err != nil {
@@ -107,11 +107,11 @@ func TestNewSubagentOrchestratorGemmaThinkingWithCWD(t *testing.T) {
 		[]string{},
 		"coder",
 		enabledTools,
-		true,  // injectCWD
-		true,  // gemmaThinking
-		100,   // maxTurns
+		true, // injectCWD
+		true, // gemmaThinking
+		100,  // maxTurns
 		parent,
-		nil,   // messenger
+		nil, // messenger
 	)
 
 	if err != nil {

@@ -1,7 +1,31 @@
+# Binaries
 bin/
 build/
+late
+*.test
+*.out
+*.prof
+
+# Go tools
+go.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Coverage
+coverage.*
+coverage/
+
+# Project artifacts
 implementation_plan.md
 pr_review_report.md
 .late/
-.idea/
 .plans/
+.hermes/
+
+# OS
+.DS_Store
+Thumbs.db

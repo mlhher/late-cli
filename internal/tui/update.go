@@ -305,7 +305,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			m.Input.Reset()
 			m.Input.SetValue("> ")
 			m.AttachedFiles = nil // Clear attachments after submit
-			
+
 			// Only update state to thinking if it was idle, else let it stay in its current busy state
 			if focusedState.State == StateIdle || focusedState.State == StateContextWarning {
 				focusedState.State = StateThinking

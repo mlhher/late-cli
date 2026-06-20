@@ -32,10 +32,10 @@ const (
 
 // Config represents the application configuration.
 type Config struct {
-	EnabledTools    map[string]bool `json:"enabled_tools"`
-	OpenAIBaseURL   string          `json:"openai_base_url,omitempty"`
-	OpenAIAPIKey    string          `json:"openai_api_key,omitempty"`
-	OpenAIModel     string          `json:"openai_model,omitempty"`
+	EnabledTools        map[string]bool `json:"enabled_tools"`
+	OpenAIBaseURL       string          `json:"openai_base_url,omitempty"`
+	OpenAIAPIKey        string          `json:"openai_api_key,omitempty"`
+	OpenAIModel         string          `json:"openai_model,omitempty"`
 	LateSubagentBaseURL string          `json:"late_subagent_base_url,omitempty"`
 	LateSubagentAPIKey  string          `json:"late_subagent_api_key,omitempty"`
 	LateSubagentModel   string          `json:"late_subagent_model,omitempty"`

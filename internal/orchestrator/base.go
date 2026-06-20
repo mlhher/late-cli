@@ -360,7 +360,7 @@ func (o *BaseOrchestrator) run() {
 			}
 			break
 		}
-		
+
 		if !hasPending {
 			o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"}
 			break

@@ -79,7 +79,7 @@ type AppState struct {
 	LastTail             string   // Cached result of splitMarkdownChunks
 	LastTotalContent     string   // To avoid redundant Viewport.SetContent calls
 
-	RenderBlocks        []RenderBlock // Line ranges of rendered blocks
+	RenderBlocks []RenderBlock // Line ranges of rendered blocks
 
 	ContextWarningShown bool // Whether the preflight context warning has been shown for the current input
 	Error               error

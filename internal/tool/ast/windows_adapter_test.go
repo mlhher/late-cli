@@ -76,8 +76,8 @@ func TestWindowsParser_BridgeContract(t *testing.T) {
 		// idiomatic PowerShell parameter syntax, not subshell execution.
 		// $_ is a pipeline iteration variable — also filtered, no ReasonExpansion.
 		{
-			command: "Get-ChildItem | Where-Object { $_.Name -eq 'foo' }",
-			noRisk:  []ReasonCode{ReasonSubshell, ReasonExpansion},
+			command:  "Get-ChildItem | Where-Object { $_.Name -eq 'foo' }",
+			noRisk:   []ReasonCode{ReasonSubshell, ReasonExpansion},
 			wantRisk: []ReasonCode{ReasonOperator},
 		},
 		{
@@ -296,4 +296,3 @@ func TestWindowsParser_BridgeRestart(t *testing.T) {
 		t.Errorf("restarted bridge: bad platform %q", ir2.Platform)
 	}
 }
-

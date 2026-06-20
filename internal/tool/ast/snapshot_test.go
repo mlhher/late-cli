@@ -67,4 +67,3 @@ func TestUnixCorpusSnapshot(t *testing.T) {
 		})
 	}
 }
-
