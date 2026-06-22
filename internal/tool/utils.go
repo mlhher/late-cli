@@ -49,8 +49,8 @@ func CompressWithSqz(ctx context.Context, input []byte, command string) ([]byte,
 	// Use --cmd to label the compression for stats
 	cmd := exec.CommandContext(ctx, "sqz", "compress", "--cmd", command)
 	cmd.Stdin = strings.NewReader(string(input))
-	
-	// We only want the stdout (the compressed content). 
+
+	// We only want the stdout (the compressed content).
 	// Stderr contains sqz stats which we don't want to pollute the LLM context with.
 	return cmd.Output()
 }

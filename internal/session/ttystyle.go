@@ -39,29 +39,28 @@ func truncateUTF8(s string, maxLen int) string {
 	return string(runes[:maxLen]) + "..."
 }
 
-// FormatSessionDisplay formats a session for display with appropriate styling
-// TODO: simplify
+// FormatSessionDisplay formats a session for display with appropriate styling.
 func FormatSessionDisplay(meta SessionMeta, verbose bool) string {
 	if verbose {
-		// Use detailed multi-line format
-		var lines []string
-		lines = append(lines, colorID(fmt.Sprintf("ID: %s", strings.TrimSuffix(meta.ID, ".json"))))
-		lines = append(lines, fmt.Sprintf("    Title:   %s", meta.Title))
-		lines = append(lines, fmt.Sprintf("    Created: %s", meta.CreatedAt.Format("2006-01-02 15:04:05")))
-		lines = append(lines, fmt.Sprintf("    Updated: %s", meta.LastUpdated.Format("2006-01-02 15:04:05")))
-		lines = append(lines, fmt.Sprintf("    Msg #:   %d", meta.MessageCount))
-		if meta.LastUserPrompt != "" {
-			last := meta.LastUserPrompt
-			if len([]rune(last)) > 50 {
-				last = truncateUTF8(last, 50)
-			}
-			lines = append(lines, fmt.Sprintf("    Last:    %s", last))
-		}
-		result := strings.Join(lines, "\n")
-	return strings.TrimSpace(result)
+		return formatSessionDisplayVerbose(meta)
 	}
-	// Use compact single-line format
 	return FormatSessionDisplayCompact(meta)
+}
+
+// formatSessionDisplayVerbose returns a detailed multi-line session display.
+func formatSessionDisplayVerbose(meta SessionMeta) string {
+	lines := []string{
+		colorID(fmt.Sprintf("ID: %s", strings.TrimSuffix(meta.ID, ".json"))),
+		fmt.Sprintf("    Title:   %s", meta.Title),
+		fmt.Sprintf("    Created: %s", meta.CreatedAt.Format("2006-01-02 15:04:05")),
+		fmt.Sprintf("    Updated: %s", meta.LastUpdated.Format("2006-01-02 15:04:05")),
+		fmt.Sprintf("    Msg #:   %d", meta.MessageCount),
+	}
+	if meta.LastUserPrompt != "" {
+		last := truncateUTF8(meta.LastUserPrompt, 50)
+		lines = append(lines, fmt.Sprintf("    Last:    %s", last))
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 // FormatCompactID formats just the session ID without the .json suffix
@@ -79,7 +78,7 @@ func FormatResumePrompt() string {
 func FormatSessionDisplayCompact(meta SessionMeta) string {
 	// Colorize ID without .json suffix
 	id := colorID(strings.TrimSuffix(meta.ID, ".json"))
-	
+
 	// Handle empty title
 	title := meta.Title
 	if title == "" {
@@ -87,10 +86,10 @@ func FormatSessionDisplayCompact(meta SessionMeta) string {
 	}
 	// Truncate title to 40 characters max
 	title = truncateUTF8(title, 40)
-	
+
 	// Format timestamp without seconds
 	updated := meta.LastUpdated.Format("2006-01-02 15:04")
-	
+
 	// Use tab-separated values for alignment
 	result := fmt.Sprintf("%s\t%s\t%s\t%d", id, title, updated, meta.MessageCount)
 	return strings.TrimSpace(result)

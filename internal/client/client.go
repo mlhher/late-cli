@@ -30,9 +30,9 @@ const (
 )
 
 type Client struct {
-	mu         sync.RWMutex
-	cfg        Config
-	httpClient *http.Client
+	mu             sync.RWMutex
+	cfg            Config
+	httpClient     *http.Client
 	backend        BackendType
 	ctxSize        int
 	supportsVision bool
