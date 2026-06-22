@@ -21,9 +21,11 @@ type SearchTool struct{}
 
 func (t *SearchTool) Name() string { return "search_tool" }
 func (t *SearchTool) Description() string {
-	return "Search files and file contents using regex or literal patterns. " +
-		"Returns matching files and/or content with line numbers. " +
-		"Use this instead of bash grep/find."
+	return "PREFERRED over bash grep/find/rg for code search. " +
+		"Search files and file contents using regex or literal patterns. " +
+		"Returns structured {path, line, content} matches with line numbers. " +
+		"Honors permission gates and applies per-tool output caps. " +
+		"Supports output modes: files_with_matches (paths only), content (lines with numbers), count (match counts)."
 }
 func (t *SearchTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
@@ -43,24 +45,32 @@ func (t *SearchTool) Parameters() json.RawMessage {
 			},
 			"output_mode": {
 				"type": "string",
-				"enum": ["files_with_matches", "content", "count"],
-				"description": "Output format: 'files_with_matches' (default, file paths only), 'content' (matching lines with line numbers), 'count' (match count per file)"
+				"enum": ["files_with_matches", "matching-files", "content", "text", "count"],
+				"description": "Output format: 'files_with_matches' or 'matching-files' for file paths only (grep -l), 'content' or 'text' for matching lines with numbers (grep -n), 'count' for match count per file (grep -c)"
 			},
 			"case_sensitive": {
 				"type": "boolean",
-				"description": "If true, do case-sensitive matching (default: false, case-insensitive)"
+				"description": "If true, do case-sensitive matching (default: false, case-insensitive). Note: grep defaults to case-sensitive; this tool defaults to case-insensitive for code-friendliness."
 			},
 			"fixed_strings": {
 				"type": "boolean",
-				"description": "If true, treat pattern as a literal string instead of regex (default: false)"
+				"description": "If true, treat pattern as a literal string instead of regex (default: false). Equivalent to grep -F."
 			},
 			"context_lines": {
 				"type": "integer",
-				"description": "Number of context lines to show before and after each match (content mode only)"
+				"description": "Number of context lines to show before and after each match (content mode only). Equivalent to grep -C."
 			},
 			"max_results": {
 				"type": "integer",
 				"description": "Maximum number of results to return (default: 100, max: 500)"
+			},
+			"exclude": {
+				"type": "string",
+				"description": "Glob pattern to exclude files, e.g. '*.min.js' or '*_test.go'. Uses filepath.Match semantics on the file name."
+			},
+			"recursive": {
+				"type": "boolean",
+				"description": "If true (default), search directories recursively. If false, only search the top-level files in the specified path."
 			}
 		},
 		"required": ["pattern"]
@@ -72,11 +82,13 @@ func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (string,
 		Pattern       string `json:"pattern"`
 		Path          string `json:"path"`
 		Include       string `json:"include"`
+		Exclude       string `json:"exclude"`
 		OutputMode    string `json:"output_mode"`
 		CaseSensitive bool   `json:"case_sensitive"`
 		FixedStrings  bool   `json:"fixed_strings"`
 		ContextLines  int    `json:"context_lines"`
 		MaxResults    int    `json:"max_results"`
+		Recursive     bool   `json:"recursive"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid search parameters: %w", err)
@@ -88,6 +100,7 @@ func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (string,
 	}
 
 	// Defaults
+	params.Recursive = true // default to recursive for backward compat
 	if params.OutputMode == "" {
 		params.OutputMode = "files_with_matches"
 	}
@@ -95,12 +108,20 @@ func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (string,
 		params.MaxResults = 100
 	}
 
+	// Normalize grep-compatible output mode aliases
+	switch params.OutputMode {
+	case "matching-files":
+		params.OutputMode = "files_with_matches"
+	case "text":
+		params.OutputMode = "content"
+	}
+
 	// Validate output mode
 	switch params.OutputMode {
 	case "files_with_matches", "content", "count":
 		// valid
 	default:
-		return "", fmt.Errorf("invalid output_mode: %s (must be 'files_with_matches', 'content', or 'count')", params.OutputMode)
+		return "", fmt.Errorf("invalid output_mode: %s (must be 'files_with_matches', 'content', 'count', 'matching-files', or 'text')", params.OutputMode)
 	}
 
 	// Resolve search path
@@ -139,9 +160,12 @@ func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (string,
 	matchCount := 0
 	fileCount := 0
 	truncated := false
+	var err error
 	stopErr := fmt.Errorf("stop") // sentinel to stop WalkDir
 
-	err := filepath.WalkDir(searchPath, func(path string, d fs.DirEntry, err error) error {
+	// Determine walker function
+	var walkFn func(path string, d fs.DirEntry, err error) error
+	walkFn = func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return filepath.SkipDir // Skip inaccessible dirs
 		}
@@ -156,6 +180,14 @@ func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (string,
 		}
 		if strings.HasPrefix(d.Name(), ".") {
 			return nil
+		}
+
+		// Apply exclude glob filter (before include for efficiency)
+		if params.Exclude != "" {
+			matched, err := filepath.Match(params.Exclude, d.Name())
+			if err == nil && matched {
+				return nil
+			}
 		}
 
 		// Apply include glob filter
@@ -173,7 +205,7 @@ func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (string,
 		default:
 		}
 
-		// --- Count matches in this file (cheap first pass) ---
+		// --- Count matches in this file ---
 		fileMatches, err := countMatches(path, matchFunc)
 		if err != nil || fileMatches == 0 {
 			return nil
@@ -204,13 +236,17 @@ func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (string,
 			sb.WriteString(line)
 
 		case "content":
-			fileStr, err := readFileContent(path, matchFunc, params.ContextLines, params.MaxResults, &matchCount, &sb)
+			fileStr, localCount, err := readFileContentWithCount(path, matchFunc, params.ContextLines, params.MaxResults, &matchCount)
 			if err != nil {
 				if err == stopErr {
 					truncated = true
 					return stopErr
 				}
 				return nil // skip unreadable files silently
+			}
+			if localCount == 0 {
+				// No matches found in this file (shouldn't happen after countMatches but handle gracefully)
+				return nil
 			}
 			if sb.Len()+len(fileStr) > maxSearchChars {
 				// partial write — fit what we can
@@ -227,7 +263,33 @@ func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (string,
 		}
 
 		return nil
-	})
+	}
+
+	if params.Recursive {
+		err = filepath.WalkDir(searchPath, walkFn)
+	} else {
+		// Non-recursive: read top-level directory entries only
+		entries, readErr := os.ReadDir(searchPath)
+		if readErr == nil {
+			for _, entry := range entries {
+				if entry.IsDir() {
+					continue
+				}
+				// Reuse walkFn logic by constructing the full path
+				fullPath := filepath.Join(searchPath, entry.Name())
+				if wErr := walkFn(fullPath, entry, nil); wErr != nil {
+					if wErr == stopErr {
+						err = stopErr
+						break
+					}
+					if wErr == context.Canceled || wErr == context.DeadlineExceeded {
+						err = wErr
+						break
+					}
+				}
+			}
+		}
+	}
 
 	if err != nil && err != stopErr && err != context.Canceled && err != context.DeadlineExceeded {
 		return "", fmt.Errorf("search failed: %w", err)
@@ -278,8 +340,63 @@ func countMatches(path string, matchFunc func(string) bool) (int, error) {
 	return count, nil
 }
 
+// readFileContentWithCount reads a file once, counts matches, and formats content output.
+// This eliminates the double-read in content mode (previously countMatches + readFileContent).
+func readFileContentWithCount(path string, matchFunc func(string) bool, contextLines, maxResults int, matchCount *int) (string, int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", 0, err
+	}
+	if IsBinary(data) {
+		return "", 0, nil
+	}
+	if len(data) == 0 {
+		return "", 0, nil
+	}
+
+	lines := strings.Split(string(data), "\n")
+	var fileBuf strings.Builder
+	localMatchCount := 0
+
+	fileBuf.WriteString(path + "\n")
+
+	for i, line := range lines {
+		if matchFunc(line) {
+			localMatchCount++
+			*matchCount++
+			if *matchCount > maxResults {
+				return fileBuf.String(), localMatchCount, fmt.Errorf("stop")
+			}
+
+			// Emit context lines before match
+			if contextLines > 0 {
+				start := i - contextLines
+				if start < 0 {
+					start = 0
+				}
+				for j := start; j < i; j++ {
+					cl := truncateLine(lines[j])
+					entry := fmt.Sprintf("  %5d - %s\n", j+1, cl)
+					if fileBuf.Len()+len(entry) > maxSearchChars {
+						return fileBuf.String(), localMatchCount, nil
+					}
+					fileBuf.WriteString(entry)
+				}
+			}
+
+			entry := fmt.Sprintf("  %5d | %s\n", i+1, truncateLine(line))
+			if fileBuf.Len()+len(entry) > maxSearchChars {
+				return fileBuf.String(), localMatchCount, nil
+			}
+			fileBuf.WriteString(entry)
+		}
+	}
+
+	return fileBuf.String(), localMatchCount, nil
+}
+
 // readFileContent reads a file and appends matched lines (with context) to the output.
-// It returns a string suitable for appending, or an error to stop walking.
+// Kept for backward compatibility; new code should use readFileContentWithCount for single-pass.
 func readFileContent(path string, matchFunc func(string) bool, contextLines, maxResults int, matchCount *int, sb *strings.Builder) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
