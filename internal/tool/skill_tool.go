@@ -138,7 +138,17 @@ func (t ActivateSkillTool) Execute(ctx context.Context, args json.RawMessage) (s
 		}
 	}
 
-	return fmt.Sprintf("Skill '%s' activated.\n\nInstructions:\n%s", s.Metadata.Name, s.Instructions), nil
+	refs := skill.DiscoverSkillReferences(s)
+	var resp strings.Builder
+	resp.WriteString(fmt.Sprintf("Skill '%s' activated.\n\nInstructions:\n%s", s.Metadata.Name, s.Instructions))
+	if len(refs) > 0 {
+		resp.WriteString("\n\n## Available References\n")
+		for _, ref := range refs {
+			resp.WriteString(fmt.Sprintf("- `%s`\n", ref))
+		}
+		resp.WriteString("\nTo read a reference file, use the `skill_read_reference` tool with the skill name and file path.\n")
+	}
+	return resp.String(), nil
 }
 
 func (t ActivateSkillTool) RequiresConfirmation(args json.RawMessage) bool { return false }

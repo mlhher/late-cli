@@ -158,6 +158,9 @@ func RegisterTools(reg *tool.Registry, enabledTools map[string]bool, isPlanning 
 			Skills: skillMap,
 			Reg:    reg,
 		})
+		reg.Register(tool.SkillReadReferenceTool{
+			Skills: skillMap,
+		})
 	}
 }
 

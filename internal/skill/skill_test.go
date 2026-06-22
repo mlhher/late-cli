@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -59,6 +60,38 @@ Instructions here.
 
 	if skill.Metadata.Name != "my-skill" {
 		t.Errorf("Expected name 'my-skill', got '%s'", skill.Metadata.Name)
+	}
+}
+
+func TestDiscoverSkillReferences(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "discover-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	os.MkdirAll(filepath.Join(tmpDir, "z-dir"), 0755)
+	os.MkdirAll(filepath.Join(tmpDir, "a-dir"), 0755)
+	os.WriteFile(filepath.Join(tmpDir, "SKILL.md"), []byte(fmt.Sprintf("---\nname: %s\ndescription: test\n---\n", filepath.Base(tmpDir))), 0644)
+	os.WriteFile(filepath.Join(tmpDir, "z-dir", "z.md"), []byte("z"), 0644)
+	os.WriteFile(filepath.Join(tmpDir, "a-dir", "a.md"), []byte("a"), 0644)
+	os.WriteFile(filepath.Join(tmpDir, "m.md"), []byte("m"), 0644)
+
+	skill, err := LoadSkill(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadSkill failed: %v", err)
+	}
+
+	refs := DiscoverSkillReferences(skill)
+
+	expected := map[string]bool{"a-dir/a.md": true, "m.md": true, "z-dir/z.md": true}
+	if len(refs) != len(expected) {
+		t.Errorf("Expected %d refs, got %d: %v", len(expected), len(refs), refs)
+	}
+	for _, ref := range refs {
+		if !expected[ref] {
+			t.Errorf("Unexpected ref: %q", ref)
+		}
 	}
 }
 

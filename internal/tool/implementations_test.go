@@ -604,6 +604,161 @@ func TestBashTool_BinaryOutput(t *testing.T) {
 	}
 }
 
+func TestSkillReadReferenceTool(t *testing.T) {
+	// Create a temp skill directory with a SKILL.md and a reference file
+	tmpDir := t.TempDir()
+	skillDir := filepath.Join(tmpDir, "my-skill")
+	err := os.MkdirAll(skillDir, 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create SKILL.md with required frontmatter
+	skillMd := `---
+name: my-skill
+description: A test skill
+---
+
+This is the skill instructions.
+`
+	err = os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillMd), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a reference file
+	refPath := filepath.Join(skillDir, "references", "guide.md")
+	refPath = filepath.ToSlash(refPath)
+	err = os.MkdirAll(filepath.Dir(refPath), 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refContent := "This is the reference content.\nIt has multiple lines.\nLine three."
+	err = os.WriteFile(refPath, []byte(refContent), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Build the *skill.Skill struct
+	s := &skill.Skill{
+		Path: skillDir,
+		Metadata: skill.SkillMetadata{
+			Name:        "my-skill",
+			Description: "A test skill",
+		},
+		Instructions: "This is the skill instructions.",
+	}
+
+	tests := []struct {
+		name        string
+		skills      map[string]*skill.Skill
+		params      json.RawMessage
+		wantContent string
+		wantErr     bool
+	}{
+		{
+			name: "happy path - read reference file",
+			skills: map[string]*skill.Skill{
+				"my-skill": s,
+			},
+			params:      json.RawMessage(`{"skill_name": "my-skill", "file_path": "references/guide.md"}`),
+			wantContent: refContent,
+		},
+		{
+			name:        "skill not found",
+			skills:      map[string]*skill.Skill{},
+			params:      json.RawMessage(`{"skill_name": "unknown-skill", "file_path": "references/guide.md"}`),
+			wantContent: "Activate", // message should mention activation
+		},
+		{
+			name: "file not found",
+			skills: map[string]*skill.Skill{
+				"my-skill": s,
+			},
+			params:      json.RawMessage(`{"skill_name": "my-skill", "file_path": "references/nonexistent.md"}`),
+			wantContent: "not found", // will be checked via contains
+		},
+		{
+			name: "path traversal blocked",
+			skills: map[string]*skill.Skill{
+				"my-skill": s,
+			},
+			params:      json.RawMessage(`{"skill_name": "my-skill", "file_path": "../etc/passwd"}`),
+			wantContent: "path traversal not allowed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool := SkillReadReferenceTool{Skills: tt.skills}
+			result, err := tool.Execute(context.Background(), tt.params)
+			if err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+
+			if tt.wantContent != "" && !strings.Contains(result, tt.wantContent) {
+				t.Errorf("Expected result to contain %q, got %q", tt.wantContent, result)
+			}
+		})
+	}
+
+	// Separate test for output truncation
+	t.Run("output truncation", func(t *testing.T) {
+		// Create a large reference file (>32768 chars)
+		largeSkillDir := filepath.Join(tmpDir, "large-skill")
+		err = os.MkdirAll(largeSkillDir, 0755)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Create SKILL.md
+		err = os.WriteFile(filepath.Join(largeSkillDir, "SKILL.md"), []byte(skillMd), 0644)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Generate a large file
+		var sb strings.Builder
+		for i := 0; i < 1000; i++ {
+			sb.WriteString(fmt.Sprintf("This is line %d of the reference file content.\n", i+1))
+		}
+		largeRefPath := filepath.Join(largeSkillDir, "references", "large.md")
+		err = os.MkdirAll(filepath.Dir(largeRefPath), 0755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = os.WriteFile(largeRefPath, []byte(sb.String()), 0644)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		largeSkill := &skill.Skill{
+			Path: largeSkillDir,
+			Metadata: skill.SkillMetadata{
+				Name:        "large-skill",
+				Description: "A test skill with large references",
+			},
+			Instructions: "Instructions for large-skill.",
+		}
+
+		tool := SkillReadReferenceTool{Skills: map[string]*skill.Skill{
+			"large-skill": largeSkill,
+		}}
+		result, err := tool.Execute(context.Background(), json.RawMessage(`{"skill_name": "large-skill", "file_path": "references/large.md"}`))
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+
+		if len(result) > maxSkillReferenceChars+len("... (output truncated)")+100 {
+			t.Errorf("Output length %d exceeds expected limit", len(result))
+		}
+
+		if !strings.Contains(result, "... (output truncated)") {
+			t.Error("Expected output to contain truncation message")
+		}
+	})
+}
+
 func TestBashTool_LargeSingleLineOutput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix-specific command 'printf' used")

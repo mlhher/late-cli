@@ -110,6 +110,44 @@ func parseSkillFile(content string) (*SkillMetadata, string, error) {
 	return &metadata, strings.TrimSpace(body.String()), nil
 }
 
+// DiscoverSkillReferences returns all files in the skill directory
+// (excluding SKILL.md, dotfiles, dotdirs, and scripts/).
+func DiscoverSkillReferences(s *Skill) []string {
+	var files []string
+	_ = filepath.Walk(s.Path, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		base := filepath.Base(path)
+		// Skip dotfiles and dotdirs
+		if strings.HasPrefix(base, ".") {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// Skip scripts/ directory — handled separately as executable tools
+		if base == "scripts" {
+			return filepath.SkipDir
+		}
+		// Skip SKILL.md itself
+		if filepath.Base(path) == "SKILL.md" {
+			return nil
+		}
+		// Only include files, not directories
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(s.Path, path)
+		if err != nil {
+			return nil
+		}
+		files = append(files, rel)
+		return nil
+	})
+	return files
+}
+
 // DiscoverSkills finds skills in the specified directories.
 func DiscoverSkills(dirs []string) ([]*Skill, error) {
 	var skills []*Skill
