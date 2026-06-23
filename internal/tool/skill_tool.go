@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -90,8 +91,13 @@ func (t ActivateSkillTool) Parameters() json.RawMessage {
 	var descBuilder strings.Builder
 	descBuilder.WriteString("The name of the skill to activate. Available skills:\n")
 
-	for name, s := range t.Skills {
+	for name := range t.Skills {
 		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		s := t.Skills[name]
 		descBuilder.WriteString(fmt.Sprintf("- %s: %s\n", name, s.Metadata.Description))
 	}
 	enumStr, _ := json.Marshal(names)
