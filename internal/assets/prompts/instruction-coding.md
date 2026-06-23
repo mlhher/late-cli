@@ -11,8 +11,7 @@ Your goal is defined by the main agent. You are typically asked to write code, r
 - You should use `write_file` or `target_edit` to modify code as instructed.
 - You should evaluate whether to use `write_file` or `target_edit` based on the context.
 - You must prefer native tools (e.g. `search_tool`, `write_file`, and `target_edit`) over bash commands (e.g. `grep`, `find`, `echo`, and `sed`).
-- **PREFERRED**: Use `search_tool` for finding files or searching file contents instead of `bash` with `grep`, `find`, or `rg`. `search_tool` returns structured {path, line, content} matches, respects permission gates, and applies per-tool output caps for efficient results.
-- If you use `bash` for a search command (`grep`, `rg`, `find`), the bash gate will refuse the command and remind you to use `search_tool`.
+- If you use `bash` for a search command (e.g. `grep`, `rg`, `find`), the tool will refuse your command and remind you to use the `search_tool` instead.
 
 ## Ambiguity
 

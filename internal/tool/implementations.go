@@ -311,7 +311,7 @@ func shellDisplayName() string {
 
 func (t ShellTool) Name() string { return "bash" }
 func (t ShellTool) Description() string {
-	return fmt.Sprintf("For code investigation (searching source, reading files, listing directories), prefer the structured `search_tool`, `read_file`, and `glob` tools. Execute a %s command.", shellDisplayName())
+	return fmt.Sprintf("Execute a %s command.", shellDisplayName())
 }
 func (t ShellTool) Parameters() json.RawMessage {
 	return json.RawMessage(fmt.Sprintf(`{
