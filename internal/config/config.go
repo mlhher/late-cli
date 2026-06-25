@@ -56,6 +56,7 @@ func defaultConfig() Config {
 			"target_edit":    true,
 			"spawn_subagent": true,
 			"bash":           true,
+			"search_tool":    true,
 		},
 	}
 }
@@ -104,6 +105,15 @@ func LoadConfig() (*Config, error) {
 
 	if cfg.EnabledTools == nil {
 		cfg.EnabledTools = defaultConfig().EnabledTools
+	} else {
+		// Merge missing defaults for backward compatibility
+		// so existing config files get new tools automatically.
+		defaults := defaultConfig().EnabledTools
+		for k, v := range defaults {
+			if _, exists := cfg.EnabledTools[k]; !exists {
+				cfg.EnabledTools[k] = v
+			}
+		}
 	}
 
 	if permErr != nil {

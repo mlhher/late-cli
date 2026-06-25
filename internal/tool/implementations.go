@@ -189,9 +189,70 @@ func (t *ShellTool) analyzeBashCommand(command string, cwd string) (isBlocked bo
 	return analysis.IsBlocked, analysis.BlockReason, analysis.NeedsConfirmation
 }
 
+// searchCommands that are unconditionally blocked by the bash gate.
+var searchCommands = map[string]bool{
+	"grep": true, "rg": true, "ag": true, "ack": true, "fd": true,
+}
+
+// findNameFlags are find flags that indicate search intent (not file operations like -exec, -delete).
+var findNameFlags = []string{"-name", "-iname", "-path", "-ipath", "-regex", "-lname", "-ilname"}
+
+// isSearchCommand checks if a command string represents a search operation.
+// grep/rg/ag/ack/fd are always search. find is only search when used with name/path matching flags.
+func isSearchCommand(command string) bool {
+	parts := strings.Fields(command)
+	if len(parts) == 0 {
+		return false
+	}
+	cmd := parts[0]
+	if searchCommands[cmd] {
+		return true
+	}
+	if cmd == "find" {
+		// Only block find when used for search (name/path matching), not operations (exec/delete)
+		for _, flag := range findNameFlags {
+			if strings.Contains(command, " "+flag) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// extractCommand returns the first word of a command string (for error messages).
+func extractCommand(command string) string {
+	parts := strings.Fields(command)
+	if len(parts) > 0 {
+		return parts[0]
+	}
+	return "command"
+}
+
+// getBashGateLevel returns the current bash gate configuration.
+// "enforce" (default) — block search commands with error pointing to search_tool
+// "warn" — log warning but allow through
+// "allow" — no gate, pass through normally
+func getBashGateLevel() string {
+	if v := os.Getenv("LATE_BASH_GATE"); v != "" {
+		return v
+	}
+	return "enforce"
+}
+
 // ValidateBashCommand validates shell commands before execution.
-// Returns an error if the command uses malicious patterns like cat shenanigans or cd commands.
+// Blocks search-shaped commands (grep/rg/find/ag/ack/fd) with a hint to use search_tool.
+// find is only blocked when used with name/path matching flags, not action flags (-exec, -delete).
 func (t *ShellTool) ValidateBashCommand(command string, cwd string) error {
+	// Bash gate: detect search-shaped commands before AST analysis
+	gateLevel := getBashGateLevel()
+	if gateLevel != "allow" && isSearchCommand(command) {
+		if gateLevel == "enforce" {
+			return fmt.Errorf("bash refused: `%s` detected. Use the native `search_tool` instead — it returns structured {path, line, content} matches, respects permission gates, and applies per-tool output caps.", extractCommand(command))
+		}
+		// "warn" level: log but allow through
+		fmt.Fprintf(os.Stderr, "[WARN] Consider using search_tool instead of bash %s\n", extractCommand(command))
+	}
+
 	blocked, err, _ := t.analyzeBashCommand(command, cwd)
 	if blocked {
 		return err
@@ -203,6 +264,11 @@ func (t *ShellTool) ValidateBashCommand(command string, cwd string) error {
 func (t *ShellTool) WrapError(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
+	}
+
+	// Passthrough search gate errors — they're already self-contained with tool hints
+	if strings.HasPrefix(err.Error(), "bash refused:") {
+		return err
 	}
 
 	orchestratorID := common.GetOrchestratorID(ctx)
