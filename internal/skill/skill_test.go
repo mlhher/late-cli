@@ -84,7 +84,11 @@ func TestDiscoverSkillReferences(t *testing.T) {
 
 	refs := DiscoverSkillReferences(skill)
 
-	expected := map[string]bool{"a-dir/a.md": true, "m.md": true, "z-dir/z.md": true}
+	expected := map[string]bool{
+		"m.md":                         true,
+		filepath.Join("a-dir", "a.md"): true,
+		filepath.Join("z-dir", "z.md"): true,
+	}
 	if len(refs) != len(expected) {
 		t.Errorf("Expected %d refs, got %d: %v", len(expected), len(refs), refs)
 	}

@@ -131,7 +131,7 @@ func DiscoverSkillReferences(s *Skill) []string {
 			return filepath.SkipDir
 		}
 		// Skip SKILL.md itself
-		if filepath.Base(path) == "SKILL.md" {
+		if base == "SKILL.md" {
 			return nil
 		}
 		// Only include files, not directories
