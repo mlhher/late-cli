@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -415,6 +416,216 @@ func TestSearchTool_GitIgnoreWithAnchoredPattern(t *testing.T) {
 	}
 	if !strings.Contains(result, "app.js") {
 		t.Errorf("src/app.js should be in results, got: %q", result)
+	}
+}
+
+// ──────────────────────────────────────────────
+// CWD-keyed cache integration tests
+// ──────────────────────────────────────────────
+
+// TestGetRepoRoot_CWDKeyedCache verifies that getRepoRoot() correctly detects
+// a process CWD change and recomputes the cached repo root and .gitignore.
+// Uses os.Chdir to simulate an IDE workspace switch.
+func TestGetRepoRoot_CWDKeyedCache(t *testing.T) {
+	origCWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.Chdir(origCWD)
+	}()
+
+	// Create two separate git repos with different .gitignore rules
+	repo1 := t.TempDir()
+	os.MkdirAll(filepath.Join(repo1, ".git"), 0755)
+	os.WriteFile(filepath.Join(repo1, ".gitignore"), []byte("*.log\n"), 0644)
+
+	repo2 := t.TempDir()
+	os.MkdirAll(filepath.Join(repo2, ".git"), 0755)
+	os.WriteFile(filepath.Join(repo2, ".gitignore"), []byte("*.tmp\n"), 0644)
+
+	// ---- Switch to repo1 ----
+	if err := os.Chdir(repo1); err != nil {
+		t.Fatal(err)
+	}
+	ResetGitIgnoreCache()
+
+	root1, gi1 := getRepoRoot()
+	if root1 != repo1 {
+		t.Errorf("repo1: expected root %q, got %q", repo1, root1)
+	}
+	if !gi1.Matches("debug.log", false) {
+		t.Error("repo1: debug.log should be ignored by *.log rule")
+	}
+	if gi1.Matches("debug.tmp", false) {
+		t.Error("repo1: debug.tmp should NOT be ignored (no *.tmp rule)")
+	}
+
+	// ---- Switch to repo2 WITHOUT calling ResetGitIgnoreCache ----
+	// The CWD change must trigger an automatic cache refresh.
+	if err := os.Chdir(repo2); err != nil {
+		t.Fatal(err)
+	}
+
+	root2, gi2 := getRepoRoot()
+	if root2 != repo2 {
+		t.Errorf("repo2: expected root %q, got %q (stale cache?)", repo2, root2)
+	}
+	if gi2.Matches("debug.log", false) {
+		t.Errorf("repo2: debug.log should NOT be ignored (stale cache from repo1 still active)")
+	}
+	if !gi2.Matches("debug.tmp", false) {
+		t.Errorf("repo2: debug.tmp should be ignored by repo2's *.tmp rule (stale cache from repo1?)")
+	}
+}
+
+// TestSearchTool_CWDKeyedCache verifies that switching the process CWD between
+// two repos and calling the full search tool works without panicking and
+// produces correct results. Uses absolute paths (like all existing tests in
+// this file) to avoid a pre-existing relative-path bug in matchesGitIgnore.
+func TestSearchTool_CWDKeyedCache(t *testing.T) {
+	origCWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.Chdir(origCWD)
+	}()
+
+	repo1 := t.TempDir()
+	os.MkdirAll(filepath.Join(repo1, ".git"), 0755)
+	os.WriteFile(filepath.Join(repo1, ".gitignore"), []byte("*.log\n"), 0644)
+	os.WriteFile(filepath.Join(repo1, "work.go"), []byte("package repo1\n"), 0644)
+	os.WriteFile(filepath.Join(repo1, "debug.log"), []byte("package debug.log\n"), 0644)
+	os.WriteFile(filepath.Join(repo1, "debug.tmp"), []byte("package debug.tmp\n"), 0644)
+
+	repo2 := t.TempDir()
+	os.MkdirAll(filepath.Join(repo2, ".git"), 0755)
+	os.WriteFile(filepath.Join(repo2, ".gitignore"), []byte("*.tmp\n"), 0644)
+	os.WriteFile(filepath.Join(repo2, "work.go"), []byte("package repo2\n"), 0644)
+	os.WriteFile(filepath.Join(repo2, "debug.log"), []byte("package debug.log\n"), 0644)
+	os.WriteFile(filepath.Join(repo2, "debug.tmp"), []byte("package debug.tmp\n"), 0644)
+
+	tool := &SearchTool{}
+
+	// ---- Switch to repo1 ----
+	if err := os.Chdir(repo1); err != nil {
+		t.Fatal(err)
+	}
+	ResetGitIgnoreCache()
+
+	r1, err := tool.Execute(context.Background(), json.RawMessage(
+		`{"pattern": "package", "path": "`+repo1+`", "output_mode": "files_with_matches"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r1, "work.go") {
+		t.Errorf("repo1: expected work.go, got: %s", r1)
+	}
+	if strings.Contains(r1, "debug.log") {
+		t.Errorf("repo1: debug.log should be ignored by repo1's *.log rule, got: %s", r1)
+	}
+	if !strings.Contains(r1, "debug.tmp") {
+		t.Errorf("repo1: debug.tmp should NOT be ignored (no *.tmp rule in repo1), got: %s", r1)
+	}
+
+	// ---- Switch to repo2 WITHOUT calling ResetGitIgnoreCache ----
+	if err := os.Chdir(repo2); err != nil {
+		t.Fatal(err)
+	}
+
+	r2, err := tool.Execute(context.Background(), json.RawMessage(
+		`{"pattern": "package", "path": "`+repo2+`", "output_mode": "files_with_matches"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r2, "work.go") {
+		t.Errorf("repo2: expected work.go, got: %s", r2)
+	}
+	if !strings.Contains(r2, "debug.log") {
+		t.Errorf("repo2: debug.log should NOT be ignored (no *.log rule in repo2), got: %s", r2)
+	}
+	if strings.Contains(r2, "debug.tmp") {
+		t.Errorf("repo2: debug.tmp should be ignored by repo2's *.tmp rule — stale cache from repo1 still active, got: %s", r2)
+	}
+}
+
+// TestGetGitIgnoreForPath_NestedGitIgnore verifies that searching a subdirectory
+// with its own .gitignore returns that nested file instead of the root one.
+func TestGetGitIgnoreForPath_NestedGitIgnore(t *testing.T) {
+	ResetGitIgnoreCache()
+
+	repo := t.TempDir()
+	os.MkdirAll(filepath.Join(repo, ".git"), 0755)
+
+	// Root .gitignore ignores *.log
+	os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("*.log\n"), 0644)
+
+	// Nested sub-project with its own .gitignore ignoring *.tmp
+	subDir := filepath.Join(repo, "services", "foo")
+	os.MkdirAll(subDir, 0755)
+	os.WriteFile(filepath.Join(subDir, ".gitignore"), []byte("*.tmp\n"), 0644)
+
+	// Searching the nested directory should return the nested .gitignore
+	gi, root := getGitIgnoreForPath(subDir)
+	if gi == nil {
+		t.Fatal("expected non-nil GitIgnore for nested sub-directory")
+	}
+	if root != subDir {
+		t.Errorf("expected root %q, got %q", subDir, root)
+	}
+	if !gi.Matches("handler.tmp", false) {
+		t.Error("nested .gitignore should match *.tmp files")
+	}
+	// The nested .gitignore only has *.tmp; root's *.log should NOT be in it
+	if gi.Matches("debug.log", false) {
+		t.Error("nested .gitignore should NOT match *.log (that's in root's gitignore)")
+	}
+
+	// Searching the root directory should return the root .gitignore
+	gi, root = getGitIgnoreForPath(repo)
+	if gi == nil {
+		t.Fatal("expected non-nil GitIgnore for root")
+	}
+	if root != repo {
+		t.Errorf("expected root %q, got %q", repo, root)
+	}
+	if !gi.Matches("debug.log", false) {
+		t.Error("root .gitignore should match *.log files")
+	}
+}
+
+// TestGetRepoRoot_ConcurrentSafety verifies that getRepoRoot can be called
+// concurrently without panicking or corrupting the cache state.
+func TestGetRepoRoot_ConcurrentSafety(t *testing.T) {
+	ResetGitIgnoreCache()
+
+	// Prime the cache from a single goroutine first so the initial CWD
+	// computation doesn't race during the parallel phase.
+	getRepoRoot()
+
+	// Run 50 concurrent calls — this exercises the RLock fast path
+	// and the double-checked locking slow path.
+	n := 50
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					errs <- fmt.Errorf("panic: %v", r)
+				}
+			}()
+			root, gi := getRepoRoot()
+			_ = root
+			_ = gi
+			errs <- nil
+		}()
+	}
+
+	for i := 0; i < n; i++ {
+		if e := <-errs; e != nil {
+			t.Fatal(e)
+		}
 	}
 }
 

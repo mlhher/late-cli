@@ -133,67 +133,111 @@ func ResolveRepoGitIgnore(dir string) (*GitIgnore, string, error) {
 }
 
 // ──────────────────────────────────────────────
-// Package-level cached repo root (common CWD doesn't change)
+// Package-level CWD-keyed cache.
+// The cache is invalidated automatically when the process CWD changes,
+// enabling correct behavior across IDE workspace switches without requiring
+// a daemon restart or manual invalidation.
 // ──────────────────────────────────────────────
 
 var (
+	mu              sync.RWMutex
+	cachedCWD       string
 	cachedRepoRoot  string
 	cachedGitIgnore *GitIgnore
-	repoRootOnce    sync.Once
 )
 
-// getRepoRoot returns the repo root for the process CWD, computing it once.
+// getRepoRoot returns the repo root and root .gitignore for the current CWD.
+// Results are cached and keyed by CWD so that switching directories in a
+// persistent IDE daemon automatically triggers a cache refresh.
 func getRepoRoot() (string, *GitIgnore) {
-	repoRootOnce.Do(func() {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return
-		}
-		cachedRepoRoot = FindRepoRoot(cwd)
-		if cachedRepoRoot == "" {
-			return
-		}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", nil
+	}
+
+	// Fast path: read-lock and check
+	mu.RLock()
+	if cwd == cachedCWD {
+		root, gi := cachedRepoRoot, cachedGitIgnore
+		mu.RUnlock()
+		return root, gi
+	}
+	mu.RUnlock()
+
+	// Slow path: acquire write lock and double-check
+	mu.Lock()
+	defer mu.Unlock()
+
+	if cwd == cachedCWD {
+		// Another goroutine already updated the cache
+		return cachedRepoRoot, cachedGitIgnore
+	}
+
+	cachedCWD = cwd
+	cachedRepoRoot = FindRepoRoot(cwd)
+	cachedGitIgnore = nil
+	if cachedRepoRoot != "" {
 		gi, err := LoadGitIgnore(filepath.Join(cachedRepoRoot, ".gitignore"))
 		if err == nil {
 			cachedGitIgnore = gi
 		}
-	})
+	}
 	return cachedRepoRoot, cachedGitIgnore
 }
 
-// getGitIgnoreForPath returns the gitignore and repo root applicable to the
-// given search path. Uses the cached CWD repo root when possible, falling back
-// to path-specific resolution for paths outside the cached root.
+// getGitIgnoreForPath returns the gitignore and its originating directory
+// applicable to the given search path.
+//
+// It first walks upward from searchPath looking for nested .gitignore files,
+// which is essential for monorepos where sub-projects define their own ignore
+// rules. If no nested .gitignore is found, it falls back to the CWD-keyed
+// cached repo root .gitignore.
 func getGitIgnoreForPath(searchPath string) (*GitIgnore, string) {
 	absPath, err := filepath.Abs(searchPath)
 	if err != nil {
 		return nil, ""
 	}
 
-	// Use cached root if the search path is inside it
-	root, gi := getRepoRoot()
-	if root != "" {
-		rel, err := filepath.Rel(root, absPath)
-		if err == nil && !strings.HasPrefix(rel, "..") {
-			return gi, root
+	// Prime the CWD-keyed cache so we know the repo root boundary.
+	cachedRoot, _ := getRepoRoot()
+
+	// Walk upward from searchPath looking for a nested .gitignore.
+	// Return the closest one found (with its directory as the root so that
+	// relative path computation in matchesGitIgnore is correct).
+	dir := absPath
+	for {
+		gi, err := LoadGitIgnore(filepath.Join(dir, ".gitignore"))
+		if err == nil && gi != nil {
+			return gi, dir
 		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break // reached filesystem root
+		}
+
+		// Stop at the repo root — the root-level .gitignore is already
+		// cached and will be returned as the fallback below.
+		if cachedRoot != "" && dir == cachedRoot {
+			break
+		}
+
+		dir = parent
 	}
 
-	// Fallback: resolve gitignore specific to this search path
-	repoRoot := FindRepoRoot(absPath)
-	if repoRoot == "" {
-		return nil, ""
-	}
-	loadedGi, _ := LoadGitIgnore(filepath.Join(repoRoot, ".gitignore"))
-	return loadedGi, repoRoot
+	// Fall back to cached repo root .gitignore
+	root, gi := getRepoRoot()
+	return gi, root
 }
 
-// ResetGitIgnoreCache clears the cached repo root and gitignore state.
+// ResetGitIgnoreCache clears the CWD-keyed cache.
 // Used in testing to force re-computation.
 func ResetGitIgnoreCache() {
+	mu.Lock()
+	defer mu.Unlock()
+	cachedCWD = ""
 	cachedRepoRoot = ""
 	cachedGitIgnore = nil
-	repoRootOnce = sync.Once{}
 }
 
 // matchesGitIgnore checks if a path is gitignored. A convenience wrapper that
