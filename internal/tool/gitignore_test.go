@@ -630,6 +630,216 @@ func TestGetRepoRoot_ConcurrentSafety(t *testing.T) {
 }
 
 // ──────────────────────────────────────────────
+// .llmignore integration tests
+// ──────────────────────────────────────────────
+
+// TestLoadMergedIgnore_BothExist verifies that loadMergedIgnore merges patterns
+// from .gitignore and .llmignore into a single GitIgnore, with .llmignore
+// patterns appended after .gitignore for correct "last matching wins" semantics.
+func TestLoadMergedIgnore_BothExist(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.log\n"), 0644)
+	os.WriteFile(filepath.Join(dir, ".llmignore"), []byte("*.tmp\n"), 0644)
+
+	gi, err := loadMergedIgnore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gi == nil {
+		t.Fatal("expected non-nil merged GitIgnore")
+	}
+
+	// .gitignore pattern
+	if !gi.Matches("debug.log", false) {
+		t.Error("merged should match *.log from .gitignore")
+	}
+	// .llmignore pattern
+	if !gi.Matches("debug.tmp", false) {
+		t.Error("merged should match *.tmp from .llmignore")
+	}
+}
+
+// TestLoadMergedIgnore_LlmIgnoreNegation verifies that negation patterns in
+// .llmignore take precedence over .gitignore patterns when merged.
+func TestLoadMergedIgnore_LlmIgnoreNegation(t *testing.T) {
+	dir := t.TempDir()
+	// .gitignore ignores all .log files
+	os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.log\n"), 0644)
+	// .llmignore un-ignores important.log
+	os.WriteFile(filepath.Join(dir, ".llmignore"), []byte("!important.log\n"), 0644)
+
+	gi, err := loadMergedIgnore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gi == nil {
+		t.Fatal("expected non-nil merged GitIgnore")
+	}
+
+	// Normal .log files should still be ignored (from .gitignore)
+	if !gi.Matches("debug.log", false) {
+		t.Error("debug.log should be ignored by .gitignore's *.log rule")
+	}
+	// .llmignore's negation should take final precedence
+	if gi.Matches("important.log", false) {
+		t.Error("important.log should NOT be ignored — .llmignore's negation takes precedence")
+	}
+}
+
+// TestLoadMergedIgnore_GitIgnoreOnly verifies that loadMergedIgnore works when
+// only .gitignore exists (backward compatible).
+func TestLoadMergedIgnore_GitIgnoreOnly(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.log\n"), 0644)
+
+	gi, err := loadMergedIgnore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gi == nil {
+		t.Fatal("expected non-nil GitIgnore")
+	}
+	if !gi.Matches("debug.log", false) {
+		t.Error("should match *.log from .gitignore")
+	}
+}
+
+// TestLoadMergedIgnore_LlmIgnoreOnly verifies that loadMergedIgnore works when
+// only .llmignore exists (no .gitignore at all).
+func TestLoadMergedIgnore_LlmIgnoreOnly(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, ".llmignore"), []byte("*.tmp\n"), 0644)
+
+	gi, err := loadMergedIgnore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gi == nil {
+		t.Fatal("expected non-nil GitIgnore for .llmignore-only dir")
+	}
+	if !gi.Matches("debug.tmp", false) {
+		t.Error("should match *.tmp from .llmignore")
+	}
+	if gi.Matches("debug.log", false) {
+		t.Error("should NOT match *.log (no pattern for it)")
+	}
+}
+
+// TestLoadMergedIgnore_Neither verifies that loadMergedIgnore returns nil, nil
+// when neither .gitignore nor .llmignore exists.
+func TestLoadMergedIgnore_Neither(t *testing.T) {
+	dir := t.TempDir()
+	gi, err := loadMergedIgnore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gi != nil {
+		t.Error("expected nil when neither ignore file exists")
+	}
+}
+
+// TestSearchTool_LlmIgnoreFilters verifies that the full search tool respects
+// patterns from .llmignore when no .gitignore exists.
+func TestSearchTool_LlmIgnoreFilters(t *testing.T) {
+	ResetGitIgnoreCache()
+
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+
+	// Only .llmignore, no .gitignore — ignore .tmp files
+	os.WriteFile(filepath.Join(dir, ".llmignore"), []byte("*.tmp\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "work.go"), []byte("package main\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "temp.tmp"), []byte("package temp\n"), 0644)
+
+	tool := &SearchTool{}
+	args := json.RawMessage(`{"pattern": "package", "path": "` + dir + `", "output_mode": "files_with_matches"}`)
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(result, "work.go") {
+		t.Errorf("expected work.go in results, got: %q", result)
+	}
+	if strings.Contains(result, "temp.tmp") {
+		t.Errorf("temp.tmp should be filtered by .llmignore's *.tmp rule, got: %q", result)
+	}
+}
+
+// TestSearchTool_GitIgnoreAndLlmIgnore verifies the full search tool with
+// both .gitignore and .llmignore in the same directory, where .llmignore
+// adds additional filters beyond .gitignore.
+func TestSearchTool_GitIgnoreAndLlmIgnore(t *testing.T) {
+	ResetGitIgnoreCache()
+
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+
+	// .gitignore ignores *.log
+	os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.log\n"), 0644)
+	// .llmignore additionally ignores *.json (e.g., large fixtures)
+	os.WriteFile(filepath.Join(dir, ".llmignore"), []byte("*.json\n"), 0644)
+
+	os.WriteFile(filepath.Join(dir, "work.go"), []byte("package main\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "debug.log"), []byte("package log\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "fixture.json"), []byte("{\"package\": \"json\"}\n"), 0644)
+
+	tool := &SearchTool{}
+	args := json.RawMessage(`{"pattern": "package", "path": "` + dir + `", "output_mode": "files_with_matches"}`)
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(result, "work.go") {
+		t.Errorf("expected work.go in results, got: %q", result)
+	}
+	if strings.Contains(result, "debug.log") {
+		t.Errorf("debug.log should be filtered by .gitignore's *.log rule, got: %q", result)
+	}
+	if strings.Contains(result, "fixture.json") {
+		t.Errorf("fixture.json should be filtered by .llmignore's *.json rule, got: %q", result)
+	}
+}
+
+// TestSearchTool_LlmIgnoreNested verifies that the nested directory walk in
+// getGitIgnoreForPath finds .llmignore in a subdirectory when no .gitignore
+// exists there.
+func TestSearchTool_LlmIgnoreNested(t *testing.T) {
+	ResetGitIgnoreCache()
+
+	repo := t.TempDir()
+	os.MkdirAll(filepath.Join(repo, ".git"), 0755)
+
+	// Root has .gitignore only
+	os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("*.log\n"), 0644)
+	os.WriteFile(filepath.Join(repo, "root.go"), []byte("package root\n"), 0644)
+
+	// Nested sub-dir has only .llmignore (no .gitignore)
+	subDir := filepath.Join(repo, "services", "foo")
+	os.MkdirAll(subDir, 0755)
+	os.WriteFile(filepath.Join(subDir, ".llmignore"), []byte("*.tmp\n"), 0644)
+	os.WriteFile(filepath.Join(subDir, "handler.go"), []byte("package foo\n"), 0644)
+	os.WriteFile(filepath.Join(subDir, "handler.tmp"), []byte("package tmp\n"), 0644)
+
+	tool := &SearchTool{}
+
+	// Search the nested sub-directory specifically
+	args := json.RawMessage(`{"pattern": "package", "path": "` + subDir + `", "output_mode": "files_with_matches"}`)
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(result, "handler.go") {
+		t.Errorf("expected handler.go in nested search results, got: %q", result)
+	}
+	if strings.Contains(result, "handler.tmp") {
+		t.Errorf("handler.tmp should be filtered by nested .llmignore's *.tmp rule, got: %q", result)
+	}
+}
+
+// ──────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────
 

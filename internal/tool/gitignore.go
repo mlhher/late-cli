@@ -65,6 +65,44 @@ func LoadGitIgnore(path string) (*GitIgnore, error) {
 	return gi, nil
 }
 
+// loadMergedIgnore loads both .gitignore and .llmignore from the specified
+// directory and merges their patterns into a single *GitIgnore. .llmignore
+// patterns are appended after .gitignore patterns so that negation rules (!)
+// in .llmignore take final precedence per "last matching pattern wins."
+//
+// If only one of the files exists, it is loaded normally. If neither exists,
+// nil is returned (no error). The same GitIgnore regex compiler is used for
+// both files — .llmignore supports identical glob syntax.
+func loadMergedIgnore(dir string) (*GitIgnore, error) {
+	gi, err := LoadGitIgnore(filepath.Join(dir, ".gitignore"))
+	if err != nil {
+		return nil, err
+	}
+
+	li, err := LoadGitIgnore(filepath.Join(dir, ".llmignore"))
+	if err != nil {
+		return nil, err
+	}
+
+	if gi == nil && li == nil {
+		return nil, nil
+	}
+	if gi == nil {
+		return li, nil
+	}
+	if li == nil {
+		return gi, nil
+	}
+
+	// Both exist — merge: .gitignore first, .llmignore appended.
+	merged := &GitIgnore{
+		patterns: make([]giPattern, 0, len(gi.patterns)+len(li.patterns)),
+	}
+	merged.patterns = append(merged.patterns, gi.patterns...)
+	merged.patterns = append(merged.patterns, li.patterns...)
+	return merged, nil
+}
+
 // Matches checks whether the given relative path (e.g. "cmd/late/main.go")
 // should be ignored. isDir should be true for directories.
 // Implements "last matching pattern wins" — negated patterns (!) can
@@ -128,7 +166,7 @@ func ResolveRepoGitIgnore(dir string) (*GitIgnore, string, error) {
 		return nil, "", nil // no repo found
 	}
 
-	gi, err := LoadGitIgnore(filepath.Join(repoRoot, ".gitignore"))
+	gi, err := loadMergedIgnore(repoRoot)
 	return gi, repoRoot, err
 }
 
@@ -177,7 +215,7 @@ func getRepoRoot() (string, *GitIgnore) {
 	cachedRepoRoot = FindRepoRoot(cwd)
 	cachedGitIgnore = nil
 	if cachedRepoRoot != "" {
-		gi, err := LoadGitIgnore(filepath.Join(cachedRepoRoot, ".gitignore"))
+		gi, err := loadMergedIgnore(cachedRepoRoot)
 		if err == nil {
 			cachedGitIgnore = gi
 		}
@@ -206,7 +244,7 @@ func getGitIgnoreForPath(searchPath string) (*GitIgnore, string) {
 	// relative path computation in matchesGitIgnore is correct).
 	dir := absPath
 	for {
-		gi, err := LoadGitIgnore(filepath.Join(dir, ".gitignore"))
+		gi, err := loadMergedIgnore(dir)
 		if err == nil && gi != nil {
 			return gi, dir
 		}
