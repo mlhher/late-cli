@@ -17,15 +17,15 @@ const maxSearchChars = 32768
 // SearchTool performs file and content search using Go's standard library.
 // It walks directories with filepath.WalkDir, reads files with bufio.Scanner,
 // and matches patterns with regexp. No external dependencies.
+// Honors .gitignore when searching inside a git repository.
 type SearchTool struct{}
 
 func (t *SearchTool) Name() string { return "search_tool" }
 func (t *SearchTool) Description() string {
-	return "PREFERRED over bash grep/find/rg for code search. " +
-		"Search files and file contents using regex or literal patterns. " +
-		"Returns structured {path, line, content} matches with line numbers. " +
-		"Honors permission gates and applies per-tool output caps. " +
-		"Supports output modes: files_with_matches (paths only), content (lines with numbers), count (match counts)."
+	return "PREFERRED over bash grep/find/rg. " +
+		"Search files by regex/literal pattern. Returns {path, line, content}. " +
+		"Honors .gitignore, permission gates, and output caps. " +
+		"Modes: files_with_matches (paths), content (lines+numbers), count (counts)."
 }
 func (t *SearchTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
@@ -66,11 +66,11 @@ func (t *SearchTool) Parameters() json.RawMessage {
 			},
 			"exclude": {
 				"type": "string",
-				"description": "Glob pattern to exclude files, e.g. '*.min.js' or '*_test.go'. Uses filepath.Match semantics on the file name."
+				"description": "Glob pattern to exclude files, e.g. '*.min.js'. Uses filepath.Match semantics on the file name."
 			},
 			"recursive": {
 				"type": "boolean",
-				"description": "If true (default), search directories recursively. If false, only search the top-level files in the specified path."
+				"description": "Search subdirectories (default: true)."
 			}
 		},
 		"required": ["pattern"]
@@ -130,6 +130,9 @@ func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (string,
 		searchPath = params.Path
 	}
 
+	// Load .gitignore if available (cached per process from CWD)
+	gi, repoRoot := getGitIgnoreForPath(searchPath)
+
 	// Compile matcher
 	var matchFunc func(line string) bool
 	if params.FixedStrings {
@@ -176,9 +179,18 @@ func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (string,
 			if name == ".git" || name == "node_modules" || name == ".svn" || name == ".hg" {
 				return filepath.SkipDir
 			}
+			// Check gitignore for directories — skip entire subtree if matched
+			if matchesGitIgnore(gi, repoRoot, path, true) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if strings.HasPrefix(d.Name(), ".") {
+			return nil
+		}
+
+		// Check gitignore for files
+		if matchesGitIgnore(gi, repoRoot, path, false) {
 			return nil
 		}
 
