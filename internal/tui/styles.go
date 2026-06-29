@@ -22,7 +22,7 @@ var (
 	baseStyle = lipgloss.NewStyle().Background(appBgColor)
 
 	// Layout Constants
-	UserMsgOverhead = 6 // MarginL(1) + Border(1) + Padding(2)*2 = 6
+	UserMsgOverhead = 8 // MarginL(1) + MarginR(1) + Border(2) + Padding(2)*2 = 8
 	AIMsgOverhead   = 8 // MarginL(1) + Border(1) + PaddingL(4) + PaddingR(2) = 8
 
 	// Styles
@@ -37,18 +37,16 @@ var (
 			Padding(0, 1).
 			Height(InputHeight - 1)
 
-	// User Bubble
+	// User Bubble — full rounded border, right-aligned in viewport
 	userMsgStyle = lipgloss.NewStyle().
 			Background(userMsgBg).
 			Foreground(textColor).
 			Padding(0, 2).
-			MarginLeft(1).
-			MarginBackground(appBgColor).
-			Align(lipgloss.Left).
-			Border(lipgloss.NormalBorder(), false, false, false, true).
-			BorderLeftForeground(secondaryColor).
+			Border(lipgloss.RoundedBorder(), true).
+			BorderForeground(secondaryColor).
 			BorderBackground(userMsgBg).
-			PaddingLeft(2)
+			PaddingLeft(2).
+			PaddingRight(2)
 
 	queuedMsgStyle = userMsgStyle.Copy().
 			Foreground(subtextColor).

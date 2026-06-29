@@ -263,6 +263,15 @@ func main() {
 	rootAgent := orchestrator.NewBaseOrchestrator("main", sess, nil, 0)
 
 	model := tui.NewModel(rootAgent, renderer)
+	model.ModelName = resolvedOpenAIConfig.Model
+
+	// Detect if subagents use a different model/backend
+	if resolvedSubagentConfig.BaseURL != resolvedOpenAIConfig.BaseURL ||
+		resolvedSubagentConfig.APIKey != resolvedOpenAIConfig.APIKey ||
+		resolvedSubagentConfig.Model != resolvedOpenAIConfig.Model {
+		model.SubagentInfo = resolvedSubagentConfig.Model
+	}
+
 	p := tea.NewProgram(model)
 
 	// Wire TUI integration

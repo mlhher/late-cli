@@ -3,6 +3,7 @@ package tui
 import (
 	"late/internal/client"
 	"late/internal/common"
+	"late/internal/git"
 
 	"charm.land/bubbles/v2/filepicker"
 	"charm.land/bubbles/v2/spinner"
@@ -33,6 +34,7 @@ const (
 	ViewDump
 	ViewSubagent
 	ViewFilePicker
+	ViewCommitLog
 )
 
 // Fixed layout heights (crush-style)
@@ -41,6 +43,15 @@ const (
 	StatusBarHeight = 2
 	AppPadding      = 0
 )
+
+// AvailableCommands lists all slash commands available in the TUI.
+var AvailableCommands = []string{
+	"/clear",
+	"/help",
+	"/log",
+	"/model",
+	"/quit",
+}
 
 // RenderBlock represents the line bounds of a rendered block in the viewport.
 type RenderBlock struct {
@@ -119,6 +130,33 @@ type Model struct {
 	LastClickTime   int64
 	ToastMessage    string
 	ToastExpireTime int64
+
+	// Model and config info (set from main.go after creation)
+	ModelName    string // Active model name
+	SubagentInfo string // Subagent model/config description, empty if same as main
+	CWD          string // Current working directory, shown in status bar
+
+	// Esc confirmation
+	EscConfirmPending bool   // Show "are you sure?" when Esc pressed at main view
+	escBgContent      string // Saved viewport content to show underneath the dialog
+
+	// Paste detection
+	lastInputLen int // Length of input after previous update, to detect pastes
+
+	// Input history (ring buffer via slice)
+	InputHistory   []string // Previously submitted prompts, oldest first
+	HistoryIndex   int      // Current position: -1 = new input, 0 = oldest, len-1 = newest
+	HistoryWorking string   // Temp save of current input when browsing history
+
+	// Commit log view
+	CommitEntries []git.CommitEntry
+	CommitIndex   int
+	CommitDetail  string // Full commit detail when viewing a single commit
+
+	// Slash-command autocomplete
+	ShowAutocomplete  bool
+	AutocompleteItems []string
+	AutocompleteIndex int
 
 	// Performance caches
 	cachedRenderer      *glamour.TermRenderer
