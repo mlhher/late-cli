@@ -44,6 +44,7 @@ func main() {
 	versionReq := flag.Bool("version", false, "Show version")
 	unsupervisedReq := flag.Bool("i-promise-i-have-backups-and-will-not-file-issues", false, "Unsupported: Execute all tools without supervision. Do not use this, bad things will happen. You have been warned.")
 	enableImagesReq := flag.Bool("enable-images", false, "Force enable support for image attachments for unsupported servers.")
+	enableSystemPromptReq := flag.Bool("enable-system-prompt", true, "Disable this to use only system prompt from chat template.")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of late:\n")
@@ -223,6 +224,10 @@ func main() {
 	// Flag overrides
 	if !*enableBashReq {
 		enabledTools["bash"] = false
+	}
+
+	if !*enableSystemPromptReq {
+		systemPrompt = ""
 	}
 
 	sess := session.New(c, historyPath, history, systemPrompt, *useToolsReq)
