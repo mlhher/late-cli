@@ -1,0 +1,38 @@
+# .llmignore - Generated at rival.tips/llmignore
+# Files and patterns AI agents should never read or send to LLMs.
+# Syntax: identical to .gitignore (fnmatch patterns)
+
+# Secrets & credentials
+.env
+.env.*
+**/*.pem
+**/*.key
+**/credentials.*
+**/secrets.*
+**/.secret*
+
+# Sensitive data
+**/migrations/*.sql
+**/fixtures/**
+**/seed-data/**
+
+# Large binaries
+**/*.wasm
+**/*.bin
+**/*.sqlite
+**/*.db
+
+# Dependency Lockfiles
+**/go.sum
+
+# Vendor directories
+**/vendor/**
+
+# Large test fixtures
+testdata/
+*_test.json
+*.golden
+
+# Pre-compiled or generated assets
+mocks/
+*_mock.go
