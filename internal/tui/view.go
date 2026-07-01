@@ -588,12 +588,7 @@ Press **ctrl+h** or **esc** to return to the chat.`
 				}
 				content += "\n\n" + attachmentStyle.Render(attachmentLabel)
 			}
-			// Render bubble at natural width, then right-align in viewport
-			bubble := userMsgStyle.Render(content)
-			rendered = lipgloss.NewStyle().
-				Width(msgWidth + 2).
-				Align(lipgloss.Right).
-				Render(bubble)
+			rendered = userMsgStyle.Width(msgWidth + 1).Render(content)
 		case "assistant":
 			var assistantParts []string
 			if msg.ReasoningContent != "" {
