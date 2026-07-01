@@ -29,8 +29,8 @@ func (t SpawnSubagentTool) Parameters() json.RawMessage {
 			},
 			"agent_type": { 
 				"type": "string", 
-				"enum": ["coder"],
-				"description": "The type of subagent to spawn. 'coder' for writing/modifying code."
+				"enum": ["coder", "researcher"],
+				"description": "The type of subagent to spawn. 'coder' for writing/modifying code, 'researcher' for codebase analysis."
 			}
 		},
 		"required": ["goal", "agent_type"]

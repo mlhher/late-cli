@@ -107,7 +107,7 @@ func main() {
 	} else if envPrompt := os.Getenv("LATE_SYSTEM_PROMPT"); envPrompt != "" {
 		systemPrompt = envPrompt
 	} else {
-		content, _ := assets.PromptsFS.ReadFile("prompts/instruction-planning.md")
+		content, _ := assets.PromptsFS.ReadFile("prompts/instruction-orchestrator.md")
 		systemPrompt = string(content)
 	}
 

@@ -47,6 +47,26 @@ func NewSubagentOrchestrator(
 		if gemmaThinking {
 			systemPrompt = "<|think|>" + systemPrompt
 		}
+	} else if agentType == "researcher" {
+		content, err := assets.PromptsFS.ReadFile("prompts/instruction-researcher.md")
+		if err != nil {
+			return nil, fmt.Errorf("failed to load embedded subagent prompt: %w", err)
+		}
+		systemPrompt = string(content)
+
+		if injectCWD {
+			cwd, err := os.Getwd()
+			if err == nil {
+				systemPrompt = common.ReplacePlaceholders(systemPrompt, map[string]string{
+					"${{CWD}}": cwd,
+				})
+			}
+		}
+
+		if gemmaThinking {
+			systemPrompt = "<|think|>" + systemPrompt
+		}
+
 	} else {
 		// TODO: reviewer, committer
 		return nil, fmt.Errorf("unknown agent type: %s", agentType)
