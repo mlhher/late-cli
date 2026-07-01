@@ -52,14 +52,18 @@ func (m Model) View() tea.View {
 			Render(pickerHints)
 	}
 
+	aStr := m.autocompleteView()
 	sStr := m.statusBarView()
 
+	// Insert autocomplete between viewport and input when active
 	content := lipgloss.JoinVertical(
 		lipgloss.Left,
 		vStr,
-		iStr,
-		sStr,
 	)
+	if aStr != "" {
+		content = lipgloss.JoinVertical(lipgloss.Left, content, aStr)
+	}
+	content = lipgloss.JoinVertical(lipgloss.Left, content, iStr, sStr)
 
 	v := tea.NewView(content)
 	v.AltScreen = true
@@ -104,6 +108,52 @@ func (m *Model) inputView() string {
 		Render(content)
 }
 
+// autocompleteView renders the slash-command autocomplete dropdown.
+// Returns empty string when no autocomplete is active.
+func (m *Model) autocompleteView() string {
+	if !m.ShowAutocomplete || len(m.AutocompleteItems) == 0 {
+		return ""
+	}
+
+	w := m.Width
+	if w < 1 {
+		w = 80
+	}
+
+	var lines []string
+	for i, item := range m.AutocompleteItems {
+		prefix := "  "
+		style := lipgloss.NewStyle().
+			Foreground(subtextColor).
+			Background(thoughtBgColor).
+			Width(w - 4).
+			PaddingLeft(2)
+
+		if i == m.AutocompleteIndex {
+			prefix = "▸ "
+			style = lipgloss.NewStyle().
+				Foreground(primaryColor).
+				Background(thoughtBgColor).
+				Width(w - 4).
+				PaddingLeft(2).
+				Bold(true)
+		}
+
+		lines = append(lines, style.Render(prefix+item))
+	}
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder(), true, false, false, false).
+		BorderForeground(secondaryColor).
+		BorderBackground(thoughtBgColor).
+		Background(thoughtBgColor).
+		Width(w).
+		MaxHeight(len(lines) + 2).
+		Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+
+	return box
+}
+
 // statusBg wraps a string in the status bar background color.
 // VTE-based terminals (Ptyxis, GNOME Console) don't inherit a container's
 // background after inner ANSI resets (\e[0m). Every character cell —
@@ -113,6 +163,81 @@ var statusBgStyle = lipgloss.NewStyle().Background(appBgColor)
 
 func statusBg(s string) string {
 	return statusBgStyle.Render(s)
+}
+
+// formatTokenCount formats a token count with k/m suffix for compact display.
+func (m *Model) formatTokenCount(count int) string {
+	switch {
+	case count >= 1_000_000:
+		return fmt.Sprintf("%.1fm", float64(count)/1_000_000)
+	case count >= 1_000:
+		return fmt.Sprintf("%dk", count/1_000)
+	default:
+		return fmt.Sprintf("%d", count)
+	}
+}
+
+// renderContextBar renders a compact visual display for token usage.
+// When max is known:  [████████░░] 72% (14k/20k t)
+// When max is -1:     ⟨14k t⟩ (unknown max)
+// When max is 0:      ⟨14k t⟩ (unlimited / default)
+func (m *Model) renderContextBar(current, max int) string {
+	if max < 0 {
+		// Unknown max: show the styled count in angle brackets
+		countStr := lipgloss.NewStyle().Foreground(secondaryColor).Background(appBgColor).Render(m.formatTokenCount(current))
+		unknownStyle := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Render("?")
+		return countStr + statusBg(" ") + unknownStyle
+	}
+
+	if max == 0 {
+		// Reported unlimited: show with infinity indicator
+		countStr := lipgloss.NewStyle().Foreground(secondaryColor).Background(appBgColor).Render(m.formatTokenCount(current))
+		infStyle := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Render("∞")
+		return countStr + statusBg(" ") + infStyle
+	}
+
+	barWidth := 10
+
+	pct := (current * 100) / max
+	if pct > 100 {
+		pct = 100
+	}
+
+	filled := (pct * barWidth) / 100
+	empty := barWidth - filled
+
+	// Color selection based on usage level
+	var barColor color.Color
+	switch {
+	case pct >= 85:
+		barColor = warningColor
+	case pct >= 60:
+		barColor = primaryColor
+	default:
+		barColor = secondaryColor
+	}
+
+	fillStyle := lipgloss.NewStyle().Foreground(barColor).Background(appBgColor)
+	emptyStyle := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor)
+
+	bar := ""
+	for range filled {
+		bar += fillStyle.Render("█")
+	}
+	for range empty {
+		bar += emptyStyle.Render("░")
+	}
+
+	bracketStyle := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor)
+	barStr := bracketStyle.Render("[") + bar + bracketStyle.Render("]")
+
+	pctStyle := lipgloss.NewStyle().Foreground(barColor).Background(appBgColor)
+	label := pctStyle.Render(fmt.Sprintf("%d%%", pct))
+
+	size := fmt.Sprintf("%s/%s", m.formatTokenCount(current), m.formatTokenCount(max))
+	sizeStyle := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor)
+
+	return barStr + statusBg(" ") + label + statusBg(" (") + sizeStyle.Render(size) + statusBg(")")
 }
 
 func (m *Model) renderMinimalEqualizer() string {
@@ -203,6 +328,17 @@ func (m *Model) statusBarView() string {
 		leftSection = bullet + statusBg(" ") + label
 	}
 
+	// Append CWD to the left section
+	if m.CWD != "" {
+		cwdStyle := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor)
+		display := m.CWD
+		// Truncate long paths
+		if lipgloss.Width(display) > 40 {
+			display = "…" + display[len(display)-38:]
+		}
+		leftSection += statusBg("  ") + cwdStyle.Render(display)
+	}
+
 	// Check if any other agent is waiting for confirmation
 	otherWaiting := false
 	for id, state := range m.AgentStates {
@@ -258,24 +394,17 @@ func (m *Model) statusBarView() string {
 		}
 	}
 
-	// Build right-side telemetry: Attached files, Token display flat, Breadcrumbs, Help
+	// Build right-side telemetry: Attached files, Context bar, Breadcrumbs, Help
 	var attachedStr string
 	if len(m.AttachedFiles) > 0 {
 		attachedStr = statusAttachedStyle.Render(fmt.Sprintf("📎 %d files", len(m.AttachedFiles)))
 	}
 
-	// Token display flat
-	maxTokens := m.Focused.MaxTokens()
+	// Context bar
 	var tokenStr string
-	if maxTokens > 0 {
-		pct := (s.CumulativeTokenCount * 100) / maxTokens
-		tokenStr = lipgloss.NewStyle().Foreground(secondaryColor).Background(appBgColor).Render(fmt.Sprintf("%d", s.CumulativeTokenCount)) +
-			statusBg(" / ") +
-			lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Render(fmt.Sprintf("%d", maxTokens)) +
-			statusBg(fmt.Sprintf(" t (%d%%)", pct))
-	} else {
-		tokenStr = lipgloss.NewStyle().Foreground(secondaryColor).Background(appBgColor).Render(fmt.Sprintf("%d", s.CumulativeTokenCount)) +
-			statusBg(" t")
+	maxTokens := m.Focused.MaxTokens()
+	if s.CumulativeTokenCount > 0 {
+		tokenStr = m.renderContextBar(s.CumulativeTokenCount, maxTokens)
 	}
 
 	helpStr := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Render("ctrl+h Help")
@@ -349,6 +478,38 @@ func (m *Model) statusBarView() string {
 
 func (m *Model) updateViewport() {
 	if m.Focused == nil {
+		return
+	}
+
+	if m.Mode == ViewCommitLog {
+		m.renderCommitLogView()
+		return
+	}
+
+	if m.EscConfirmPending {
+		s := m.GetAgentState(m.Focused.ID())
+		busy := s.State == StateThinking || s.State == StateStreaming || s.State == StateStopping
+
+		var prompt string
+		if busy {
+			prompt = "**Stop current agent?**\n\nThe agent is still working. Stopping will discard the current response.\n\n> Press **[y]** Yes, stop it  |  **[n]** No, continue"
+		} else {
+			prompt = "**Exit Late?**\n\n> Press **[y]** Yes, quit  |  **[n]** No, stay"
+		}
+		md, _ := m.Renderer.Render(prompt)
+		dialog := lipgloss.NewStyle().
+			Border(lipgloss.DoubleBorder()).
+			BorderForeground(warningColor).
+			Padding(1, 2).
+			Background(appBgColor).
+			Render(md)
+
+		// Center the dialog with a solid background
+		r := lipgloss.Place(m.Viewport.Width(), m.Viewport.Height(),
+			lipgloss.Center, lipgloss.Center,
+			dialog,
+			lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Background(appBgColor)))
+		m.Viewport.SetContent(r)
 		return
 	}
 
@@ -688,7 +849,7 @@ Press **ctrl+h** or **esc** to return to the chat.`
 
 	var fullContent string
 	if len(blocks) == 0 {
-		fullContent = "Welcome to Late. Type your prompt below."
+		fullContent = m.renderWelcomeMessage()
 	} else {
 		fullContent = strings.Join(blocks, "\n")
 	}
@@ -809,6 +970,237 @@ func (m *Model) renderMarkdownBlock(content string, innerWidth int) string {
 // that are NOT inside fenced code blocks. Returns complete paragraphs (stable,
 // cacheable during streaming) and the trailing incomplete content (must be
 // re-rendered each frame).
+// renderWelcomeMessage builds the rich welcome screen shown when history is empty.
+func (m *Model) renderWelcomeMessage() string {
+	msgWidth := m.Viewport.Width() - 6
+	if msgWidth < 1 {
+		msgWidth = 74
+	}
+
+	// Build model line
+	modelStr := ""
+	if m.ModelName != "" {
+		modelStr = fmt.Sprintf("**Model:** %s", m.ModelName)
+	} else {
+		modelStr = "**Model:** —"
+	}
+
+	// Build context size line
+	maxTokens := m.Focused.MaxTokens()
+	ctxStr := ""
+	if maxTokens > 0 {
+		ctxStr = fmt.Sprintf("**Context:** %s tokens", m.formatTokenCount(maxTokens))
+	} else if maxTokens == 0 {
+		ctxStr = "**Context:** unlimited"
+	} else {
+		ctxStr = "**Context:** —"
+	}
+
+	welcome := fmt.Sprintf(`# Welcome to **Late**
+
+Your AI coding agent. Type a prompt below to get started.
+
+%s
+%s
+`, modelStr, ctxStr)
+
+	// Add subagent info if configured
+	if m.SubagentInfo != "" {
+		welcome += fmt.Sprintf("\n**Subagents:** %s\n", m.SubagentInfo)
+	}
+
+	// Render through glamour for markdown formatting
+	rendered := m.renderMarkdownBlock(welcome, msgWidth)
+
+	return lipgloss.NewStyle().
+		Padding(1, 2).
+		Width(msgWidth).
+		Render(rendered)
+}
+
+// renderCommitLogView renders the commit history or commit detail in the viewport.
+func (m *Model) renderCommitLogView() {
+	s := m.GetAgentState(m.Focused.ID())
+	s.LastTotalContent = ""
+
+	msgWidth := m.Viewport.Width() - 2
+	if msgWidth < 1 {
+		msgWidth = 80
+	}
+
+	if m.CommitDetail != "" {
+		// Show full commit detail — render through glamour for syntax highlighting
+		innerWidth := msgWidth - 4
+		if innerWidth < 1 {
+			innerWidth = 74
+		}
+		detail := "```\n" + m.CommitDetail + "\n```"
+		rendered := m.renderMarkdownBlock(detail, innerWidth)
+		boxed := lipgloss.NewStyle().
+			Padding(1, 2).
+			Border(lipgloss.DoubleBorder()).
+			BorderForeground(primaryColor).
+			Width(msgWidth).
+			Render(rendered)
+		m.Viewport.SetContent(boxed)
+		return
+	}
+
+	// Build commit list
+	var lines []string
+	header := lipgloss.NewStyle().
+		Foreground(primaryColor).
+		Bold(true).
+		Background(appBgColor).
+		PaddingLeft(1).
+		Render("── Commit History ──────────────────────────────────")
+	lines = append(lines, header, "")
+
+	if len(m.CommitEntries) == 0 {
+		lines = append(lines, lipgloss.NewStyle().
+			Foreground(subtextColor).
+			Background(appBgColor).
+			PaddingLeft(2).
+			Render("No commits found."))
+	} else {
+		for i, entry := range m.CommitEntries {
+			prefix := "  "
+			itemStyle := lipgloss.NewStyle().
+				Foreground(textColor).
+				Background(appBgColor).
+				PaddingLeft(2)
+			hashStyle := lipgloss.NewStyle().
+				Foreground(secondaryColor).
+				Background(appBgColor)
+			dateStyle := lipgloss.NewStyle().
+				Foreground(subtextColor).
+				Background(appBgColor).
+				Italic(true)
+			msgStyle := lipgloss.NewStyle().
+				Foreground(textColor).
+				Background(appBgColor)
+
+			if i == m.CommitIndex {
+				prefix = "▸ "
+				itemStyle = lipgloss.NewStyle().
+					Foreground(primaryColor).
+					Background(thoughtBgColor).
+					PaddingLeft(2).
+					Bold(true)
+				hashStyle = lipgloss.NewStyle().
+					Foreground(primaryColor).
+					Background(thoughtBgColor).
+					Bold(true)
+				dateStyle = lipgloss.NewStyle().
+					Foreground(primaryColor).
+					Background(thoughtBgColor).
+					Italic(true)
+				msgStyle = lipgloss.NewStyle().
+					Foreground(textColor).
+					Background(thoughtBgColor)
+			}
+
+			headMarker := ""
+			if entry.IsHEAD {
+				headMarker = " " + lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Render("(HEAD)")
+				if i == m.CommitIndex {
+					headMarker = " " + lipgloss.NewStyle().Foreground(primaryColor).Background(thoughtBgColor).Render("(HEAD)")
+				}
+			}
+
+			hashStr := hashStyle.Render(entry.Hash)
+			dateStr := dateStyle.Render(entry.Date)
+			msgStr := msgStyle.Render(entry.Message)
+
+			line := prefix + hashStr + statusBg("  ") + msgStr + headMarker
+			metaLine := statusBg("   ") + dateStyle.Render(entry.Author) + statusBg(" · ") + dateStr
+
+			lines = append(lines, itemStyle.Render(line))
+			if i == m.CommitIndex {
+				lines = append(lines, itemStyle.Render(metaLine))
+			} else {
+				lines = append(lines, statusBg("   ")+dateStr)
+			}
+			lines = append(lines, statusBg(""))
+		}
+	}
+
+	// Footer hint
+	footer := lipgloss.NewStyle().
+		Foreground(subtextColor).
+		Background(appBgColor).
+		PaddingLeft(1).
+		Render(fmt.Sprintf("↑↓ navigate · Enter view · Esc back  (%d commits)", len(m.CommitEntries)))
+	lines = append(lines, "", footer)
+
+	m.Viewport.SetContent(strings.Join(lines, "\n"))
+}
+
+// overlayCentered places the dialog string centered over the background string,
+// matching the viewport dimensions. The dialog is sized to fit its content.
+func overlayCentered(background, dialog string, vpWidth, vpHeight int) string {
+	bgLines := strings.Split(background, "\n")
+	dialogLines := strings.Split(dialog, "\n")
+
+	// Calculate dialog dimensions from actual content
+	dialogW := 0
+	for _, line := range dialogLines {
+		w := lipgloss.Width(line)
+		if w > dialogW {
+			dialogW = w
+		}
+	}
+	dialogH := len(dialogLines)
+
+	// Clamp to viewport
+	if dialogW > vpWidth {
+		dialogW = vpWidth
+	}
+	if dialogH > vpHeight {
+		dialogH = vpHeight
+	}
+
+	// Center position
+	startX := (vpWidth - dialogW) / 2
+	startY := (vpHeight - dialogH) / 2
+
+	// Build result by overlaying dialog onto background
+	result := make([]string, 0, vpHeight)
+	for y := 0; y < vpHeight; y++ {
+		var bgLine string
+		if y < len(bgLines) {
+			bgLine = bgLines[y]
+		} else {
+			bgLine = ""
+		}
+
+		// Pad background line to full width
+		if len(bgLine) < vpWidth {
+			bgLine += strings.Repeat(" ", vpWidth-len(bgLine))
+		}
+
+		// Overlay dialog
+		dialogIdx := y - startY
+		if dialogIdx >= 0 && dialogIdx < dialogH {
+			dl := dialogLines[dialogIdx]
+			// Pad dialog line
+			if len(dl) < dialogW {
+				dl += strings.Repeat(" ", dialogW-len(dl))
+			}
+			// Replace characters in the background
+			runes := []rune(bgLine)
+			for x := 0; x < dialogW && startX+x < len(runes); x++ {
+				runes[startX+x] = []rune(dl)[x]
+			}
+			bgLine = string(runes)
+		}
+
+		result = append(result, bgLine)
+	}
+
+	return strings.Join(result, "\n")
+}
+
 func splitMarkdownChunks(content string) (complete []string, tail string) {
 	inFence := false
 	lastSplit := 0

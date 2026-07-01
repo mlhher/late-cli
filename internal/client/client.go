@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -250,33 +251,64 @@ func (c *Client) RefreshContextSize(ctx context.Context) {
 		return
 	}
 
-	url := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/props"
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return
-	}
-	if c.cfg.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-	}
+	// Try /props at the raw BaseURL and at the parent path
+	baseURL := strings.TrimSuffix(c.cfg.BaseURL, "/")
+	propsURLs := []string{baseURL + "/props"}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		var props PropsResponse
-		if err := json.NewDecoder(resp.Body).Decode(&props); err == nil {
-			c.mu.Lock()
-			c.ctxSize = props.DefaultGenerationSettings.NCtx
-			c.supportsVision = props.Modalities.Vision
-			c.mu.Unlock()
+	if u, err := url.Parse(baseURL); err == nil && u.Path != "" && u.Path != "/" {
+		parent := strings.TrimSuffix(baseURL, u.Path)
+		if parent != baseURL {
+			propsURLs = append(propsURLs, parent+"/props")
 		}
 	}
+
+	for _, propsURL := range propsURLs {
+		req, err := http.NewRequestWithContext(ctx, "GET", propsURL, nil)
+		if err != nil {
+			continue
+		}
+		if c.cfg.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			continue
+		}
+
+		if resp.StatusCode == http.StatusOK {
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err == nil {
+				c.mu.Lock()
+				c.parsePropsBody(body)
+
+				// If /props returned n_ctx <= 0, try /v1/models as fallback
+				if c.ctxSize <= 0 {
+					ctxSize := c.probeModelsEndpoint(ctx, baseURL)
+					if ctxSize > 0 {
+						c.ctxSize = ctxSize
+					}
+				}
+				c.mu.Unlock()
+			}
+			return
+		}
+		resp.Body.Close()
+	}
+
+	// /props not found or failed — try /v1/models as fallback
+	c.mu.Lock()
+	ctxSize := c.probeModelsEndpoint(ctx, baseURL)
+	if ctxSize > 0 {
+		c.ctxSize = ctxSize
+	}
+	c.mu.Unlock()
 }
 
 // DiscoverBackend probes certain endpoints to identify the inference engine.
+// It tries `/props` at the raw BaseURL and at the parent path (in case
+// BaseURL includes a path prefix like "/v1").
 func (c *Client) DiscoverBackend(ctx context.Context) BackendType {
 	c.mu.RLock()
 	if c.backend == BackendLlamaCPP && c.ctxSize != -1 {
@@ -294,37 +326,175 @@ func (c *Client) DiscoverBackend(ctx context.Context) BackendType {
 		return c.backend
 	}
 
-	url := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/props"
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		c.backend = BackendGenericOpenAI
-		return c.backend
-	}
+	// Try /props at the raw BaseURL and at the parent path
+	baseURL := strings.TrimSuffix(c.cfg.BaseURL, "/")
+	propsURLs := []string{baseURL + "/props"}
 
-	if c.cfg.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		// Connection error: remain unknown to allow retry
-		return c.backend
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		c.backend = BackendLlamaCPP
-		var props PropsResponse
-		if err := json.NewDecoder(resp.Body).Decode(&props); err == nil {
-			c.ctxSize = props.DefaultGenerationSettings.NCtx
-			c.supportsVision = props.Modalities.Vision
+	// Also try parent path (e.g. if BaseURL is "http://h:8080/v1", try "http://h:8080/props")
+	if u, err := url.Parse(baseURL); err == nil && u.Path != "" && u.Path != "/" {
+		parent := strings.TrimSuffix(baseURL, u.Path)
+		if parent != baseURL {
+			propsURLs = append(propsURLs, parent+"/props")
 		}
-	} else {
-		// If we got a response but it's not OK, it's likely a standard OpenAI endpoint
+	}
+
+	var propsResp *http.Response
+	for _, propsURL := range propsURLs {
+		req, err := http.NewRequestWithContext(ctx, "GET", propsURL, nil)
+		if err != nil {
+			continue
+		}
+		if c.cfg.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			continue
+		}
+
+		if resp.StatusCode == http.StatusOK {
+			propsResp = resp
+			break
+		}
+		resp.Body.Close()
+	}
+
+	if propsResp != nil {
+		defer propsResp.Body.Close()
+		c.backend = BackendLlamaCPP
+
+		body, err := io.ReadAll(propsResp.Body)
+		propsResp.Body.Close()
+		if err == nil {
+			c.parsePropsBody(body)
+		}
+	}
+
+	// If /props returned n_ctx <= 0 or failed entirely, try /v1/models
+	// to get the context size from the loaded model's metadata.
+	if c.ctxSize <= 0 {
+		ctxSize := c.probeModelsEndpoint(ctx, baseURL)
+		if ctxSize > 0 {
+			c.ctxSize = ctxSize
+			c.backend = BackendLlamaCPP
+		}
+	}
+
+	// If still unknown, mark as generic OpenAI
+	if c.backend == BackendUnknown {
 		c.backend = BackendGenericOpenAI
 	}
 
 	return c.backend
+}
+
+// probeModelsEndpoint fetches /v1/models and extracts n_ctx from the loaded model.
+func (c *Client) probeModelsEndpoint(ctx context.Context, baseURL string) int {
+	modelsURLs := []string{baseURL + "/v1/models"}
+
+	// Also try parent path
+	if u, err := url.Parse(baseURL); err == nil && u.Path != "" && u.Path != "/" {
+		parent := strings.TrimSuffix(baseURL, u.Path)
+		if parent != baseURL {
+			modelsURLs = append(modelsURLs, parent+"/v1/models")
+		}
+	}
+
+	for _, url := range modelsURLs {
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			continue
+		}
+		if c.cfg.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+
+		// Parse the OpenAI /v1/models response to find the loaded model's n_ctx
+		var modelsResp struct {
+			Data []struct {
+				ID     string `json:"id"`
+				Status struct {
+					Value string `json:"value"`
+				} `json:"status"`
+				Meta *struct {
+					NCtx int `json:"n_ctx"`
+				} `json:"meta,omitempty"`
+			} `json:"data"`
+		}
+
+		if err := json.Unmarshal(body, &modelsResp); err != nil {
+			continue
+		}
+
+		for _, m := range modelsResp.Data {
+			if m.Status.Value == "loaded" && m.Meta != nil && m.Meta.NCtx > 0 {
+				return m.Meta.NCtx
+			}
+		}
+
+		// Also accept any model with meta.n_ctx, even if not marked loaded
+		for _, m := range modelsResp.Data {
+			if m.Meta != nil && m.Meta.NCtx > 0 {
+				return m.Meta.NCtx
+			}
+		}
+	}
+
+	return 0
+}
+
+// parsePropsBody extracts ctxSize and vision support from a /props JSON body.
+// It tries structured decode first, then falls back to raw JSON traversal.
+func (c *Client) parsePropsBody(body []byte) {
+	var props PropsResponse
+	if err := json.Unmarshal(body, &props); err == nil {
+		// n_ctx == 0 means "unlimited/default" — still a valid report
+		c.ctxSize = props.DefaultGenerationSettings.NCtx
+		c.supportsVision = props.Modalities.Vision
+		return
+	}
+
+	// Fallback: extract n_ctx from raw JSON in case the structure differs
+	var rawMap map[string]json.RawMessage
+	if err := json.Unmarshal(body, &rawMap); err != nil {
+		return
+	}
+
+	dgs, ok := rawMap["default_generation_settings"]
+	if !ok {
+		return
+	}
+
+	var dgsMap map[string]json.RawMessage
+	if err := json.Unmarshal(dgs, &dgsMap); err != nil {
+		return
+	}
+
+	if nCtxRaw, ok := dgsMap["n_ctx"]; ok {
+		var nCtx int
+		if json.Unmarshal(nCtxRaw, &nCtx) == nil {
+			c.ctxSize = nCtx
+		}
+	}
+
+	if modRaw, ok := rawMap["modalities"]; ok {
+		var mods Modalities
+		if json.Unmarshal(modRaw, &mods) == nil {
+			c.supportsVision = mods.Vision
+		}
+	}
 }
 
 func (c *Client) getBackend() BackendType {

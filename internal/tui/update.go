@@ -3,8 +3,10 @@ package tui
 import (
 	"fmt"
 	"late/internal/common"
+	"late/internal/git"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -83,8 +85,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Snapshot state before updateChat processes the key and potentially changes it
 	var stateBefore ValidationState
+	escBefore := false
 	if _, ok := msg.(tea.KeyMsg); ok {
 		stateBefore = m.GetAgentState(m.Focused.ID()).State
+		escBefore = m.EscConfirmPending
 	}
 
 	// Main Chat Update Logic
@@ -96,7 +100,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
 		switch keyMsg.String() {
 		case "y", "Y", "n", "N", "s", "S", "p", "P", "g", "G":
-			if stateBefore == StateConfirmTool && strings.TrimPrefix(m.Input.Value(), "> ") == "" {
+			if escBefore || (stateBefore == StateConfirmTool && strings.TrimPrefix(m.Input.Value(), "> ") == "") {
+				forwardToInput = false
+			}
+		case "up", "down":
+			if m.Mode == ViewChat {
 				forwardToInput = false
 			}
 		}
@@ -120,6 +128,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Input.CursorEnd()
 		}
 	}
+
+	// Update autocomplete state whenever the input changes
+	m.updateAutocomplete()
+
+	// Detect large pastes (input grew by > 50 chars in one update cycle)
+	currentLen := len(m.Input.Value())
+	if currentLen-m.lastInputLen > 50 && m.lastInputLen > 0 {
+		pastedText := m.Input.Value()[m.lastInputLen:]
+		lineCount := strings.Count(pastedText, "\n") + 1
+		charCount := currentLen - m.lastInputLen
+		if lineCount >= 3 {
+			m.ToastMessage = fmt.Sprintf("pasted %d lines (%d chars)", lineCount, charCount)
+			m.ToastExpireTime = time.Now().UnixMilli() + 2500
+			clearCmd := tea.Tick(2500*time.Millisecond, func(t time.Time) tea.Msg {
+				return clearToastMsg{}
+			})
+			m.lastInputLen = currentLen
+			return m, clearCmd
+		}
+	}
+	m.lastInputLen = currentLen
+
 	var spCmd tea.Cmd
 	m.Spinner, spCmd = m.Spinner.Update(msg)
 
@@ -131,13 +161,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "up", "down", "pgup", "pgdown", "home", "end":
+		case "pgup", "pgdown", "home", "end":
 			forwardToViewport = true
 		default:
 			// Never forward character keys to the viewport to prevent conflicts with textarea input.
 			// The viewport binds keys like space, j, k, d, u which cause shifting if typed.
 			forwardToViewport = false
 		}
+	case tea.MouseWheelMsg:
+		// Wheel events forwarded to viewport for scroll handling.
+		// Bubbletea v2 dispatches these as a distinct type from MouseMsg.
+		forwardToViewport = true
 	case tea.MouseMsg:
 		forwardToViewport = true
 		if clickMsg, ok := msg.(tea.MouseClickMsg); ok {
@@ -225,6 +259,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					focusedState.StatusText = "Images not supported by current model"
 				} else {
 					m.AttachedFiles = append(m.AttachedFiles, file)
+					m.ShowFilePicker = false
+					m.Mode = ViewChat
+					// Show toast with just the filename
+					fname := filepath.Base(file)
+					m.ToastMessage = "attached " + fname
+					m.ToastExpireTime = time.Now().UnixMilli() + 2500
+					clearCmd := tea.Tick(2500*time.Millisecond, func(t time.Time) tea.Msg {
+						return clearToastMsg{}
+					})
+					return m, tea.Batch(fpCmd, clearCmd)
 				}
 			}
 			m.ShowFilePicker = false
@@ -239,6 +283,93 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		focusedState := m.GetAgentState(m.Focused.ID())
+
+		// Commit log view key handling
+		if m.Mode == ViewCommitLog {
+			if m.CommitDetail != "" {
+				// In detail view, any key goes back to list
+				if msg.String() == "esc" || msg.String() == "enter" {
+					m.CommitDetail = ""
+					m.updateViewport()
+					return m, nil
+				}
+				return m, nil
+			}
+			switch msg.String() {
+			case "up":
+				m.CommitIndex = max(0, m.CommitIndex-1)
+				m.updateViewport()
+				return m, nil
+			case "down":
+				m.CommitIndex = min(len(m.CommitEntries)-1, m.CommitIndex+1)
+				m.updateViewport()
+				return m, nil
+			case "enter":
+				if m.CommitIndex >= 0 && m.CommitIndex < len(m.CommitEntries) {
+					detail, err := git.ShowCommit(m.CWD, m.CommitEntries[m.CommitIndex].Hash)
+					if err != nil {
+						m.Err = err
+					} else {
+						m.CommitDetail = detail
+					}
+					m.updateViewport()
+				}
+				return m, nil
+			case "esc":
+				// Let esc fall through to the esc handler below
+				m.Mode = ViewChat
+				m.CommitEntries = nil
+				focusedState.RenderedHistory = nil
+				m.updateViewport()
+				return m, nil
+			}
+			return m, nil
+		}
+
+		// Esc confirmation handling
+		if m.EscConfirmPending {
+			switch msg.String() {
+			case "y", "Y":
+				m.EscConfirmPending = false
+				focusedState := m.GetAgentState(m.Focused.ID())
+				if focusedState.State == StateThinking || focusedState.State == StateStreaming || focusedState.State == StateStopping {
+					m, _ = m.interruptFocusedAgent()
+					if s := m.GetAgentState(m.Focused.ID()); s != nil {
+						s.LastTotalContent = ""
+					}
+					m.updateViewport()
+				} else {
+					return m, tea.Quit
+				}
+				return m, nil
+			case "n", "N", "esc":
+				m.EscConfirmPending = false
+				if s := m.GetAgentState(m.Focused.ID()); s != nil {
+					s.LastTotalContent = ""
+				}
+				m.updateViewport()
+				return m, nil
+			}
+		}
+
+		// Autocomplete takes priority when active
+		if m.ShowAutocomplete {
+			switch msg.String() {
+			case "up":
+				m.AutocompleteIndex = max(0, m.AutocompleteIndex-1)
+				return m, nil
+			case "down", "tab":
+				m.AutocompleteIndex = min(len(m.AutocompleteItems)-1, m.AutocompleteIndex+1)
+				return m, nil
+			case "enter":
+				m = m.acceptAutocomplete()
+				// Fall through to normal "enter" handling for submission
+			case "esc":
+				m.ShowAutocomplete = false
+				return m, nil
+			}
+		}
+
 		switch msg.String() {
 		case "esc", "ctrl+g":
 			if msg.String() == "esc" {
@@ -247,12 +378,37 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 					m.Mode = ViewChat
 					return m, nil
 				}
+				if m.EscConfirmPending {
+					m.EscConfirmPending = false
+					m.updateViewport()
+					return m, nil
+				}
+				if m.Mode == ViewCommitLog {
+					if m.CommitDetail != "" {
+						m.CommitDetail = ""
+						m.updateViewport()
+						return m, nil
+					}
+					m.Mode = ViewChat
+					m.CommitEntries = nil
+					focusedState.RenderedHistory = nil
+					m.updateViewport()
+					return m, nil
+				}
 				if m.Mode != ViewChat {
 					m.Mode = ViewChat
 					focusedState.RenderedHistory = nil
 					m.updateViewport()
 					return m, nil
 				}
+				// Main view Esc — always show confirmation
+				m.escBgContent = m.Viewport.View()
+				m.EscConfirmPending = true
+				if s := m.GetAgentState(m.Focused.ID()); s != nil {
+					s.LastTotalContent = ""
+				}
+				m.updateViewport()
+				return m, nil
 			}
 			return m.interruptFocusedAgent()
 
@@ -262,6 +418,55 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			input := strings.TrimPrefix(m.Input.Value(), "> ")
 			if strings.TrimSpace(input) == "" {
+				return m, nil
+			}
+
+			// Slash commands (trim spaces so autocomplete-added trailing space still works)
+			cmd := strings.TrimSpace(input)
+			if cmd == "/quit" {
+				return m, tea.Quit
+			}
+			if cmd == "/help" {
+				m.Input.Reset()
+				m.Input.SetValue("> ")
+				m.Mode = ViewHelp
+				focusedState.RenderedHistory = nil
+				m.updateLayout()
+				return m, nil
+			}
+			if cmd == "/clear" {
+				m.Input.Reset()
+				m.Input.SetValue("> ")
+				m.Focused.Reset()
+				for _, state := range m.AgentStates {
+					state.RenderedHistory = nil
+					state.CumulativeTokenCount = 0
+					state.CachedHistoryLen = 0
+					state.CachedHistoryTokens = 0
+					state.LastTotalContent = ""
+				}
+				m.LastFocusedID = ""
+				m.updateViewport()
+				m.ToastMessage = "conversation cleared"
+				m.ToastExpireTime = time.Now().UnixMilli() + 3000
+				clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+					return clearToastMsg{}
+				})
+				return m, clearCmd
+			}
+			if cmd == "/log" {
+				m.Input.Reset()
+				m.Input.SetValue("> ")
+				entries, err := git.LogCommits(m.CWD, 30)
+				if err != nil {
+					m.Err = err
+					return m, nil
+				}
+				m.CommitEntries = entries
+				m.CommitIndex = 0
+				m.CommitDetail = ""
+				m.Mode = ViewCommitLog
+				m.updateViewport()
 				return m, nil
 			}
 
@@ -302,6 +507,14 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				m.Err = err
 				return m, nil
 			}
+
+			// Save to input history (avoid consecutive duplicates)
+			if len(m.InputHistory) == 0 || m.InputHistory[len(m.InputHistory)-1] != input {
+				m.InputHistory = append(m.InputHistory, input)
+			}
+			m.HistoryIndex = -1
+			m.HistoryWorking = ""
+
 			m.Input.Reset()
 			m.Input.SetValue("> ")
 			m.AttachedFiles = nil // Clear attachments after submit
@@ -344,6 +557,16 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, nil
+
+		case "up":
+			if m.Mode == ViewChat {
+				return m.navigateHistory(-1), nil
+			}
+
+		case "down":
+			if m.Mode == ViewChat {
+				return m.navigateHistory(1), nil
+			}
 
 		case "tab":
 			// Allow focus switching regardless of agent state
@@ -519,6 +742,12 @@ func (m *Model) updateLayout() {
 	m.Viewport.SetWidth(availableWidth)
 	vHeight := m.Height - InputHeight - StatusBarHeight - AppPadding
 
+	// Reserve space for autocomplete dropdown
+	if m.ShowAutocomplete && len(m.AutocompleteItems) > 0 {
+		autoH := min(len(m.AutocompleteItems), 6) + 2 // items + border
+		vHeight -= autoH
+	}
+
 	if vHeight < 1 {
 		vHeight = 1
 	}
@@ -533,6 +762,92 @@ func (m *Model) updateLayout() {
 	m.FilePicker.SetHeight(fpHeight)
 
 	m.updateViewport()
+}
+
+// updateAutocomplete checks if the input looks like a slash command and updates
+// the autocomplete dropdown items.
+func (m *Model) updateAutocomplete() {
+	input := strings.TrimPrefix(m.Input.Value(), "> ")
+
+	// Only show autocomplete when input starts with "/" and has no space yet
+	if strings.HasPrefix(input, "/") && !strings.Contains(input, " ") {
+		prefix := strings.ToLower(input)
+		var matches []string
+		for _, cmd := range AvailableCommands {
+			if strings.HasPrefix(strings.ToLower(cmd), prefix) {
+				matches = append(matches, cmd)
+			}
+		}
+		if len(matches) > 0 {
+			m.ShowAutocomplete = true
+			m.AutocompleteItems = matches
+			if m.AutocompleteIndex >= len(matches) {
+				m.AutocompleteIndex = 0
+			}
+			return
+		}
+	}
+
+	m.ShowAutocomplete = false
+	m.AutocompleteItems = nil
+	m.AutocompleteIndex = 0
+}
+
+// acceptAutocomplete replaces the current input with the selected command.
+func (m Model) acceptAutocomplete() Model {
+	if m.AutocompleteIndex >= 0 && m.AutocompleteIndex < len(m.AutocompleteItems) {
+		selected := m.AutocompleteItems[m.AutocompleteIndex]
+		m.Input.SetValue("> " + selected + " ")
+		m.Input.CursorEnd()
+	}
+	m.ShowAutocomplete = false
+	m.AutocompleteItems = nil
+	m.AutocompleteIndex = 0
+	return m
+}
+
+// navigateHistory navigates the input history by `dir` steps (+1 forward, -1 backward).
+// When first entering history browsing, the current input is saved as the "working"
+// buffer so it can be restored when the user navigates past the newest entry.
+func (m Model) navigateHistory(dir int) Model {
+	currentInput := strings.TrimPrefix(m.Input.Value(), "> ")
+	historyLen := len(m.InputHistory)
+
+	if historyLen == 0 {
+		return m
+	}
+
+	if m.HistoryIndex == -1 {
+		m.HistoryWorking = currentInput
+		if dir < 0 {
+			// First press of ↑: go to the newest (last) entry
+			m.HistoryIndex = historyLen - 1
+			m.Input.SetValue("> " + m.InputHistory[m.HistoryIndex])
+			m.Input.CursorEnd()
+			return m
+		}
+		return m
+	}
+
+	newIndex := m.HistoryIndex + dir
+
+	if newIndex < 0 {
+		// Already at the oldest entry
+		return m
+	}
+
+	if newIndex >= historyLen {
+		// Past the newest entry: restore working buffer
+		m.HistoryIndex = -1
+		m.Input.SetValue("> " + m.HistoryWorking)
+		m.Input.CursorEnd()
+		return m
+	}
+
+	m.HistoryIndex = newIndex
+	m.Input.SetValue("> " + m.InputHistory[newIndex])
+	m.Input.CursorEnd()
+	return m
 }
 
 func (m Model) interruptFocusedAgent() (Model, tea.Cmd) {
