@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"context"
 	"late/internal/client"
 	"late/internal/common"
 	"late/internal/config"
 	"late/internal/git"
+	"strings"
 
 	"charm.land/bubbles/v2/filepicker"
 	"charm.land/bubbles/v2/spinner"
@@ -37,6 +39,7 @@ const (
 	ViewFilePicker
 	ViewCommitLog
 	ViewRewind
+	ViewThemes
 	ViewModelPicker
 )
 
@@ -55,13 +58,26 @@ type CommandDef struct {
 
 // AvailableCommands lists all slash commands available in the TUI.
 var AvailableCommands = []CommandDef{
-	{Name: "/new", Description: "Start a new session/chat"},
+	{Name: "/clear", Description: "Clear the terminal screen"},
 	{Name: "/compose", Description: "Compose a message with an editor"},
 	{Name: "/help", Description: "Show help and shortcuts"},
 	{Name: "/log", Description: "View git commit log"},
 	{Name: "/model", Description: "Select AI model for agents"},
 	{Name: "/quit", Description: "Exit the application"},
 	{Name: "/rewind", Description: "Rewind conversation history"},
+	{Name: "/themes", Description: "List and switch themes"},
+}
+
+// ThemeEntry is a TUI-side view of a plugin-provided theme. It contains
+// only the fields needed to render the picker and rebuild a glamour
+// renderer at runtime. We keep this struct local to the TUI (rather than
+// importing plugin.ThemeInfo directly) to preserve the package layering.
+type ThemeEntry struct {
+	ID         string            // "<pluginname>:<themename>"
+	PluginName string            // plugin that owns the theme
+	ThemeName  string            // bare theme name (matches the JSON "name" field)
+	Glamour    map[string]any    // glamour style overrides, merged into base LateTheme
+	Palette    map[string]string // semantic palette (bg/fg/accent/...) for downstream consumers
 }
 
 // RenderBlock represents the line bounds of a rendered block in the viewport.
@@ -196,6 +212,34 @@ type Model struct {
 	AutocompleteItems []CommandDef
 	AutocompleteIndex int
 
+	// Plugin-provided slash commands (registered at startup from plugins)
+	PluginCommands []string // each entry should include leading slash, e.g. "/query"
+
+	// Plugin-provided message hook. Set at startup from
+	// (*PluginManager).HookedMessage. When nil, outgoing user messages are
+	// sent through unchanged. See Model.ApplyMessageHook.
+	MessageHook func(string) string
+
+	// Plugin-provided slash-command handler. Set at startup from
+	// (*PluginManager).HandleCommand. When nil, plugin commands fall
+	// through to plain-prompt dispatch (legacy behavior).
+	//
+	// signature: (ctx, name, args) -> (output, handled, err)
+	//   - handled=false → caller should submit the original input as a
+	//     plain user prompt.
+	//   - handled=true && err==nil → handler ran; output may be empty
+	//     (silent command) or non-empty (display as toast preview).
+	//   - handled=true && err!=nil → surface the error as a toast.
+	CommandHandler func(ctx context.Context, name string, args []string) (string, bool, error)
+
+	// SelectedTheme records the namespaced theme id currently in use
+	// ("<pluginname>:<themename>"). Empty means the bundled LateTheme.
+	SelectedTheme string
+
+	// Theme selector view (Set /themes to enter)
+	ThemeEntries []ThemeEntry // populated from plugins at startup
+	ThemeIndex   int          // cursor in the theme list when ViewThemes is active
+
 	// Performance caches
 	cachedRenderer      *glamour.TermRenderer
 	cachedRendererWidth int
@@ -235,6 +279,78 @@ type Messenger interface {
 // SetMessengerMsg is sent to initialize the messenger in the model
 type SetMessengerMsg struct {
 	Messenger Messenger
+}
+
+// SetThemes replaces the plugin-provided theme catalog used by the
+// /themes picker. Pass nil/empty to clear. The list is copied so the caller
+// may reuse its own slice safely.
+func (m *Model) SetThemes(themes []ThemeEntry) {
+	if len(themes) == 0 {
+		m.ThemeEntries = nil
+		m.ThemeIndex = 0
+		return
+	}
+	m.ThemeEntries = make([]ThemeEntry, len(themes))
+	copy(m.ThemeEntries, themes)
+	// Reset cursor; pickers start at the top.
+	m.ThemeIndex = 0
+}
+
+// FindTheme resolves a theme by ID ("plugin:theme") or bare name
+// (case-insensitive). Returns nil if nothing matches. The active theme is
+// preferred when its bare name is supplied.
+func (m *Model) FindTheme(query string) *ThemeEntry {
+	if query == "" || len(m.ThemeEntries) == 0 {
+		return nil
+	}
+	// 1. Exact ID match wins.
+	for i := range m.ThemeEntries {
+		if m.ThemeEntries[i].ID == query {
+			return &m.ThemeEntries[i]
+		}
+	}
+	// 2. Case-insensitive bare-name match.
+	lc := strings.ToLower(query)
+	var firstBareMatch *ThemeEntry
+	for i := range m.ThemeEntries {
+		if strings.EqualFold(m.ThemeEntries[i].ThemeName, query) {
+			// Prefer the currently active theme if the user typed its name.
+			if m.ThemeEntries[i].ID == m.SelectedTheme {
+				return &m.ThemeEntries[i]
+			}
+			if firstBareMatch == nil {
+				firstBareMatch = &m.ThemeEntries[i]
+			}
+		}
+	}
+	if firstBareMatch != nil {
+		return firstBareMatch
+	}
+	// 3. Last-ditch: case-insensitive ID match.
+	for i := range m.ThemeEntries {
+		if strings.EqualFold(m.ThemeEntries[i].ID, query) || strings.EqualFold(m.ThemeEntries[i].ID, lc) {
+			return &m.ThemeEntries[i]
+		}
+	}
+	return nil
+}
+
+// FindThemeByID returns the theme at the given list index, or nil if the
+// index is out of range. Convenience accessor for the picker view.
+func (m *Model) FindThemeByIndex(i int) *ThemeEntry {
+	if i < 0 || i >= len(m.ThemeEntries) {
+		return nil
+	}
+	return &m.ThemeEntries[i]
+}
+
+// PluginChangeMsg is sent when the filesystem watcher detects plugin changes.
+// Commands carries the updated list of plugin-provided slash commands.
+// Themes carries the updated list of plugin-provided themes for the /themes
+// picker so the TUI can refresh without restarting Late.
+type PluginChangeMsg struct {
+	Commands []string
+	Themes   []ThemeEntry
 }
 
 // OrchestratorEventMsg is the bridge between Orchestrator goroutines and the TUI loop.

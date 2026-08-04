@@ -465,12 +465,30 @@ func (m *Model) statusBarView() string {
 
 	helpStr := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Render("ctrl+h Help")
 
+	// Plugin count badge
+	var pluginStr string
+	pluginCmdCount := len(m.PluginCommands)
+	if pluginCmdCount > 0 {
+		badge := fmt.Sprintf("%d plugin", pluginCmdCount)
+		if pluginCmdCount > 1 {
+			badge += "s"
+		}
+		pluginStr = lipgloss.NewStyle().
+			Foreground(primaryColor).
+			Background(appBgColor).
+			Bold(true).
+			Render(badge)
+	}
+
 	var rightParts []string
 	if attachedStr != "" {
 		rightParts = append(rightParts, attachedStr)
 	}
 	if tokenStr != "" {
 		rightParts = append(rightParts, tokenStr)
+	}
+	if pluginStr != "" {
+		rightParts = append(rightParts, pluginStr)
 	}
 	if breadcrumbStr != "" {
 		rightParts = append(rightParts, breadcrumbStr)
@@ -558,6 +576,11 @@ func (m *Model) updateViewport() {
 		return
 	}
 
+	if m.Mode == ViewThemes {
+		m.renderThemeView()
+		return
+	}
+
 	if m.EscConfirmPending {
 		s := m.GetAgentState(m.Focused.ID())
 		busy := s.State == StateThinking || s.State == StateStreaming || s.State == StateStopping
@@ -590,6 +613,7 @@ func (m *Model) updateViewport() {
 		s := m.GetAgentState(m.Focused.ID())
 		s.LastTotalContent = ""
 
+		// Build help text dynamically to include plugin commands
 		helpText := `# Late Help & Keybindings
 
 Here is a list of available keyboard shortcuts:
@@ -602,6 +626,26 @@ Here is a list of available keyboard shortcuts:
   **enter**         Submit prompt
   **ctrl+h**        Toggle this Help menu
 
+## Slash Commands
+
+Type **/** followed by a command name to activate it:
+
+`
+
+		// Built-in slash commands
+		for _, cmd := range AvailableCommands {
+			helpText += fmt.Sprintf("  `%s`\n", cmd)
+		}
+
+		// Plugin-provided slash commands
+		if len(m.PluginCommands) > 0 {
+			helpText += "\n**Plugin Commands:**\n\n"
+			for _, cmd := range m.PluginCommands {
+				helpText += fmt.Sprintf("  `%s`\n", cmd)
+			}
+		}
+
+		helpText += `
 Press **ctrl+h** or **esc** to return to the chat.`
 
 		// Total outer width is m.Viewport.Width()
@@ -1223,6 +1267,148 @@ Your AI coding agent. Type a prompt below to get started.
 }
 
 // renderCommitLogView renders the commit history or commit detail in the viewport.
+// renderThemeView draws the /themes picker into the viewport. Style
+// mirrors the other pickers (ViewCommitLog, ViewRewind): a boxed list with
+// a cursor and an "active" marker on the currently applied theme. Empty
+// list is handled inline.
+func (m *Model) renderThemeView() {
+	width := m.Viewport.Width()
+	if width < 1 {
+		width = 80
+	}
+	height := m.Viewport.Height()
+	if height < 1 {
+		height = 20
+	}
+
+	if m.ThemeIndex >= len(m.ThemeEntries) {
+		m.ThemeIndex = len(m.ThemeEntries) - 1
+	}
+	if m.ThemeIndex < 0 {
+		m.ThemeIndex = 0
+	}
+
+	header := lipgloss.NewStyle().
+		Foreground(primaryColor).
+		Background(appBgColor).
+		Bold(true).
+		Padding(0, 1).
+		Render("Themes")
+
+	subtitle := lipgloss.NewStyle().
+		Foreground(subtextColor).
+		Background(appBgColor).
+		Padding(0, 1).
+		Render("Select a theme with \u2191/\u2193 and press enter to apply. esc to cancel.")
+
+	if len(m.ThemeEntries) == 0 {
+		empty := lipgloss.NewStyle().
+			Foreground(subtextColor).
+			Background(appBgColor).
+			Padding(0, 1).
+			Render("No plugin themes installed.")
+		box := lipgloss.NewStyle().
+			Border(lipgloss.DoubleBorder()).
+			BorderForeground(secondaryColor).
+			BorderBackground(appBgColor).
+			Background(appBgColor).
+			Width(width - 2).
+			Padding(1, 2).
+			Render(lipgloss.JoinVertical(lipgloss.Left, header, subtitle, empty))
+		m.Viewport.SetContent(box)
+		return
+	}
+
+	var rows []string
+	for i, t := range m.ThemeEntries {
+		isActive := t.ID == m.SelectedTheme
+		marker := "  "
+		if isActive {
+			marker = "\u25cf "
+		}
+		label := fmt.Sprintf("%s%s", marker, t.ThemeName)
+		sub := fmt.Sprintf("    %s", t.PluginName)
+		if isActive {
+			sub += "  \u2022 active"
+		}
+
+		var row string
+		if i == m.ThemeIndex {
+			row = lipgloss.NewStyle().
+				Foreground(textColor).
+				Background(thoughtBgColor).
+				Bold(true).
+				Width(width - 8).
+				Padding(0, 1).
+				Render(label) + "\n" +
+				lipgloss.NewStyle().
+					Foreground(subtextColor).
+					Background(thoughtBgColor).
+					Width(width - 8).
+					Padding(0, 1).
+					Render(sub)
+		} else {
+			row = lipgloss.NewStyle().
+				Foreground(textColor).
+				Background(appBgColor).
+				Width(width - 8).
+				Padding(0, 1).
+				Render(label) + "\n" +
+				lipgloss.NewStyle().
+					Foreground(subtextColor).
+					Background(appBgColor).
+					Width(width - 8).
+					Padding(0, 1).
+					Render(sub)
+		}
+		rows = append(rows, row)
+	}
+
+	current := m.ThemeEntries[m.ThemeIndex]
+	footer := lipgloss.NewStyle().
+		Foreground(subtextColor).
+		Background(appBgColor).
+		Padding(0, 1).
+		Render(fmt.Sprintf("Selected: %s   (active: %s)",
+			current.ThemeName,
+			displayThemeNameOrNone(m.SelectedTheme)))
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.DoubleBorder()).
+		BorderForeground(secondaryColor).
+		BorderBackground(appBgColor).
+		Background(appBgColor).
+		Width(width - 2).
+		Padding(1, 2).
+		Render(lipgloss.JoinVertical(lipgloss.Left,
+			header,
+			subtitle,
+			"",
+			lipgloss.JoinVertical(lipgloss.Left, rows...),
+			"",
+			footer,
+		))
+
+	maxH := height - 2
+	if maxH < 5 {
+		maxH = 5
+	}
+	if boxHeight := lipgloss.Height(box); boxHeight > maxH {
+		box = lipgloss.NewStyle().MaxHeight(maxH).Render(box)
+	}
+
+	m.Viewport.SetContent(box)
+}
+
+// displayThemeNameOrNone formats the active theme id for the picker
+// footer. Empty id is rendered as the bundled base theme.
+func displayThemeNameOrNone(id string) string {
+	if id == "" {
+		return "bundled base"
+	}
+	return id
+}
+
 func (m *Model) renderCommitLogView() {
 	s := m.GetAgentState(m.Focused.ID())
 	s.LastTotalContent = ""

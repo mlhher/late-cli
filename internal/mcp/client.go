@@ -314,15 +314,23 @@ func (b *lockedBuffer) String() string {
 // using the SDK's CommandTransport for proper process lifecycle (SIGTERM → wait → SIGKILL).
 // Stderr is discarded to prevent MCP server output from bleeding into the TUI.
 func NewStdioTransport(ctx context.Context, command string, args []string, env []string) (mcp.Transport, error) {
-	return NewStdioTransportWithStderr(ctx, command, args, env, io.Discard)
+	return NewStdioTransportWithStderr(ctx, command, args, env, io.Discard, "")
 }
 
 // NewStdioTransportWithStderr is like NewStdioTransport but writes the subprocess's
 // stderr to the provided writer instead of discarding it. This is used by
 // ConnectFromConfig to buffer stderr for diagnostics on connection failure.
-func NewStdioTransportWithStderr(ctx context.Context, command string, args []string, env []string, stderr io.Writer) (mcp.Transport, error) {
+//
+// When `workDir` is non-empty, the subprocess launches with `cmd.Dir = workDir`,
+// so any relative paths in `args` (and any CWD-relative behavior the user
+// scripts rely on) resolve against that directory. This matters for plugin
+// servers shipped via npm-scoped guests whose script paths are plugin-relative.
+func NewStdioTransportWithStderr(ctx context.Context, command string, args []string, env []string, stderr io.Writer, workDir string) (mcp.Transport, error) {
 	cmd := exec.Command(command, args...)
 	cmd.Env = append(os.Environ(), env...)
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
 
 	serr, err := cmd.StderrPipe()
 	if err != nil {
@@ -383,7 +391,7 @@ func TransportForServer(ctx context.Context, server *MCPServer) (mcp.Transport, 
 		envSlice = append(envSlice, k+"="+v)
 	}
 
-	t, err := NewStdioTransportWithStderr(ctx, server.Command, server.Args, envSlice, io.Discard)
+	t, err := NewStdioTransportWithStderr(ctx, server.Command, server.Args, envSlice, io.Discard, server.Dir)
 	if err != nil {
 		return nil, err
 	}
@@ -411,7 +419,7 @@ func (c *Client) ConnectFromConfig(ctx context.Context, config *MCPConfig) error
 				envSlice = append(envSlice, k+"="+v)
 			}
 			var stderrBuf lockedBuffer
-			transport, err = NewStdioTransportWithStderr(ctx, server.Command, server.Args, envSlice, &stderrBuf)
+			transport, err = NewStdioTransportWithStderr(ctx, server.Command, server.Args, envSlice, &stderrBuf, server.Dir)
 			if err == nil {
 				err = c.Connect(ctx, transport, name)
 			}

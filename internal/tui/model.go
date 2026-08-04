@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"late/internal/common"
 	"late/internal/config"
 	"os"
@@ -135,6 +136,90 @@ func (m *Model) GetRenderer(width int) *glamour.TermRenderer {
 	m.cachedRenderer = r
 	m.cachedRendererWidth = width
 	return r
+}
+
+// ReloadTheme swaps in a new glamour renderer (used when a plugin theme
+// is applied at startup or at runtime) and clears the per-width cache so
+// the next GetRenderer call rebuilds it with the new style JSON.
+//
+// The first cached-renderer key (m.Viewport) is left intact so the chat
+// viewport doesn't flicker; the force-flush happens when the orchestrator
+// next emits content.
+func (m *Model) ReloadTheme(renderer *glamour.TermRenderer) {
+	if renderer == nil {
+		return
+	}
+	m.Renderer = renderer
+	m.cachedRenderer = nil
+	m.cachedRendererWidth = -1
+}
+
+// ApplyTheme installs a plugin-provided theme as the active renderer. It
+// rebuilds the glamour renderer with merged JSON bytes, swaps the active
+// renderer via ReloadTheme, clears per-agent render caches so the chat
+// history re-renders under the new theme, and updates SelectedTheme.
+//
+// Returns an error only when the theme JSON is malformed; the lookup
+// itself is done by the caller (so chat-mode /themes <name> can report a
+// distinct "not found" error to the user).
+func (m *Model) ApplyTheme(info *ThemeEntry) error {
+	if info == nil {
+		return fmt.Errorf("ApplyTheme: nil theme")
+	}
+	merged, err := ResolveRenderTheme(info.ID, info.Glamour, info.Palette)
+	if err != nil {
+		return fmt.Errorf("resolve theme %q: %w", info.ID, err)
+	}
+
+	// Build a new renderer at the current viewport width so the theme
+	// doesn't have to re-wrap on the next message. Fall back to a safe
+	// default when the viewport hasn't been sized yet.
+	width := m.Viewport.Width()
+	if width < 1 {
+		width = 80
+	}
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStylesFromJSONBytes(merged),
+		glamour.WithWordWrap(width),
+		glamour.WithPreservedNewLines(),
+	)
+	if err != nil {
+		return fmt.Errorf("build renderer for %q: %w", info.ID, err)
+	}
+
+	m.ReloadTheme(renderer)
+	m.SelectedTheme = info.ID
+
+	// Invalidate per-agent render caches so the next updateViewport call
+	// rebuilds message rendering under the new theme. Streaming chunk
+	// caches are also dropped so live responses restyle.
+	for _, s := range m.AgentStates {
+		s.RenderedHistory = nil
+		s.LastTotalContent = ""
+		s.LastStreamingContent = ""
+		s.LastChunks = nil
+		s.LastTail = ""
+		s.StreamingStyledCache = ""
+	}
+	return nil
+}
+
+// ApplyMessageHook returns the user text after running it through any
+// plugin-provided MessageHook. If no hook is set, the input is returned
+// unchanged. This is the single integration point the chat submit handler
+// uses, so adding more transformations later (e.g. local command rewrite)
+// only has to touch this method.
+func (m *Model) ApplyMessageHook(text string) string {
+	if m.MessageHook == nil || text == "" {
+		return text
+	}
+	out := m.MessageHook(text)
+	if out == "" {
+		// Hook explicitly cleared the message — treat as a no-op rather
+		// than swallowing the user's intent silently.
+		return text
+	}
+	return out
 }
 
 func (m Model) Init() tea.Cmd {

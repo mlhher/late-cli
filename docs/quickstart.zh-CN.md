@@ -12,6 +12,7 @@
 - [配置说明](#配置说明)
 - [MCP 协议集成](#mcp-协议集成)
 - [智能体技能 (Agent Skills)](#智能体技能-agent-skills)
+- [插件系统 (Plugins)](#插件系统-plugins)
 - [文件排除规则](#文件排除规则)
 - [常用命令行标志 (Flags)](#常用命令行标志-flags)
 - [会话管理 (Sessions)](#会话管理-sessions)
@@ -220,6 +221,70 @@ Late 支持 Model Context Protocol (大模型上下文协议)。请将你的 MCP
 * **项目本地:** `.late/skills/`
 
 无需其他任何配置，只需将你的技能文件放置在这些目录中，Late 就会自动识别并启用它们。Late 也支持自动化的技能引用发现。
+
+## 插件系统 (Plugins)
+
+插件把 **技能 (skills)**、**斜杠命令**、**MCP 服务器**、**钩子 (hooks)**、**主题 (themes)** 与 **内联工具 (tools)** 任意组合打包成一个可安装单元。Late 会自动从以下目录中发现插件：
+
+* **全局 (Linux):** `~/.config/late/plugins/`
+* **全局 (macOS):** `~/Library/Application Support/late/plugins/`
+* **全局 (Windows):** `%APPDATA%\late\plugins\`
+* **项目本地:** `.late/plugins/`（优先级高于同名全局插件）
+
+后台每约 2 秒轮询一次文件系统，安装、启用或禁用都不需要重启 Late。
+
+### 安装
+
+```bash
+# 从 npm 安装
+late plugin install @late/git-helper
+
+# 从 Git 仓库
+late plugin install https://github.com/you/late-plugin-git.git
+# 也支持简写：github:you/late-plugin-git
+
+# 从本地路径（开发模式）
+late plugin install ./my-plugin
+
+# 项目本地（仅本仓库可见）
+late plugin install --project ./my-plugin
+
+# 从插件市场（裸名 → 注册表查询 → 自动回退为 npm/git）
+late plugin install git-helper
+```
+
+当插件市场不可达时，会自动把裸名当作普通的 npm 包安装。如需自建市场，可通过环境变量覆盖：
+
+```bash
+export LATE_PLUGIN_REGISTRY=https://registry.example.com/v1
+```
+
+### 管理
+
+```bash
+late plugin list                # 列出已安装的插件，包含来源与启用状态
+late plugin enable  <name>      # 启用（不卸载）
+late plugin disable <name>      # 停用（不卸载）
+late plugin remove  <name>      # 卸载
+
+# 重新拉取所有 npm/git 插件（git 走原子替换，npm 固定为 @latest）
+late plugin update [<name>]
+```
+
+### 一个插件能提供什么
+
+`package.json` 中的 `"late"` 字段用来声明该插件提供的扩展面：
+
+| 扩展面      | 示例字段                              | 在 Late 中的表现           |
+| ---------- | ------------------------------------- | ------------------------- |
+| 技能       | `"skills": ["skills/welcome.md"]`     | 自动加载的指令集           |
+| MCP 服务器 | `"mcp": { "servers": {...} }`         | 可调用的工具               |
+| 斜杠命令   | `"commands": ["/weather"]`            | 聊天中的 `/weather` 命令   |
+| 主题       | `"themes": ["themes/dark.json"]`      | 通过 `/themes` 切换        |
+| 钩子       | `"hooks": { "onMessageSend": [...] }` | 工具 / LLM 调用前后的中间件 |
+| 内联工具   | `"tools": [{ "name": "...", ... }]`   | 智能体可直接调用的工具     |
+
+完整的 manifest 字段说明（包括旧版字符串形式的 `"commands"`、MCP 配置里的 `${VAR}` 环境变量展开、钩子的拒绝 / 修改语义，以及一份可复制粘贴的最小插件示例）请见 [`docs/plugin-sdk.md`](./plugin-sdk.md) 与 [`docs/plugin-example.md`](./plugin-example.md)。
 
 ## 文件排除规则
 

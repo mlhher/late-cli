@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"late/internal/assets"
 	"late/internal/common"
@@ -125,6 +126,22 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		m.Input.SetValue("> " + msg.content)
 		m.Input.CursorEnd()
+		return m, nil
+	}
+	if msg, ok := msg.(PluginChangeMsg); ok {
+		m.SetPluginCommands(msg.Commands)
+		m.SetThemes(msg.Themes)
+		m.ShowAutocomplete = false
+		// If the theme picker was open against a stale list, re-clamp the
+		// cursor so the user doesn't see an out-of-range index.
+		if m.ThemeIndex >= len(m.ThemeEntries) {
+			m.ThemeIndex = len(m.ThemeEntries) - 1
+		}
+		if m.ThemeIndex < 0 {
+			m.ThemeIndex = 0
+		}
+		// Force viewport refresh so help text and status bar update
+		m.updateViewport()
 		return m, nil
 	}
 
@@ -399,6 +416,46 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		focusedState := m.GetAgentState(m.Focused.ID())
+
+		// Theme selector view key handling
+		if m.Mode == ViewThemes {
+			switch msg.String() {
+			case "up", "k":
+				if len(m.ThemeEntries) > 0 {
+					m.ThemeIndex = max(0, m.ThemeIndex-1)
+					m.updateViewport()
+				}
+				return m, nil
+			case "down", "j":
+				if len(m.ThemeEntries) > 0 {
+					m.ThemeIndex = min(len(m.ThemeEntries)-1, m.ThemeIndex+1)
+					m.updateViewport()
+				}
+				return m, nil
+			case "enter":
+				if info := m.FindThemeByIndex(m.ThemeIndex); info != nil {
+					if err := m.ApplyTheme(info); err != nil {
+						m.ToastMessage = "theme apply failed: " + err.Error()
+						m.ToastExpireTime = time.Now().UnixMilli() + 4000
+					} else {
+						m.ToastMessage = "theme applied: " + info.ThemeName
+						m.ToastExpireTime = time.Now().UnixMilli() + 3000
+					}
+					clearCmd := tea.Tick(4*time.Second, func(t time.Time) tea.Msg {
+						return clearToastMsg{}
+					})
+					m.Mode = ViewChat
+					m.updateViewport()
+					return m, clearCmd
+				}
+				return m, nil
+			case "esc", "q":
+				m.Mode = ViewChat
+				m.updateViewport()
+				return m, nil
+			}
+			return m, nil
+		}
 
 		// Model picker view key handling
 		if m.Mode == ViewModelPicker {
@@ -912,6 +969,126 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				m.updateViewport()
 				return m, nil
 			}
+			// /themes [name] - list available plugin themes, or apply one.
+			// "/themes" alone opens the picker; "/themes <name>" applies by
+			// bare name or by namespaced ID. The "name" branch lives below.
+			if cmd == "/themes" {
+				m.Input.Reset()
+				m.Input.SetValue("> ")
+				if len(m.ThemeEntries) == 0 {
+					m.ToastMessage = "no plugin themes installed"
+					m.ToastExpireTime = time.Now().UnixMilli() + 3000
+					clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+						return clearToastMsg{}
+					})
+					m.updateViewport()
+					return m, clearCmd
+				}
+				// Default the cursor to the currently active theme (or 0).
+				m.ThemeIndex = 0
+				for i, t := range m.ThemeEntries {
+					if t.ID == m.SelectedTheme {
+						m.ThemeIndex = i
+						break
+					}
+				}
+				m.Mode = ViewThemes
+				m.updateViewport()
+				return m, nil
+			}
+			if strings.HasPrefix(cmd, "/themes ") {
+				// User supplied a name; resolve and apply inline.
+				name := strings.TrimSpace(strings.TrimPrefix(cmd, "/themes "))
+				m.Input.Reset()
+				m.Input.SetValue("> ")
+				if name == "" {
+					m.Mode = ViewThemes
+					m.updateViewport()
+					return m, nil
+				}
+				info := m.FindTheme(name)
+				if info == nil {
+					m.ToastMessage = "theme not found: " + name
+					m.ToastExpireTime = time.Now().UnixMilli() + 3000
+					clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+						return clearToastMsg{}
+					})
+					m.updateViewport()
+					return m, clearCmd
+				}
+				if err := m.ApplyTheme(info); err != nil {
+					m.ToastMessage = "theme apply failed: " + err.Error()
+					m.ToastExpireTime = time.Now().UnixMilli() + 4000
+				} else {
+					m.ToastMessage = "theme applied: " + info.ThemeName
+					m.ToastExpireTime = time.Now().UnixMilli() + 3000
+				}
+				clearCmd := tea.Tick(4*time.Second, func(t time.Time) tea.Msg {
+					return clearToastMsg{}
+				})
+				m.updateViewport()
+				return m, clearCmd
+			}
+
+			// Plugin command handler dispatch.
+			//
+			// If the input matches a registered plugin command AND a
+			// CommandHandler is wired (see cmd/late/main.go), run the
+			// handler synchronously against the trailing args. The
+			// handler may:
+			//   - return handled=true with non-empty output → toast
+			//     "executed <name>: <first line>"; run ends here.
+			//   - return handled=true with empty output  → silent toast.
+			//   - return handled=true with err != nil    → error toast.
+			//   - return handled=false                   → fall through to
+			//     the legacy "dispatch as a plain prompt" path below.
+			if isPluginCmd(cmd, m.PluginCommands) && m.CommandHandler != nil {
+				parts := strings.Fields(cmd)
+				if len(parts) > 0 {
+					name := parts[0]
+					args := parts[1:]
+					output, handled, hErr := m.CommandHandler(context.Background(), name, args)
+					if handled {
+						// Capture in input history (avoid consecutive duplicates).
+						if len(m.InputHistory) == 0 || m.InputHistory[len(m.InputHistory)-1] != cmd {
+							m.InputHistory = append(m.InputHistory, cmd)
+						}
+						m.HistoryIndex = -1
+						m.HistoryWorking = ""
+
+						// Reset input box.
+						m.Input.Reset()
+						m.Input.SetValue("> ")
+
+						// Toast UX for handler output.
+						if hErr != nil {
+							m.ToastMessage = fmt.Sprintf("error executing %s: %v", name, hErr)
+						} else if output != "" {
+							firstLine := strings.SplitN(strings.TrimSpace(output), "\n", 2)[0]
+							m.ToastMessage = fmt.Sprintf("executed %s: %s", name, firstLine)
+							if len(m.ToastMessage) > 80 {
+								m.ToastMessage = m.ToastMessage[:77] + "..."
+							}
+						} else {
+							m.ToastMessage = fmt.Sprintf("%s executed", name)
+						}
+						m.ToastExpireTime = time.Now().UnixMilli() + 3000
+						clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+							return clearToastMsg{}
+						})
+						m.updateViewport()
+						return m, clearCmd
+					}
+					// handled=false: fall through to legacy plain-prompt path below.
+				}
+			}
+
+			// Plugin-provided slash commands — check if the input is a registered plugin command
+			if isPluginCmd(cmd, m.PluginCommands) {
+				// Plugin commands are dispatched as regular user prompts to the agent.
+				// The plugin's registered skills, tools, and MCP servers handle the semantics.
+				// Fall through to normal submission below.
+			}
 
 			// Preflight context check
 			maxTokens := m.Focused.MaxTokens()
@@ -1229,6 +1406,19 @@ func (m *Model) updateAutocomplete() {
 				matches = append(matches, cmd)
 			}
 		}
+		// Plugin-provided commands (deduplicated against built-in commands)
+		builtinSet := make(map[string]bool, len(AvailableCommands))
+		for _, c := range AvailableCommands {
+			builtinSet[strings.ToLower(c.Name)] = true
+		}
+		for _, cmd := range m.PluginCommands {
+			if builtinSet[strings.ToLower(cmd)] {
+				continue // skip plugin commands that shadow built-in commands
+			}
+			if strings.HasPrefix(strings.ToLower(cmd), prefix) {
+				matches = append(matches, CommandDef{Name: cmd})
+			}
+		}
 		if len(matches) > 0 {
 			m.ShowAutocomplete = true
 			m.AutocompleteItems = matches
@@ -1475,4 +1665,43 @@ func isBinary(data []byte) bool {
 	}
 
 	return false
+}
+
+// isPluginCmd checks whether the given input is a registered plugin command.
+// The command name is matched on the first whitespace-separated field, so
+// positional arguments are supported ("/lint file.go" matches "/lint").
+func isPluginCmd(input string, pluginCmds []string) bool {
+	input = strings.TrimSpace(input)
+	fields := strings.Fields(input)
+	if len(fields) == 0 {
+		return false
+	}
+	cmd := fields[0]
+	for _, pc := range pluginCmds {
+		if cmd == pc {
+			return true
+		}
+	}
+	return false
+}
+
+// SetPluginCommands replaces the model's PluginCommands slice with the provided list.
+// This is called from main.go after plugin discovery to register dynamic slash commands.
+func (m *Model) SetPluginCommands(commands []string) {
+	m.PluginCommands = make([]string, len(commands))
+	copy(m.PluginCommands, commands)
+}
+
+// ListedPluginCommands returns the list of plugin-provided slash commands
+// currently registered. Renamed from `PluginCommands()` to avoid shadowing
+// the same-named field on the Model struct (Go would resolve the bare
+// identifier inside the method body to the method itself, breaking
+// `len(m.PluginCommands)` callers in update.go/view.go).
+func (m *Model) ListedPluginCommands() []string {
+	if len(m.PluginCommands) == 0 {
+		return nil
+	}
+	result := make([]string, len(m.PluginCommands))
+	copy(result, m.PluginCommands)
+	return result
 }
