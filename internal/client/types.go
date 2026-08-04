@@ -95,16 +95,28 @@ type ContentPartType string
 const (
 	ContentPartText     ContentPartType = "text"
 	ContentPartImageURL ContentPartType = "image_url"
+	ContentPartVideoURL ContentPartType = "video_url"
 )
 
 type ContentPart struct {
 	Type         ContentPartType `json:"type"`
 	Text         string          `json:"text,omitempty"`
 	ImageURL     *ImageURL       `json:"image_url,omitempty"`
+	VideoURL     *VideoURL       `json:"video_url,omitempty"`
 	IsAttachment bool            `json:"-"` // Purely for UI filtering
 }
 
+// ImageURL mirrors the OpenAI-compatible "image_url" content part payload.
 type ImageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// VideoURL mirrors the OpenAI-compatible "video_url" content part payload,
+// enabling video input for multimodal models (e.g. MiniMax-M3) alongside the
+// existing image_url handling. The schema matches image_url: a "url" (remote
+// URL, data URL, or provider file reference) and an optional "detail" level.
+type VideoURL struct {
 	URL    string `json:"url"`
 	Detail string `json:"detail,omitempty"`
 }

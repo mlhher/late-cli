@@ -362,16 +362,21 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 				return m, fpCmd
 			}
 
-			// Content-based validation for image support
+			// Content-based validation for image/video support
 			data, err := os.ReadFile(file)
 			if err != nil {
 				m.Err = fmt.Errorf("failed to read file: %w", err)
 			} else {
 				mimeType := http.DetectContentType(data)
 				isImage := strings.HasPrefix(mimeType, "image/")
-				if isImage && !m.Focused.SupportsVision() {
+				isVideo := strings.HasPrefix(mimeType, "video/")
+				if (isImage || isVideo) && !m.Focused.SupportsVision() {
 					focusedState := m.GetAgentState(m.Focused.ID())
-					focusedState.StatusText = "Images not supported by current model"
+					statusText := "Images not supported by current model"
+					if isVideo {
+						statusText = "Video not supported by current model"
+					}
+					focusedState.StatusText = statusText
 				} else {
 					m.AttachedFiles = append(m.AttachedFiles, file)
 					m.ShowFilePicker = false
@@ -935,13 +940,13 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 						continue
 					}
 					mimeType := http.DetectContentType(data)
-					if !strings.HasPrefix(mimeType, "image/") {
+					if !strings.HasPrefix(mimeType, "image/") && !strings.HasPrefix(mimeType, "video/") {
 						filtered = append(filtered, f)
 					}
 				}
 				if len(filtered) != len(m.AttachedFiles) {
 					m.AttachedFiles = filtered
-					focusedState.StatusText = "Images dropped: model no longer supports vision"
+					focusedState.StatusText = "Media dropped: model no longer supports vision"
 					return m, nil
 				}
 			}

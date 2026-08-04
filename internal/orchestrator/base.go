@@ -124,8 +124,9 @@ func (o *BaseOrchestrator) Submit(text string, images []string) error {
 			}
 
 			mimeType := http.DetectContentType(data)
-			// Only attach to LLM content if it's an image AND the model supports vision
-			if strings.HasPrefix(mimeType, "image/") && supportsVision {
+			switch {
+			// Attach images as image_url content parts when the model supports vision.
+			case strings.HasPrefix(mimeType, "image/") && supportsVision:
 				encoded := base64.StdEncoding.EncodeToString(data)
 				parts = append(parts, client.ContentPart{
 					Type: client.ContentPartImageURL,
@@ -133,13 +134,26 @@ func (o *BaseOrchestrator) Submit(text string, images []string) error {
 						URL: fmt.Sprintf("data:%s;base64,%s", mimeType, encoded),
 					},
 				})
-			} else {
+			// Attach videos as video_url content parts, mirroring the image path,
+			// so multimodal models that accept video input (e.g. MiniMax-M3) can
+			// receive them through the same OpenAI-compatible message schema.
+			case strings.HasPrefix(mimeType, "video/") && supportsVision:
+				encoded := base64.StdEncoding.EncodeToString(data)
+				parts = append(parts, client.ContentPart{
+					Type: client.ContentPartVideoURL,
+					VideoURL: &client.VideoURL{
+						URL: fmt.Sprintf("data:%s;base64,%s", mimeType, encoded),
+					},
+				})
+			default:
 				// Treat as text if it looks like text or has a common extension.
-				// If it's an image but the model doesn't support vision, just include a note.
+				// If it's an image/video but the model doesn't support vision, just include a note.
 				content := ""
 				isAttachment := true
 				if strings.HasPrefix(mimeType, "image/") {
 					content = fmt.Sprintf("\nAttached Image: %s (Vision not supported by current model)\n", filepath.Base(imgPath))
+				} else if strings.HasPrefix(mimeType, "video/") {
+					content = fmt.Sprintf("\nAttached Video: %s (Vision not supported by current model)\n", filepath.Base(imgPath))
 				} else {
 					content = fmt.Sprintf("\nFilename: %s\nContent: ```\n%s\n```\n", filepath.Base(imgPath), string(data))
 				}
