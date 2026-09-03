@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"late/internal/assets"
@@ -189,14 +190,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Warning: Failed to load MCP config: %v\n", err)
 	}
 
-	// Try configuration-driven connections first
-	if config != nil && len(config.McpServers) > 0 {
-		fmt.Println("Connecting to MCP servers from configuration...")
-		if err := mcpClient.ConnectFromConfig(context.Background(), config); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Failed to connect to some MCP servers: %v\n", err)
-		}
-	}
-
 	// Load App configuration
 	appConfig, err := appconfig.LoadConfig()
 	if err != nil {
@@ -225,7 +218,6 @@ func main() {
 		}
 	}
 	c := client.NewClient(resolvedClientConfig)
-	c.DiscoverBackend(context.Background())
 
 	// Initialize Subagent Client
 	resolvedSubagentConfig := appconfig.ResolveSubagentSettings(appConfig, resolvedOpenAIConfig)
@@ -240,7 +232,6 @@ func main() {
 			Model:        resolvedSubagentConfig.Model,
 			EnableImages: *enableImagesReq,
 		})
-		subagentClient.DiscoverBackend(context.Background())
 	}
 
 	// Flag overrides
@@ -259,18 +250,6 @@ func main() {
 
 	sess := session.New(c, historyPath, history, systemPrompt, *useToolsReq)
 	executor.RegisterTools(sess.Registry, mainTools)
-
-	// Register MCP tools into the session registry.
-	// MCP tool names are namespaced as "{server}__{tool}" (e.g. "graph-rag__list_files").
-	// For backwards compatibility with configs that disable tools by bare name
-	// (e.g. "list_files": false), we check the namespaced name first, then fall
-	// back to the bare name so existing configs keep working without modification.
-	for _, t := range mcpClient.GetTools() {
-		if !mcpToolEnabled(t, enabledTools) {
-			continue
-		}
-		sess.Registry.Register(t)
-	}
 
 	// Initialize common renderer
 	renderer, _ := glamour.NewTermRenderer(
@@ -382,6 +361,11 @@ func main() {
 			Runner: runner,
 		})
 	}
+
+	// Bootstrap: connect MCP servers and discover LLM backends in the background so
+	// the TUI is usable immediately. Each MCP server connects independently and its
+	// tools are registered as they connect; status/failure is surfaced to the UI.
+	go runBootstrap(p, mcpClient, config, c, subagentClient, sess, enabledTools)
 
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Unspecified error: %v", err)
@@ -716,4 +700,72 @@ func ForwardOrchestratorEvents(p *tea.Program, o common.Orchestrator) {
 			}
 		}
 	}()
+}
+
+// runBootstrap runs long-running startup work (MCP connection and backend
+// discovery in the background so the TUI becomes usable immediately. It connects
+// each configured MCP server concurrently (a failing server does not abort the
+// others), registers each server's tools as they connect, and reports status /
+// failure to the UI via McpStatusMsg. It returns once every server has finished;
+// the UI keeps working while it runs.
+func runBootstrap(p *tea.Program, mcpClient *mcp.Client, config *mcp.MCPConfig, c *client.Client, subagentClient *client.Client, sess *session.Session, enabledTools map[string]bool) {
+	var (
+		mu        sync.Mutex
+		connected int
+		failed    []string
+	)
+
+	if config != nil && len(config.McpServers) > 0 {
+		fmt.Println("Connecting to MCP servers from configuration...")
+		p.Send(tui.McpStatusMsg{Text: "Loading MCP servers..."})
+
+		mcpClient.ConnectFromConfigConcurrent(context.Background(), config, func(r mcp.ServerConnectResult) {
+			if r.Err != nil {
+				p.Send(tui.McpStatusMsg{Text: fmt.Sprintf("MCP %s failed: %v", r.Name, r.Err), Warning: true})
+				mu.Lock()
+				failed = append(failed, r.Name)
+				mu.Unlock()
+				return
+			}
+			for _, a := range r.Adapters {
+				if !mcpToolEnabled(a, enabledTools) {
+					continue
+				}
+				sess.Registry.Register(a)
+			}
+			mu.Lock()
+			connected++
+			mu.Unlock()
+		})
+	}
+
+	// Backend discovery is thread-safe and is also auto-retried per request if it is
+	// still unknown, so running it here (off the critical path) is safe.
+	c.DiscoverBackend(context.Background())
+	if subagentClient != c {
+		subagentClient.DiscoverBackend(context.Background())
+	}
+
+	// Final summary status (an empty Text clears the "Loading..." status when there
+	// were no servers to connect).
+	mu.Lock()
+	total := connected + len(failed)
+	var (
+		finalText string
+		warn      bool
+	)
+	if total > 0 {
+		if len(failed) == 0 {
+			unit := "server"
+			if total != 1 {
+				unit = "servers"
+			}
+			finalText = fmt.Sprintf("MCP ready: %d/%d %s", connected, total, unit)
+		} else {
+			finalText = fmt.Sprintf("MCP: %d/%d connected — failed: %s", connected, total, strings.Join(failed, ", "))
+			warn = true
+		}
+	}
+	mu.Unlock()
+	p.Send(tui.McpStatusMsg{Text: finalText, Warning: warn})
 }

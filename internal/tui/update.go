@@ -1073,6 +1073,18 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 
 		}
 
+	case McpStatusMsg:
+		s := m.GetAgentState(m.Root.ID())
+		if msg.Text == "" {
+			s.StatusText = ""
+			return m, nil
+		}
+		s.StatusText = msg.Text
+		m.ToastMessage = msg.Text
+		m.ToastWarning = msg.Warning
+		m.ToastExpireTime = time.Now().UnixMilli() + 3000
+		return m, func() tea.Msg { return clearToastMsg{} }
+
 	case OrchestratorEventMsg:
 		s := m.GetAgentState(msg.Event.OrchestratorID())
 		now := time.Now().UnixMilli()

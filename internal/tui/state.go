@@ -243,6 +243,15 @@ type OrchestratorEventMsg struct {
 	Event common.Event
 }
 
+// McpStatusMsg carries background bootstrap status (MCP server connect and LLM
+// backend discovery) into the TUI update loop. An empty Text clears the status;
+// a non-empty Text sets the root agent's status text and shows a toast.
+// Warning selects a warning-style toast (⚠); otherwise a success-style toast (✓).
+type McpStatusMsg struct {
+	Text    string
+	Warning bool
+}
+
 // FindOrchestrator recursively searches for an orchestrator by ID.
 func (m *Model) FindOrchestrator(id string) common.Orchestrator {
 	var search func(curr common.Orchestrator) common.Orchestrator

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sort"
+	"sync"
 )
 
 // Tool represents a primitive tool that the agent can execute.
@@ -18,6 +19,7 @@ type Tool interface {
 
 // ToolRegistry stores available tools.
 type ToolRegistry struct {
+	mu    sync.RWMutex
 	tools map[string]Tool
 }
 
@@ -28,15 +30,21 @@ func NewToolRegistry() *ToolRegistry {
 }
 
 func (r *ToolRegistry) Register(t Tool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.tools[t.Name()] = t
 }
 
 func (r *ToolRegistry) Get(name string) Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.tools[name]
 }
 
 func (r *ToolRegistry) All() []Tool {
-	var all []Tool
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	all := make([]Tool, 0, len(r.tools))
 	for _, t := range r.tools {
 		all = append(all, t)
 	}
