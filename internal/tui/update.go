@@ -201,7 +201,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 		}
 	}
 
-	if m.Mode == ViewModelPicker || m.Mode == ViewRewind || m.Mode == ViewCommitLog || m.Mode == ViewHelp {
+	if m.Mode == ViewModelPicker || m.Mode == ViewReasoningPicker || m.Mode == ViewRewind || m.Mode == ViewCommitLog || m.Mode == ViewHelp {
 		forwardToInput = false
 	}
 
@@ -443,17 +443,25 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				// Save choices to AppConfig
 				if m.AppConfig != nil {
 					stagedConfig := *m.AppConfig
-					stagedConfig.AgentModels = make(map[string]string, len(m.AppConfig.AgentModels))
-					for agent, modelRef := range m.AppConfig.AgentModels {
-						stagedConfig.AgentModels[agent] = modelRef
+					stagedConfig.AgentModels = make(map[string]config.AgentModelSetting, len(m.AppConfig.AgentModels))
+					for agent, modelSetting := range m.AppConfig.AgentModels {
+						stagedConfig.AgentModels[agent] = modelSetting
 					}
 					for _, agent := range m.ModelPickerAgents {
 						selIdx := m.ModelPickerAgentSelections[agent]
 						modelRef := m.ModelPickerModels[selIdx]
 						if modelRef == "default" {
-							delete(stagedConfig.AgentModels, agent)
+							setting := stagedConfig.AgentModels[agent]
+							setting.Model = ""
+							if setting.Effort == "" {
+								delete(stagedConfig.AgentModels, agent)
+							} else {
+								stagedConfig.AgentModels[agent] = setting
+							}
 						} else {
-							stagedConfig.AgentModels[agent] = modelRef
+							setting := stagedConfig.AgentModels[agent]
+							setting.Model = modelRef
+							stagedConfig.AgentModels[agent] = setting
 						}
 					}
 					// Write config to disk
@@ -484,7 +492,13 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 					var subagentInfos []string
 					for _, sub := range assets.GetSubagents() {
 						if setting, ok := m.AppConfig.GetModelForAgent(sub.Name); ok {
-							subagentInfos = append(subagentInfos, fmt.Sprintf("%s:%s", sub.Name, setting.Model))
+							info := fmt.Sprintf("%s:%s", sub.Name, setting.Model)
+							if m.AppConfig.AgentModels != nil {
+								if am, ok := m.AppConfig.AgentModels[sub.Name]; ok && am.Effort != "" {
+									info += fmt.Sprintf(" (effort: %s)", am.Effort)
+								}
+							}
+							subagentInfos = append(subagentInfos, info)
 						}
 					}
 					if len(subagentInfos) > 0 {
@@ -507,6 +521,142 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				m.updateLayout()
 				m.updateViewport()
 				return m, tea.Batch(clearCmd, applyModelCmd)
+
+			case "esc":
+				m.Mode = ViewChat
+				focusedState.RenderedHistory = nil
+				m.updateLayout()
+				m.updateViewport()
+				return m, nil
+			}
+			return m, nil
+		}
+
+		// Reasoning picker view key handling
+		if m.Mode == ViewReasoningPicker {
+			switch msg.String() {
+			case "up":
+				m.ReasoningPickerAgentIndex = max(0, m.ReasoningPickerAgentIndex-1)
+				m.updateViewport()
+				return m, nil
+			case "down":
+				m.ReasoningPickerAgentIndex = min(len(m.ReasoningPickerAgents)-1, m.ReasoningPickerAgentIndex+1)
+				m.updateViewport()
+				return m, nil
+			case "left":
+				if len(m.ReasoningPickerAgents) > 0 && len(m.ReasoningPickerEfforts) > 0 {
+					activeAgent := m.ReasoningPickerAgents[m.ReasoningPickerAgentIndex]
+					currentSel := m.ReasoningPickerAgentSelections[activeAgent]
+					newSel := max(0, currentSel-1)
+					m.ReasoningPickerAgentSelections[activeAgent] = newSel
+					m.updateViewport()
+				}
+				return m, nil
+			case "right":
+				if len(m.ReasoningPickerAgents) > 0 && len(m.ReasoningPickerEfforts) > 0 {
+					activeAgent := m.ReasoningPickerAgents[m.ReasoningPickerAgentIndex]
+					currentSel := m.ReasoningPickerAgentSelections[activeAgent]
+					newSel := min(len(m.ReasoningPickerEfforts)-1, currentSel+1)
+					m.ReasoningPickerAgentSelections[activeAgent] = newSel
+					m.updateViewport()
+				}
+				return m, nil
+			case "enter":
+				if m.hasActiveAgent() {
+					m.ToastMessage = "Reasoning effort can be changed when all agents are idle"
+					m.ToastWarning = true
+					m.ToastExpireTime = time.Now().UnixMilli() + 3000
+					clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+						return clearToastMsg{}
+					})
+					return m, clearCmd
+				}
+
+				var applyModelCmd tea.Cmd
+
+				if m.AppConfig == nil {
+					m.AppConfig = &config.Config{}
+				}
+				stagedConfig := *m.AppConfig
+				stagedConfig.AgentModels = make(map[string]config.AgentModelSetting, len(m.AppConfig.AgentModels))
+				for agent, modelSetting := range m.AppConfig.AgentModels {
+					stagedConfig.AgentModels[agent] = modelSetting
+				}
+
+				for _, agent := range m.ReasoningPickerAgents {
+					selIdx := m.ReasoningPickerAgentSelections[agent]
+					effort := m.ReasoningPickerEfforts[selIdx]
+					if effort == "default" {
+						effort = ""
+					}
+					setting := stagedConfig.AgentModels[agent]
+					setting.Effort = effort
+					if setting.Model == "" && setting.Effort == "" {
+						delete(stagedConfig.AgentModels, agent)
+					} else {
+						stagedConfig.AgentModels[agent] = setting
+					}
+				}
+
+				// Write config to disk
+				if err := config.SaveConfig(&stagedConfig); err != nil {
+					m.Err = fmt.Errorf("failed to save config: %w", err)
+					return m, nil
+				}
+				m.AppConfig.AgentModels = stagedConfig.AgentModels
+
+				// Apply to orchestrator
+				if setting, ok := m.AppConfig.GetModelForAgent("orchestrator"); ok {
+					m.ModelName = setting.Model
+					if m.ApplyOrchestratorModel != nil {
+						applyModelCmd = m.ApplyOrchestratorModel(setting)
+					}
+				} else {
+					resolvedOpenAIConfig := config.ResolveOpenAISettings(m.AppConfig)
+					m.ModelName = resolvedOpenAIConfig.Model
+					if m.ApplyOrchestratorModel != nil {
+						applyModelCmd = m.ApplyOrchestratorModel(config.ModelSetting{
+							URL:   resolvedOpenAIConfig.BaseURL,
+							Key:   resolvedOpenAIConfig.APIKey,
+							Model: resolvedOpenAIConfig.Model,
+						})
+					}
+				}
+
+				var subagentInfos []string
+				for _, sub := range assets.GetSubagents() {
+					if setting, ok := m.AppConfig.GetModelForAgent(sub.Name); ok {
+						info := fmt.Sprintf("%s:%s", sub.Name, setting.Model)
+						if m.AppConfig.AgentModels != nil {
+							if am, ok := m.AppConfig.AgentModels[sub.Name]; ok && am.Effort != "" {
+								info += fmt.Sprintf(" (effort: %s)", am.Effort)
+							}
+						}
+						subagentInfos = append(subagentInfos, info)
+					}
+				}
+				if len(subagentInfos) > 0 {
+					m.SubagentInfo = strings.Join(subagentInfos, ", ")
+				} else {
+					resolvedSubagentConfig := config.ResolveSubagentSettings(m.AppConfig, config.ResolveOpenAISettings(m.AppConfig))
+					m.SubagentInfo = resolvedSubagentConfig.Model
+				}
+
+				m.ToastMessage = "reasoning effort saved"
+				m.ToastWarning = false
+				m.ToastExpireTime = time.Now().UnixMilli() + 3000
+				clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+					return clearToastMsg{}
+				})
+
+				m.Mode = ViewChat
+				focusedState.RenderedHistory = nil
+				m.updateLayout()
+				m.updateViewport()
+				if applyModelCmd != nil {
+					return m, tea.Batch(applyModelCmd, clearCmd)
+				}
+				return m, clearCmd
 
 			case "esc":
 				m.Mode = ViewChat
@@ -824,7 +974,9 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				for _, agentName := range m.ModelPickerAgents {
 					selectedModelRef := ""
 					if m.AppConfig != nil && m.AppConfig.AgentModels != nil {
-						selectedModelRef = m.AppConfig.AgentModels[agentName]
+						if agentSetting, ok := m.AppConfig.AgentModels[agentName]; ok {
+							selectedModelRef = agentSetting.Model
+						}
 					}
 					foundIdx := 0 // default to 0 ("default")
 					for idx, modelRef := range m.ModelPickerModels {
@@ -834,6 +986,55 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 						}
 					}
 					m.ModelPickerAgentSelections[agentName] = foundIdx
+				}
+
+				focusedState.RenderedHistory = nil
+				m.updateLayout()
+				return m, nil
+			}
+			if cmd == "/reasoning" {
+				m.Input.Reset()
+				m.Input.SetValue("> ")
+				if m.hasActiveAgent() {
+					m.ToastMessage = "Reasoning effort can be changed when all agents are idle"
+					m.ToastWarning = true
+					m.ToastExpireTime = time.Now().UnixMilli() + 3000
+					clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+						return clearToastMsg{}
+					})
+					m.updateViewport()
+					return m, clearCmd
+				}
+				m.Mode = ViewReasoningPicker
+
+				// Populate agent types
+				m.ReasoningPickerAgents = []string{"orchestrator"}
+				for _, sub := range assets.GetSubagents() {
+					m.ReasoningPickerAgents = append(m.ReasoningPickerAgents, sub.Name)
+				}
+
+				// Populate effort levels
+				m.ReasoningPickerEfforts = []string{"default", "none", "low", "med", "high", "xhigh"}
+
+				m.ReasoningPickerAgentIndex = 0
+				m.ReasoningPickerAgentSelections = make(map[string]int)
+
+				// Load current selections
+				for _, agentName := range m.ReasoningPickerAgents {
+					selectedEffort := ""
+					if m.AppConfig != nil && m.AppConfig.AgentModels != nil {
+						if agentSetting, ok := m.AppConfig.AgentModels[agentName]; ok {
+							selectedEffort = agentSetting.Effort
+						}
+					}
+					foundIdx := 0 // default to 0 ("default")
+					for idx, effort := range m.ReasoningPickerEfforts {
+						if effort == selectedEffort {
+							foundIdx = idx
+							break
+						}
+					}
+					m.ReasoningPickerAgentSelections[agentName] = foundIdx
 				}
 
 				focusedState.RenderedHistory = nil
@@ -1192,7 +1393,7 @@ func (m *Model) updateLayout() {
 
 	m.Viewport.SetWidth(availableWidth)
 	vHeight := m.Height - (m.Input.Height() + 1) - StatusBarHeight - AppPadding
-	if m.Mode == ViewModelPicker {
+	if m.Mode == ViewModelPicker || m.Mode == ViewReasoningPicker {
 		vHeight = m.Height - 3 - StatusBarHeight - AppPadding
 	}
 

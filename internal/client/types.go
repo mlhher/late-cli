@@ -137,15 +137,16 @@ type StreamOptions struct {
 }
 
 type ChatCompletionRequest struct {
-	Model         string           `json:"model,omitempty"`
-	Messages      []ChatMessage    `json:"messages"`
-	Temperature   float64          `json:"temperature,omitempty"`
-	Stream        bool             `json:"stream,omitempty"`
-	StreamOptions *StreamOptions   `json:"stream_options,omitempty"`
-	Stop          []string         `json:"stop,omitempty"`
-	Tools         []ToolDefinition `json:"tools,omitempty"`
-	ToolChoice    any              `json:"tool_choice,omitempty"`
-	ExtraBody     map[string]any   `json:"extra_body,omitempty"`
+	Model           string           `json:"model,omitempty"`
+	ReasoningEffort string           `json:"reasoning_effort,omitempty"`
+	Messages        []ChatMessage    `json:"messages"`
+	Temperature     float64          `json:"temperature,omitempty"`
+	Stream          bool             `json:"stream,omitempty"`
+	StreamOptions   *StreamOptions   `json:"stream_options,omitempty"`
+	Stop            []string         `json:"stop,omitempty"`
+	Tools           []ToolDefinition `json:"tools,omitempty"`
+	ToolChoice      any              `json:"tool_choice,omitempty"`
+	ExtraBody       map[string]any   `json:"extra_body,omitempty"`
 }
 
 type ChatCompletionResponse struct {

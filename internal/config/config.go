@@ -26,10 +26,38 @@ type SubagentSettings struct {
 }
 
 type ModelSetting struct {
-	ID    string `json:"id,omitempty"`
-	URL   string `json:"url"`
-	Key   string `json:"key"`
-	Model string `json:"model"`
+	ID               string            `json:"id,omitempty"`
+	URL              string            `json:"url"`
+	Key              string            `json:"key"`
+	Model            string            `json:"model"`
+	ReasoningMapping map[string]string `json:"reasoning_mapping,omitempty"`
+}
+
+type AgentModelSetting struct {
+	Model  string `json:"model"`
+	Effort string `json:"effort,omitempty"`
+}
+
+func (a *AgentModelSetting) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	if data[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		a.Model = s
+		a.Effort = ""
+		return nil
+	}
+	type Alias AgentModelSetting
+	var alias Alias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*a = AgentModelSetting(alias)
+	return nil
 }
 
 // Reference returns the stable value stored in agent_models. Model is retained
@@ -63,8 +91,8 @@ type Config struct {
 
 	SkillsDir string `json:"skills_dir,omitempty"`
 
-	Models      []ModelSetting    `json:"models,omitempty"`
-	AgentModels map[string]string `json:"agent_models,omitempty"`
+	Models      []ModelSetting               `json:"models,omitempty"`
+	AgentModels map[string]AgentModelSetting `json:"agent_models,omitempty"`
 }
 
 func defaultConfig() Config {
@@ -267,8 +295,12 @@ func (cfg *Config) GetModelForAgent(agentType string) (ModelSetting, bool) {
 	if cfg == nil || cfg.AgentModels == nil || cfg.Models == nil {
 		return ModelSetting{}, false
 	}
-	modelRef, exists := cfg.AgentModels[agentType]
+	agentSetting, exists := cfg.AgentModels[agentType]
 	if !exists {
+		return ModelSetting{}, false
+	}
+	modelRef := agentSetting.Model
+	if modelRef == "" {
 		return ModelSetting{}, false
 	}
 	// Prefer stable IDs so providers exposing the same model name remain
@@ -285,6 +317,38 @@ func (cfg *Config) GetModelForAgent(agentType string) (ModelSetting, bool) {
 		}
 	}
 	return ModelSetting{}, false
+}
+
+// ResolveAgentReasoningEffort returns the backend reasoning effort string mapped for the agent's configured effort level.
+// If the agent definition lacks an effort key, or if the model config lacks reasoning_mapping or the effort mapping,
+// it returns an empty string.
+func (cfg *Config) ResolveAgentReasoningEffort(agentType string) string {
+	if cfg == nil || cfg.AgentModels == nil || cfg.Models == nil {
+		return ""
+	}
+	agentSetting, exists := cfg.AgentModels[agentType]
+	if !exists || agentSetting.Effort == "" {
+		return ""
+	}
+	modelDef, ok := cfg.GetModelForAgent(agentType)
+	if !ok || modelDef.ReasoningMapping == nil {
+		return ""
+	}
+	return modelDef.ReasoningMapping[agentSetting.Effort]
+}
+
+// ResolveAgent returns the ModelSetting and resolved reasoning effort string for a given agent type.
+// If the agent is not configured or resolved, it returns (ModelSetting{}, "", false).
+func (cfg *Config) ResolveAgent(agentType string) (setting ModelSetting, effort string, ok bool) {
+	if cfg == nil {
+		return ModelSetting{}, "", false
+	}
+	setting, ok = cfg.GetModelForAgent(agentType)
+	if !ok {
+		return ModelSetting{}, "", false
+	}
+	effort = cfg.ResolveAgentReasoningEffort(agentType)
+	return setting, effort, true
 }
 
 // SaveConfig atomically writes the configuration back to config.json.

@@ -15,11 +15,12 @@ import (
 )
 
 type Config struct {
-	BaseURL      string
-	APIKey       string
-	Model        string
-	Timeout      time.Duration
-	EnableImages bool
+	BaseURL         string
+	APIKey          string
+	Model           string
+	ReasoningEffort string
+	Timeout         time.Duration
+	EnableImages    bool
 }
 
 type BackendType string
@@ -76,6 +77,9 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 	if req.Model == "" && c.cfg.Model != "" {
 		req.Model = c.cfg.Model
 	}
+	if req.ReasoningEffort == "" && c.cfg.ReasoningEffort != "" {
+		req.ReasoningEffort = c.cfg.ReasoningEffort
+	}
 
 	body, err := c.marshalFlattened(req)
 	if err != nil {
@@ -127,6 +131,9 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 
 		if req.Model == "" && c.cfg.Model != "" {
 			req.Model = c.cfg.Model
+		}
+		if req.ReasoningEffort == "" && c.cfg.ReasoningEffort != "" {
+			req.ReasoningEffort = c.cfg.ReasoningEffort
 		}
 
 		body, err := c.marshalFlattened(req)
@@ -536,6 +543,18 @@ func (c *Client) SupportsVision() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.cfg.EnableImages || c.supportsVision
+}
+
+func (c *Client) ReasoningEffort() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.cfg.ReasoningEffort
+}
+
+func (c *Client) SetReasoningEffort(effort string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cfg.ReasoningEffort = effort
 }
 
 func (c *Client) marshalFlattened(req ChatCompletionRequest) ([]byte, error) {

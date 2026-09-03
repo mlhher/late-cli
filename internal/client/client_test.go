@@ -2,7 +2,9 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -337,5 +339,119 @@ func TestChatCompletionStream_ContextCancellation(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("error channel not closed after context cancellation")
+	}
+}
+
+func TestChatCompletion_ReasoningEffortPayload(t *testing.T) {
+	tests := []struct {
+		name               string
+		clientEffort       string
+		requestEffort      string
+		wantReasoningInReq bool
+		wantEffortVal      string
+	}{
+		{
+			name:               "configured on client",
+			clientEffort:       "medium",
+			requestEffort:      "",
+			wantReasoningInReq: true,
+			wantEffortVal:      "medium",
+		},
+		{
+			name:               "overridden on request",
+			clientEffort:       "medium",
+			requestEffort:      "high",
+			wantReasoningInReq: true,
+			wantEffortVal:      "high",
+		},
+		{
+			name:               "no reasoning effort",
+			clientEffort:       "",
+			requestEffort:      "",
+			wantReasoningInReq: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var recordedBody map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(body, &recordedBody)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"id":"c1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+			}))
+			defer server.Close()
+
+			c := NewClient(Config{
+				BaseURL:         server.URL,
+				Model:           "test-model",
+				ReasoningEffort: tt.clientEffort,
+			})
+
+			req := ChatCompletionRequest{
+				Messages:        []ChatMessage{{Role: "user", Content: TextContent("hi")}},
+				ReasoningEffort: tt.requestEffort,
+			}
+
+			_, err := c.ChatCompletion(context.Background(), req)
+			if err != nil {
+				t.Fatalf("ChatCompletion failed: %v", err)
+			}
+
+			effortVal, exists := recordedBody["reasoning_effort"]
+			if tt.wantReasoningInReq {
+				if !exists {
+					t.Fatalf("expected 'reasoning_effort' in request body, but it was missing. Body: %v", recordedBody)
+				}
+				if effortVal != tt.wantEffortVal {
+					t.Errorf("reasoning_effort = %v, want %v", effortVal, tt.wantEffortVal)
+				}
+			} else {
+				if exists {
+					t.Fatalf("expected 'reasoning_effort' to be omitted, but found: %v", effortVal)
+				}
+			}
+		})
+	}
+}
+
+func TestChatCompletionStream_ReasoningEffortPayload(t *testing.T) {
+	var recordedBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &recordedBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseChunks(sampleChunkHello, "[DONE]")))
+	}))
+	defer server.Close()
+
+	c := NewClient(Config{
+		BaseURL:         server.URL,
+		Model:           "test-model",
+		ReasoningEffort: "high",
+	})
+
+	req := ChatCompletionRequest{
+		Messages: []ChatMessage{{Role: "user", Content: TextContent("hi")}},
+	}
+
+	ctx := context.Background()
+	chunks, err := collectStream(t, ctx, c, req)
+	if err != nil {
+		t.Fatalf("collectStream failed: %v", err)
+	}
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks")
+	}
+
+	effortVal, exists := recordedBody["reasoning_effort"]
+	if !exists {
+		t.Fatalf("expected 'reasoning_effort' in stream request body, but it was missing: %v", recordedBody)
+	}
+	if effortVal != "high" {
+		t.Errorf("reasoning_effort = %v, want high", effortVal)
 	}
 }

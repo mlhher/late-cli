@@ -38,6 +38,7 @@ const (
 	ViewCommitLog
 	ViewRewind
 	ViewModelPicker
+	ViewReasoningPicker
 )
 
 // Fixed layout heights (crush-style)
@@ -61,6 +62,7 @@ var AvailableCommands = []CommandDef{
 	{Name: "/log", Description: "View git commit log"},
 	{Name: "/model", Description: "Select AI model for agents"},
 	{Name: "/quit", Description: "Exit the application"},
+	{Name: "/reasoning", Description: "Set reasoning effort for agents"},
 	{Name: "/rewind", Description: "Rewind conversation history"},
 }
 
@@ -169,6 +171,12 @@ type Model struct {
 	ModelPickerModels          []string
 	ModelPickerAgentIndex      int
 	ModelPickerAgentSelections map[string]int
+
+	// Reasoning picker fields
+	ReasoningPickerAgents          []string
+	ReasoningPickerEfforts         []string
+	ReasoningPickerAgentIndex      int
+	ReasoningPickerAgentSelections map[string]int
 
 	// Esc confirmation
 	EscConfirmPending bool   // Show "are you sure?" when Esc pressed at main view

@@ -71,6 +71,22 @@ func (m Model) View() tea.View {
 			Padding(1, 2).
 			Render(pickerHints)
 	}
+	if m.Mode == ViewReasoningPicker {
+		hUpDn := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("↑/↓"), statusTextStyle.Render(" Select Agent "))
+		hLfRt := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("←/→"), statusTextStyle.Render(" Choose Effort "))
+		hEnter := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("Enter"), statusTextStyle.Render(" Save "))
+		hEsc := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("Esc"), statusTextStyle.Render(" Cancel "))
+		pickerHints := lipgloss.JoinHorizontal(lipgloss.Left, hUpDn, statusBg("  "), hLfRt, statusBg("  "), hEnter, statusBg("  "), hEsc)
+
+		iStr = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder(), true, false, false, false).
+			BorderForeground(lipgloss.Color("#232329")).
+			BorderBackground(appBgColor).
+			Background(appBgColor).
+			Width(m.Width).
+			Padding(1, 2).
+			Render(pickerHints)
+	}
 
 	aStr := m.autocompleteView()
 	sStr := m.statusBarView()
@@ -359,6 +375,40 @@ func (m *Model) statusBarView() string {
 		return statusBarBaseStyle.Width(w).Render(paddedContent)
 	}
 
+	if m.Mode == ViewReasoningPicker {
+		bullet := lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Render("◆")
+		label := lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true).Render("reasoning")
+		leftSection := bullet + statusBg(" ") + label
+
+		status := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Render("Configuring agent reasoning effort")
+		hasToast := m.ToastMessage != "" && time.Now().UnixMilli() < m.ToastExpireTime
+		if hasToast {
+			if m.ToastWarning {
+				status = statusWarningStyle.Render("⚠ " + m.ToastMessage)
+			} else {
+				status = lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true).Render("✓ " + m.ToastMessage)
+			}
+		}
+
+		rightSection := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Render("enter Save • esc Cancel")
+
+		usableW := w - 2
+		leftWidth := lipgloss.Width(leftSection)
+		rightWidth := lipgloss.Width(rightSection)
+		statusWidth := lipgloss.Width(status)
+
+		spaceWidth := usableW - leftWidth - rightWidth - statusWidth - 3
+		if spaceWidth < 0 {
+			spaceWidth = 0
+		}
+		space := statusBg(strings.Repeat(" ", spaceWidth))
+
+		parts := []string{leftSection, statusBg("   "), status, space, rightSection}
+		content := lipgloss.JoinHorizontal(lipgloss.Left, parts...)
+		paddedContent := statusBg(" ") + content + statusBg(" ")
+		return statusBarBaseStyle.Width(w).Render(paddedContent)
+	}
+
 	s := m.GetAgentState(m.Focused.ID())
 
 	var leftSection string
@@ -549,6 +599,11 @@ func (m *Model) updateViewport() {
 
 	if m.Mode == ViewModelPicker {
 		m.renderModelPickerView()
+		return
+	}
+
+	if m.Mode == ViewReasoningPicker {
+		m.renderReasoningPickerView()
 		return
 	}
 
@@ -1266,7 +1321,13 @@ func (m *Model) renderWelcomeMessage() string {
 	// Build model line
 	modelStr := ""
 	if m.ModelName != "" {
-		modelStr = fmt.Sprintf("**Model:** %s", m.ModelName)
+		effortStr := ""
+		if m.AppConfig != nil && m.AppConfig.AgentModels != nil {
+			if am, ok := m.AppConfig.AgentModels["orchestrator"]; ok && am.Effort != "" {
+				effortStr = fmt.Sprintf(" (effort: %s)", am.Effort)
+			}
+		}
+		modelStr = fmt.Sprintf("**Model:** %s%s", m.ModelName, effortStr)
 	} else {
 		modelStr = "**Model:** —"
 	}
@@ -1708,6 +1769,117 @@ func (m *Model) renderModelPickerView() {
 
 			lines = append(lines, rowStyle.Render(rowContent))
 		}
+	}
+
+	lines = append(lines, "", "")
+
+	// Footer hints
+	footer := lipgloss.NewStyle().
+		Foreground(subtextColor).
+		Background(appBgColor).
+		PaddingLeft(2).
+		Render("Press [Enter] to save, [Esc] to cancel.")
+	lines = append(lines, footer)
+
+	paddedContent := lipgloss.NewStyle().
+		Width(m.Viewport.Width()).
+		Background(appBgColor).
+		Render(strings.Join(lines, "\n"))
+	m.Viewport.SetContent(paddedContent)
+}
+
+// renderReasoningPickerView renders the agent reasoning effort picker in the viewport.
+func (m *Model) renderReasoningPickerView() {
+	s := m.GetAgentState(m.Focused.ID())
+	s.LastTotalContent = ""
+
+	msgWidth := m.Viewport.Width() - 2
+	if msgWidth < 1 {
+		msgWidth = 80
+	}
+
+	var lines []string
+	header := lipgloss.NewStyle().
+		Foreground(primaryColor).
+		Bold(true).
+		Background(appBgColor).
+		PaddingLeft(1).
+		Render("── Configure Agent Reasoning Effort ────────────────")
+	lines = append(lines, header, "")
+
+	lines = append(lines, lipgloss.NewStyle().
+		Foreground(subtextColor).
+		Background(appBgColor).
+		PaddingLeft(2).
+		Render("Use ↑/↓ to choose an agent, and ←/→ to select a reasoning effort level."), "")
+
+	// Print agents and their effort options
+	for aIdx, agentName := range m.ReasoningPickerAgents {
+		agentLabel := agentName
+		if agentName == "orchestrator" {
+			agentLabel = "main/orchestrator"
+		}
+
+		// Highlight the active row/agent
+		agentStyle := lipgloss.NewStyle().Foreground(textColor)
+		prefix := "  "
+		if aIdx == m.ReasoningPickerAgentIndex {
+			prefix = "▸ "
+			agentStyle = lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+		}
+
+		// Render agent name, right-padded
+		agentNamePart := prefix + agentLabel
+		agentNameStr := fmt.Sprintf("%-22s", agentNamePart)
+		agentNameRendered := agentStyle.Background(appBgColor).Render(agentNameStr)
+
+		// Build the effort choices list for this agent
+		var effortChoices []string
+		selectedIdx := m.ReasoningPickerAgentSelections[agentName]
+
+		for eIdx, effortOption := range m.ReasoningPickerEfforts {
+			optLabel := effortOption
+
+			var optStr string
+			if eIdx == selectedIdx {
+				// This option is selected
+				if aIdx == m.ReasoningPickerAgentIndex {
+					// Row is active: highlight selected option with primary color
+					optStr = lipgloss.NewStyle().
+						Foreground(appBgColor).
+						Background(primaryColor).
+						Bold(true).
+						Padding(0, 1).
+						Render(optLabel)
+				} else {
+					// Row is inactive: highlight selected option with secondary color
+					optStr = lipgloss.NewStyle().
+						Foreground(appBgColor).
+						Background(secondaryColor).
+						Bold(true).
+						Padding(0, 1).
+						Render(optLabel)
+				}
+			} else {
+				// Not selected
+				optStr = lipgloss.NewStyle().
+					Foreground(subtextColor).
+					Background(appBgColor).
+					Padding(0, 1).
+					Render(optLabel)
+			}
+			effortChoices = append(effortChoices, optStr)
+		}
+
+		rowContent := agentNameRendered + strings.Join(effortChoices, "  ")
+
+		// Wrap row in a box style if it's active for extra pop
+		rowStyle := lipgloss.NewStyle().Background(appBgColor)
+		if aIdx == m.ReasoningPickerAgentIndex {
+			rowStyle = lipgloss.NewStyle().Background(thoughtBgColor)
+		}
+
+		lines = append(lines, rowStyle.Render(rowContent))
 	}
 
 	lines = append(lines, "", "")

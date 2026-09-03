@@ -4,6 +4,7 @@ import (
 	"late/internal/config"
 	"late/internal/pathutil"
 	"os"
+	"reflect"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -42,7 +43,7 @@ func TestModelPickerAppliesOrchestratorModelImmediately(t *testing.T) {
 
 	updated, _ := model.updateChat(mockKey{code: '\r', text: "enter"})
 
-	if applied != cfg.Models[0] {
+	if !reflect.DeepEqual(applied, cfg.Models[0]) {
 		t.Fatalf("applied model = %#v, want %#v", applied, cfg.Models[0])
 	}
 	if updated.ModelName != "new-model" {
@@ -81,7 +82,7 @@ func TestModelPickerPersistsStableModelID(t *testing.T) {
 
 	updated, _ := model.updateChat(mockKey{code: '\r', text: "enter"})
 
-	if got := cfg.AgentModels["orchestrator"]; got != "provider-b" {
+	if got := cfg.AgentModels["orchestrator"].Model; got != "provider-b" {
 		t.Fatalf("configured model reference = %q, want provider-b", got)
 	}
 	if updated.ModelName != "shared-model" {
@@ -112,7 +113,7 @@ func TestModelPickerDoesNotSaveWhileAgentBecomesActive(t *testing.T) {
 		Models: []config.ModelSetting{
 			{URL: "https://example.test/v1", Model: "new-model"},
 		},
-		AgentModels: map[string]string{"orchestrator": "old-model"},
+		AgentModels: map[string]config.AgentModelSetting{"orchestrator": {Model: "old-model"}},
 	}
 	model := NewModel(&mockOrchestrator{}, nil, cfg)
 	model.Mode = ViewModelPicker
@@ -132,7 +133,7 @@ func TestModelPickerDoesNotSaveWhileAgentBecomesActive(t *testing.T) {
 	if updated.Mode != ViewModelPicker {
 		t.Fatalf("mode = %v, want ViewModelPicker", updated.Mode)
 	}
-	if got := cfg.AgentModels["orchestrator"]; got != "old-model" {
+	if got := cfg.AgentModels["orchestrator"].Model; got != "old-model" {
 		t.Fatalf("configured model = %q, want old-model", got)
 	}
 	if applied {
@@ -154,7 +155,7 @@ func TestModelPickerPublishesOnlyAfterSaveSucceeds(t *testing.T) {
 		Models: []config.ModelSetting{
 			{URL: "https://example.test/v1", Model: "new-model"},
 		},
-		AgentModels: map[string]string{"orchestrator": "old-model"},
+		AgentModels: map[string]config.AgentModelSetting{"orchestrator": {Model: "old-model"}},
 	}
 	model := NewModel(&mockOrchestrator{}, nil, cfg)
 	model.Mode = ViewModelPicker
@@ -173,10 +174,58 @@ func TestModelPickerPublishesOnlyAfterSaveSucceeds(t *testing.T) {
 	if updated.Err == nil {
 		t.Fatal("expected config save to fail")
 	}
-	if got := cfg.AgentModels["orchestrator"]; got != "old-model" {
+	if got := cfg.AgentModels["orchestrator"].Model; got != "old-model" {
 		t.Fatalf("configured model = %q, want old-model", got)
 	}
 	if applied {
 		t.Fatal("model was applied after config save failed")
+	}
+}
+
+func TestModelPickerPreservesReasoningEffortWhenModelSetToDefault(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("HOME", configHome)
+	t.Setenv("APPDATA", configHome)
+
+	lateConfigDir, err := pathutil.LateConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(lateConfigDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Models: []config.ModelSetting{
+			{URL: "https://example.test/v1", Model: "new-model"},
+		},
+		AgentModels: map[string]config.AgentModelSetting{
+			"orchestrator": {Model: "new-model", Effort: "high"},
+		},
+	}
+	model := NewModel(&mockOrchestrator{}, nil, cfg)
+	model.Mode = ViewModelPicker
+	model.ModelPickerAgents = []string{"orchestrator"}
+	model.ModelPickerModels = []string{"default", "new-model"}
+	model.ModelPickerAgentSelections = map[string]int{"orchestrator": 0} // Select "default"
+
+	updated, _ := model.updateChat(mockKey{code: '\r', text: "enter"})
+	if updated.Mode != ViewChat {
+		t.Fatalf("mode = %v, want ViewChat", updated.Mode)
+	}
+	if got := cfg.AgentModels["orchestrator"].Model; got != "" {
+		t.Fatalf("model = %q, want empty", got)
+	}
+	if got := cfg.AgentModels["orchestrator"].Effort; got != "high" {
+		t.Fatalf("effort = %q, want high", got)
+	}
+
+	loaded, err := config.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+	if got := loaded.AgentModels["orchestrator"].Effort; got != "high" {
+		t.Fatalf("persisted effort = %q, want high", got)
 	}
 }

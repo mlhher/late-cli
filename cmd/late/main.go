@@ -218,10 +218,11 @@ func main() {
 		EnableImages: *enableImagesReq,
 	}
 	if appConfig != nil {
-		if setting, ok := appConfig.GetModelForAgent("orchestrator"); ok {
+		if setting, effort, ok := appConfig.ResolveAgent("orchestrator"); ok {
 			resolvedClientConfig.BaseURL = setting.URL
 			resolvedClientConfig.APIKey = setting.Key
 			resolvedClientConfig.Model = setting.Model
+			resolvedClientConfig.ReasoningEffort = effort
 		}
 	}
 	c := client.NewClient(resolvedClientConfig)
@@ -288,7 +289,11 @@ func main() {
 		return func() tea.Msg {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			sess.SetClient(newModelClient(ctx, setting, *enableImagesReq))
+			effort := ""
+			if appConfig != nil {
+				effort = appConfig.ResolveAgentReasoningEffort("orchestrator")
+			}
+			sess.SetClient(newModelClient(ctx, setting, effort, *enableImagesReq))
 			return nil
 		}
 	}
@@ -302,7 +307,13 @@ func main() {
 		var subagentInfos []string
 		for _, sub := range assets.GetSubagents() {
 			if setting, ok := appConfig.GetModelForAgent(sub.Name); ok {
-				subagentInfos = append(subagentInfos, fmt.Sprintf("%s:%s", sub.Name, setting.Model))
+				info := fmt.Sprintf("%s:%s", sub.Name, setting.Model)
+				if appConfig.AgentModels != nil {
+					if am, ok := appConfig.AgentModels[sub.Name]; ok && am.Effort != "" {
+						info += fmt.Sprintf(" (effort: %s)", am.Effort)
+					}
+				}
+				subagentInfos = append(subagentInfos, info)
 			}
 		}
 		if len(subagentInfos) > 0 {
@@ -347,12 +358,13 @@ func main() {
 		runner := func(ctx context.Context, goal string, ctxFiles []string, agentType string) (string, error) {
 			var currentSubagentClient *client.Client
 			if appConfig != nil {
-				if setting, ok := appConfig.GetModelForAgent(agentType); ok {
+				if setting, effort, ok := appConfig.ResolveAgent(agentType); ok {
 					currentSubagentClient = client.NewClient(client.Config{
-						BaseURL:      setting.URL,
-						APIKey:       setting.Key,
-						Model:        setting.Model,
-						EnableImages: *enableImagesReq,
+						BaseURL:         setting.URL,
+						APIKey:          setting.Key,
+						Model:           setting.Model,
+						ReasoningEffort: effort,
+						EnableImages:    *enableImagesReq,
 					})
 					currentSubagentClient.DiscoverBackend(ctx)
 				}
@@ -383,6 +395,12 @@ func main() {
 		})
 	}
 
+	// Register subagents as selectable items
+	for _, sub := range assets.GetSubagents() {
+		model.ModelPickerAgents = append(model.ModelPickerAgents, sub.Name)
+	}
+
+	// Run TUI
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Unspecified error: %v", err)
 		os.Exit(1)
@@ -401,12 +419,13 @@ func mcpToolEnabled(t tool.Tool, enabledTools map[string]bool) bool {
 	return true
 }
 
-func newModelClient(ctx context.Context, setting appconfig.ModelSetting, enableImages bool) *client.Client {
+func newModelClient(ctx context.Context, setting appconfig.ModelSetting, reasoningEffort string, enableImages bool) *client.Client {
 	c := client.NewClient(client.Config{
-		BaseURL:      setting.URL,
-		APIKey:       setting.Key,
-		Model:        setting.Model,
-		EnableImages: enableImages,
+		BaseURL:         setting.URL,
+		APIKey:          setting.Key,
+		Model:           setting.Model,
+		ReasoningEffort: reasoningEffort,
+		EnableImages:    enableImages,
 	})
 	c.DiscoverBackend(ctx)
 	return c
