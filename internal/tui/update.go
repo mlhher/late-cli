@@ -1085,6 +1085,22 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 		m.ToastExpireTime = time.Now().UnixMilli() + 3000
 		return m, func() tea.Msg { return clearToastMsg{} }
 
+	case BootstrapStatusMsg:
+		m.BootstrapStatus = msg.Text
+		if msg.RefreshView {
+			m.updateViewport()
+		}
+		if !msg.Active {
+			m.ToastMessage = msg.Text
+			m.ToastWarning = msg.Warning
+			m.ToastExpireTime = time.Now().UnixMilli() + 3000
+			m.BootstrapStatus = ""
+			return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+				return clearToastMsg{}
+			})
+		}
+		return m, nil
+
 	case OrchestratorEventMsg:
 		s := m.GetAgentState(msg.Event.OrchestratorID())
 		now := time.Now().UnixMilli()

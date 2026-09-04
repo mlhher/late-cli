@@ -415,7 +415,9 @@ func (m *Model) statusBarView() string {
 	// If there's an active toast message, render it. Otherwise, standard status text.
 	var status string
 	hasToast := m.ToastMessage != "" && time.Now().UnixMilli() < m.ToastExpireTime
-	if hasToast {
+	if m.BootstrapStatus != "" {
+		status = lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Italic(true).Render(m.BootstrapStatus)
+	} else if hasToast {
 		if m.ToastWarning {
 			status = statusWarningStyle.Render("⚠ " + m.ToastMessage)
 		} else {

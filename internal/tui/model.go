@@ -109,7 +109,7 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 	history := root.History()
 	cumulativeTokens := 0
 	if history != nil && len(history) >= 0 {
-		cumulativeTokens = common.CalculateHistoryTokens(history, root.SystemPrompt(), root.ToolDefinitions())
+		cumulativeTokens = common.CalculateHistoryTokensFast(history, root.SystemPrompt(), root.ToolDefinitions())
 	}
 	m.AgentStates[root.ID()] = &AppState{
 		State:                initialState,
@@ -138,5 +138,5 @@ func (m *Model) GetRenderer(width int) *glamour.TermRenderer {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.Spinner.Tick, m.FilePicker.Init())
+	return tea.Batch(textarea.Blink, m.Spinner.Tick)
 }

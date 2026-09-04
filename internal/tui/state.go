@@ -153,6 +153,7 @@ type Model struct {
 	ToastMessage    string
 	ToastExpireTime int64
 	ToastWarning    bool
+	BootstrapStatus string
 
 	// Model and config info (set from main.go after creation)
 	ModelName    string // Active model name
@@ -250,6 +251,14 @@ type OrchestratorEventMsg struct {
 type McpStatusMsg struct {
 	Text    string
 	Warning bool
+}
+
+// BootstrapStatusMsg carries startup progress into the TUI update loop.
+type BootstrapStatusMsg struct {
+	Text        string
+	Warning     bool
+	Active      bool
+	RefreshView bool
 }
 
 // FindOrchestrator recursively searches for an orchestrator by ID.

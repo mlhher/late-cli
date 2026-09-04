@@ -156,11 +156,7 @@ func main() {
 		systemPrompt = systemPrompt + *appendSystemPromptReq
 	}
 
-	startMsg := "Starting late TUI..."
-	if tool.IsSqzAvailable() {
-		startMsg = "Starting late TUI (sqz-enabled)..."
-	}
-	fmt.Println(startMsg)
+	// Sessions setup
 
 	// Define history path with timestamp-based session ID
 	sessionsDir, err := session.SessionDir()
@@ -702,70 +698,133 @@ func ForwardOrchestratorEvents(p *tea.Program, o common.Orchestrator) {
 	}()
 }
 
-// runBootstrap runs long-running startup work (MCP connection and backend
-// discovery in the background so the TUI becomes usable immediately. It connects
-// each configured MCP server concurrently (a failing server does not abort the
-// others), registers each server's tools as they connect, and reports status /
-// failure to the UI via McpStatusMsg. It returns once every server has finished;
-// the UI keeps working while it runs.
+// runBootstrap runs startup work (MCP connections and LLM backend discovery)
+// concurrently in the background so the TUI renders immediately. It streams live
+// animated status updates into the UI and completes when all tasks finish.
 func runBootstrap(p *tea.Program, mcpClient *mcp.Client, config *mcp.MCPConfig, c *client.Client, subagentClient *client.Client, sess *session.Session, enabledTools map[string]bool) {
 	var (
+		wg        sync.WaitGroup
 		mu        sync.Mutex
 		connected int
 		failed    []string
 	)
 
-	if config != nil && len(config.McpServers) > 0 {
-		fmt.Println("Connecting to MCP servers from configuration...")
-		p.Send(tui.McpStatusMsg{Text: "Loading MCP servers..."})
+	hasMCP := config != nil && len(config.McpServers) > 0
 
-		mcpClient.ConnectFromConfigConcurrent(context.Background(), config, func(r mcp.ServerConnectResult) {
-			if r.Err != nil {
-				p.Send(tui.McpStatusMsg{Text: fmt.Sprintf("MCP %s failed: %v", r.Name, r.Err), Warning: true})
-				mu.Lock()
-				failed = append(failed, r.Name)
-				mu.Unlock()
-				return
-			}
-			for _, a := range r.Adapters {
-				if !mcpToolEnabled(a, enabledTools) {
-					continue
-				}
-				sess.Registry.Register(a)
-			}
-			mu.Lock()
-			connected++
-			mu.Unlock()
+	// Initial notification inside TUI
+	if hasMCP {
+		p.Send(tui.BootstrapStatusMsg{
+			Text:   "Connecting MCP servers & discovering backend...",
+			Active: true,
+		})
+	} else {
+		p.Send(tui.BootstrapStatusMsg{
+			Text:   "Discovering model backend...",
+			Active: true,
 		})
 	}
 
-	// Backend discovery is thread-safe and is also auto-retried per request if it is
-	// still unknown, so running it here (off the critical path) is safe.
-	c.DiscoverBackend(context.Background())
-	if subagentClient != c {
-		subagentClient.DiscoverBackend(context.Background())
+	// Task 1: MCP Server Connections (concurrent)
+	if hasMCP {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = mcpClient.ConnectFromConfigConcurrent(context.Background(), config, func(r mcp.ServerConnectResult) {
+				mu.Lock()
+				defer mu.Unlock()
+				if r.Err != nil {
+					failed = append(failed, r.Name)
+					p.Send(tui.BootstrapStatusMsg{
+						Text:    fmt.Sprintf("MCP %s failed: %v", r.Name, r.Err),
+						Warning: true,
+						Active:  true,
+					})
+					return
+				}
+				for _, a := range r.Adapters {
+					if !mcpToolEnabled(a, enabledTools) {
+						continue
+					}
+					sess.Registry.Register(a)
+				}
+				connected++
+				p.Send(tui.BootstrapStatusMsg{
+					Text:   fmt.Sprintf("MCP: %s connected", r.Name),
+					Active: true,
+				})
+			})
+		}()
 	}
 
-	// Final summary status (an empty Text clears the "Loading..." status when there
-	// were no servers to connect).
+	// Task 2: Main LLM Backend Discovery (concurrent)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		b := c.DiscoverBackend(context.Background())
+		ctxSize := c.ContextSize()
+		ctxText := ""
+		if ctxSize > 0 {
+			ctxText = fmt.Sprintf(" (%dk ctx)", ctxSize/1024)
+		}
+		p.Send(tui.BootstrapStatusMsg{
+			Text:        fmt.Sprintf("Backend: %s%s", b, ctxText),
+			Active:      true,
+			RefreshView: true,
+		})
+	}()
+
+	// Task 3: Subagent LLM Backend Discovery (if distinct client)
+	if subagentClient != c {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = subagentClient.DiscoverBackend(context.Background())
+		}()
+	}
+
+	// Wait for all background bootstrap tasks to finish
+	wg.Wait()
+
+	// Build final summary
 	mu.Lock()
-	total := connected + len(failed)
+	totalMCP := connected + len(failed)
 	var (
-		finalText string
-		warn      bool
+		parts []string
+		warn  bool
 	)
-	if total > 0 {
+	if totalMCP > 0 {
 		if len(failed) == 0 {
 			unit := "server"
-			if total != 1 {
+			if totalMCP != 1 {
 				unit = "servers"
 			}
-			finalText = fmt.Sprintf("MCP ready: %d/%d %s", connected, total, unit)
+			parts = append(parts, fmt.Sprintf("MCP: %d %s ready", connected, unit))
 		} else {
-			finalText = fmt.Sprintf("MCP: %d/%d connected — failed: %s", connected, total, strings.Join(failed, ", "))
+			parts = append(parts, fmt.Sprintf("MCP: %d/%d (failed: %s)", connected, totalMCP, strings.Join(failed, ", ")))
 			warn = true
 		}
 	}
+
+	backendType := c.Backend()
+	ctxSize := c.ContextSize()
+	if backendType != "" && backendType != client.BackendUnknown {
+		if ctxSize > 0 {
+			parts = append(parts, fmt.Sprintf("Backend: %s (%dk)", backendType, ctxSize/1024))
+		} else {
+			parts = append(parts, fmt.Sprintf("Backend: %s", backendType))
+		}
+	}
 	mu.Unlock()
-	p.Send(tui.McpStatusMsg{Text: finalText, Warning: warn})
+
+	summary := "Ready"
+	if len(parts) > 0 {
+		summary = strings.Join(parts, " • ")
+	}
+
+	p.Send(tui.BootstrapStatusMsg{
+		Text:        summary,
+		Warning:     warn,
+		Active:      false,
+		RefreshView: true,
+	})
 }
