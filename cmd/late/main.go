@@ -27,6 +27,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
+	"golang.org/x/term"
 )
 
 func main() {
@@ -291,7 +292,18 @@ func main() {
 	}
 	model.ShowCWD = *showCWDReq
 
-	p := tea.NewProgram(model)
+	pOpts := []tea.ProgramOption{
+		tea.WithFPS(120),
+	}
+	if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 && h > 0 {
+		model.SetSize(w, h)
+		pOpts = append(pOpts, tea.WithWindowSize(w, h))
+	} else if w, h, err := term.GetSize(int(os.Stdin.Fd())); err == nil && w > 0 && h > 0 {
+		model.SetSize(w, h)
+		pOpts = append(pOpts, tea.WithWindowSize(w, h))
+	}
+
+	p := tea.NewProgram(model, pOpts...)
 
 	// Wire TUI integration
 	go func() {

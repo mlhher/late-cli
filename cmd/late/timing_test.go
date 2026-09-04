@@ -110,3 +110,37 @@ func TestStartupTiming(t *testing.T) {
 
 	_ = mcpConfig
 }
+
+func TestFullStartupPipeline(t *testing.T) {
+	start := time.Now()
+
+	// Simulate main() exact execution path up to and including frame 1 rendering
+	appConfig, _ := appconfig.LoadConfig()
+	c := client.NewClient(client.Config{
+		BaseURL: "http://localhost:8080",
+	})
+	promptContent, _ := assets.PromptsFS.ReadFile("prompts/instruction-orchestrator.md")
+	systemPrompt := string(promptContent)
+	sess := session.New(c, "", nil, systemPrompt, true)
+	executor.RegisterTools(sess.Registry, map[string]bool{"write_implementation_plan": true})
+	renderer, _ := glamour.NewTermRenderer(
+		glamour.WithStylesFromJSONBytes(tui.LateTheme),
+		glamour.WithWordWrap(80),
+		glamour.WithPreservedNewLines(),
+	)
+	rootAgent := orchestrator.NewBaseOrchestrator("main", sess, nil, 0)
+	model := tui.NewModel(rootAgent, renderer, appConfig)
+	model.SetSize(120, 40)
+	p := tea.NewProgram(model, tea.WithWindowSize(120, 40))
+	_ = p
+
+	// Render Frame 1
+	v := model.View()
+	elapsed := time.Since(start)
+
+	if len(v.Content) == 0 {
+		t.Fatalf("Frame 1 content is empty")
+	}
+
+	fmt.Printf("[BENCHMARK] Total time from process start to full Frame 1 render: %v (content length: %d bytes)\n", elapsed, len(v.Content))
+}

@@ -120,6 +120,16 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 	return m
 }
 
+// SetSize sets initial terminal dimensions and computes the layout before launch.
+func (m *Model) SetSize(w, h int) {
+	if w <= 0 || h <= 0 {
+		return
+	}
+	m.Width = w
+	m.Height = h
+	m.updateLayout()
+}
+
 func (m *Model) GetRenderer(width int) *glamour.TermRenderer {
 	if width < 1 {
 		width = 80
