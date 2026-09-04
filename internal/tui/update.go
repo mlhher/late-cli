@@ -105,10 +105,16 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 
 	// Window Sizing
 	if msg, ok := msg.(tea.WindowSizeMsg); ok {
+		if msg.Width == m.Width && msg.Height == m.Height {
+			return m, nil
+		}
+		widthChanged := m.Width != msg.Width
 		m.Width = msg.Width
 		m.Height = msg.Height
-		for _, s := range m.AgentStates {
-			s.RenderedHistory = nil
+		if widthChanged {
+			for _, s := range m.AgentStates {
+				s.RenderedHistory = nil
+			}
 		}
 		m.updateLayout()
 	}
@@ -1098,6 +1104,33 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
 				return clearToastMsg{}
 			})
+		}
+		return m, nil
+
+	case LazyHistoryLoadedMsg:
+		s := m.GetAgentState(msg.AgentID)
+		if s == nil || !s.PendingLazyHistory {
+			return m, nil
+		}
+		for i := 0; i < len(msg.Rendered) && i < len(s.RenderedHistory); i++ {
+			if s.RenderedHistory[i] == "" {
+				s.RenderedHistory[i] = msg.Rendered[i]
+			}
+		}
+		s.PendingLazyHistory = false
+		s.LazyHistoryStartIdx = 0
+
+		wasAtBottom := m.Viewport.AtBottom()
+		oldLineCount := len(s.CachedHistoryLines)
+		m.rebuildHistoryCache(s, m.Focused.History())
+		newLineCount := len(s.CachedHistoryLines)
+		addedLines := newLineCount - oldLineCount
+
+		m.updateViewport()
+		if wasAtBottom {
+			m.Viewport.GotoBottom()
+		} else if addedLines > 0 {
+			m.Viewport.SetYOffset(m.Viewport.YOffset() + addedLines)
 		}
 		return m, nil
 

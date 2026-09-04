@@ -81,6 +81,7 @@ func main() {
 	}
 
 	var loadedHistoryPath string
+	var resumedSessionTitle string
 	if *continueReq {
 		meta, err := session.GetLatestSession()
 		if err != nil {
@@ -91,9 +92,8 @@ func main() {
 			fmt.Fprintln(os.Stderr, "No sessions found to continue.")
 			os.Exit(1)
 		}
-		fmt.Printf("Resuming session: %s (%s)\n", meta.ID, meta.Title)
-		time.Sleep(500 * time.Millisecond) // Give user a moment to see what's happening
 		loadedHistoryPath = meta.HistoryPath
+		resumedSessionTitle = fmt.Sprintf("Resumed session: %s (%s)", meta.ID, meta.Title)
 	} else if flag.NArg() > 0 && flag.Arg(0) == "session" {
 		path, _, shouldExit := handleSessionCommand(flag.Args()[1:])
 		if shouldExit {
@@ -291,6 +291,7 @@ func main() {
 		model.SubagentInfo = resolvedSubagentConfig.Model
 	}
 	model.ShowCWD = *showCWDReq
+	model.LazyHistory = true
 
 	pOpts := []tea.ProgramOption{
 		tea.WithFPS(120),
@@ -309,6 +310,12 @@ func main() {
 	go func() {
 		// Set messenger first
 		p.Send(tui.SetMessengerMsg{Messenger: p})
+		if resumedSessionTitle != "" {
+			p.Send(tui.BootstrapStatusMsg{
+				Text:   resumedSessionTitle,
+				Active: false,
+			})
+		}
 
 		// Create context with InputProvider
 		ctx := context.WithValue(context.Background(), common.InputProviderKey, tui.NewTUIInputProvider(p))

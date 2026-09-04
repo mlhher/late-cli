@@ -353,3 +353,62 @@ func TestSameLengthHistoryMutationInvalidatesRenderedCache(t *testing.T) {
 		t.Fatal("same-length history mutation retained the old rendered content")
 	}
 }
+
+func TestLazyHistoryLoading(t *testing.T) {
+	history := benchmarkHistory(20)
+	orch := &benchmarkOrchestrator{history: history}
+	model := NewModel(orch, nil, nil)
+	model.LazyHistory = true
+	model.Width = 100
+	model.Height = 40
+	model.updateLayout()
+
+	state := model.GetAgentState(orch.ID())
+	if !state.PendingLazyHistory {
+		t.Fatal("expected PendingLazyHistory to be true on initial lazy layout")
+	}
+	if state.LazyHistoryStartIdx != 16 {
+		t.Fatalf("expected LazyHistoryStartIdx to be 16, got %d", state.LazyHistoryStartIdx)
+	}
+
+	// Earlier messages should not yet be rendered
+	for i := 0; i < 16; i++ {
+		if state.RenderedHistory[i] != "" {
+			t.Fatalf("expected message %d to be unrendered, got non-empty string", i)
+		}
+	}
+	// Last 4 messages should be rendered
+	for i := 16; i < 20; i++ {
+		if state.RenderedHistory[i] == "" {
+			t.Fatalf("expected message %d to be rendered, got empty string", i)
+		}
+	}
+
+	// Background command
+	cmd := model.loadLazyHistoryCmd()
+	if cmd == nil {
+		t.Fatal("expected loadLazyHistoryCmd to return non-nil tea.Cmd")
+	}
+	msg := cmd()
+	loadedMsg, ok := msg.(LazyHistoryLoadedMsg)
+	if !ok {
+		t.Fatalf("expected LazyHistoryLoadedMsg, got %T", msg)
+	}
+	if len(loadedMsg.Rendered) != 16 {
+		t.Fatalf("expected 16 rendered messages, got %d", len(loadedMsg.Rendered))
+	}
+
+	// Deliver to model.Update
+	updatedModel, _ := model.Update(loadedMsg)
+	m := updatedModel.(Model)
+	updatedState := m.GetAgentState(orch.ID())
+	if updatedState.PendingLazyHistory {
+		t.Fatal("expected PendingLazyHistory to be false after LazyHistoryLoadedMsg")
+	}
+	for i := 0; i < 20; i++ {
+		if updatedState.RenderedHistory[i] == "" {
+			t.Fatalf("expected all messages to be rendered, but message %d is empty", i)
+		}
+	}
+}
+

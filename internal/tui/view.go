@@ -665,95 +665,37 @@ Press **ctrl+h** or **esc** to return to the chat.`
 		historyCacheChanged = true
 	}
 
-	// Render only new messages and add to cache
-	for i := len(s.RenderedHistory); i < len(history); i++ {
-		msg := history[i]
-		var rendered string
-		switch msg.Role {
-		case "user":
-			content := msg.Content.UIString()
-			if len(msg.AttachedFiles) > 0 {
-				var names []string
-				for _, f := range msg.AttachedFiles {
-					name := filepath.Base(f)
-					if len(name) > 20 {
-						name = name[:17] + "..."
-					}
-					names = append(names, name)
-				}
-
-				attachmentLabel := "Attached: " + strings.Join(names, ", ")
-				maxLabelWidth := msgWidth - 4
-				if lipgloss.Width(attachmentLabel) > maxLabelWidth {
-					attachmentLabel = m.truncateWithEllipsis(attachmentLabel, maxLabelWidth)
-				}
-				content += "\n\n" + attachmentStyle.Render(attachmentLabel)
+	// If LazyHistory is enabled and we have never rendered this history before,
+	// only render the last few messages for the initial visible screen to ensure Frame 1 paints instantly.
+	if m.LazyHistory && len(s.RenderedHistory) == 0 && len(history) > 4 {
+		visibleCount := 4
+		startIdx := len(history) - visibleCount
+		s.RenderedHistory = make([]string, len(history))
+		s.CachedHistoryHashes = make([]uint64, len(history))
+		for i := 0; i < len(history); i++ {
+			s.CachedHistoryHashes[i] = chatMessageHash(history[i])
+			if i >= startIdx {
+				s.RenderedHistory[i] = m.renderHistoryMessage(history[i], msgWidth)
 			}
-			rendered = userMsgStyle.Width(msgWidth + 1).Render(content)
-		case "assistant":
-			var assistantParts []string
-			if msg.ReasoningContent != "" {
-				assistantParts = append(assistantParts, thoughtHeaderStyle.Width(msgWidth+1).Render("Thoughts:"))
-				assistantParts = append(assistantParts, thinkingStyle.Width(msgWidth-2).Render(msg.ReasoningContent))
-			}
-			if msg.Content.String() != "" {
-				innerWidth := m.Viewport.Width() - AIMsgOverhead
-				if innerWidth < 1 {
-					innerWidth = 1
-				}
-				md := m.renderMarkdownBlock(msg.Content.String(), innerWidth)
-				assistantParts = append(assistantParts, aiMsgStyle.Width(msgWidth+1).Render(md))
-			}
-			for _, tc := range msg.ToolCalls {
-				// Try to use CallString() for meaningful display
-				callStr := tc.Function.Name
-				if registry := m.Focused.Registry(); registry != nil {
-					if tool := registry.Get(tc.Function.Name); tool != nil {
-						if args := json.RawMessage(tc.Function.Arguments); len(args) > 0 {
-							callStr = tool.CallString(args)
-						}
-					}
-				}
-				assistantParts = append(assistantParts, tagStyle.Width(msgWidth+1).Render(fmt.Sprintf("◆ %s", callStr)))
-			}
-			rendered = strings.Join(assistantParts, "\n")
 		}
-		// We always append to keep cache in sync with history length
-		s.RenderedHistory = append(s.RenderedHistory, rendered)
-		s.CachedHistoryHashes = append(s.CachedHistoryHashes, chatMessageHash(msg))
+		s.PendingLazyHistory = true
+		s.LazyHistoryStartIdx = startIdx
 		historyCacheChanged = true
+	} else {
+		// Render only new messages and add to cache
+		for i := len(s.RenderedHistory); i < len(history); i++ {
+			msg := history[i]
+			rendered := m.renderHistoryMessage(msg, msgWidth)
+			s.RenderedHistory = append(s.RenderedHistory, rendered)
+			s.CachedHistoryHashes = append(s.CachedHistoryHashes, chatMessageHash(msg))
+			historyCacheChanged = true
+		}
 	}
 
 	// Rebuild completed-history line and copy metadata only when history
 	// changes. Streaming frames must not walk the entire completed chat.
 	if historyCacheChanged {
-		var historyBlocks []string
-		var historyRenderBlocks []RenderBlock
-		currentLine := 0
-		for idx, r := range s.RenderedHistory {
-			if r == "" {
-				continue
-			}
-			historyBlocks = append(historyBlocks, r)
-			linesCount := strings.Count(r, "\n") + 1
-			copyText := history[idx].Content.String()
-			if history[idx].Role == "user" {
-				copyText = history[idx].Content.UIString()
-			}
-			historyRenderBlocks = append(historyRenderBlocks, RenderBlock{
-				MessageIndex: idx,
-				Content:      copyText,
-				StartLine:    currentLine,
-				EndLine:      currentLine + linesCount - 1,
-			})
-			currentLine += linesCount
-		}
-		if len(historyBlocks) == 0 {
-			s.CachedHistoryLines = nil
-		} else {
-			s.CachedHistoryLines = strings.Split(strings.Join(historyBlocks, "\n"), "\n")
-		}
-		s.CachedHistoryBlocks = historyRenderBlocks
+		m.rebuildHistoryCache(s, history)
 	}
 
 	focusChanged := m.LastFocusedID != m.Focused.ID()
@@ -1111,7 +1053,118 @@ func (m *Model) renderFullStreamingResponse(s *AppState, msgWidth int) string {
 	return strings.Join(activeParts, "\n")
 }
 
+func (m *Model) renderHistoryMessage(msg client.ChatMessage, msgWidth int) string {
+	var rendered string
+	switch msg.Role {
+	case "user":
+		content := msg.Content.UIString()
+		if len(msg.AttachedFiles) > 0 {
+			var names []string
+			for _, f := range msg.AttachedFiles {
+				name := filepath.Base(f)
+				if len(name) > 20 {
+					name = name[:17] + "..."
+				}
+				names = append(names, name)
+			}
+
+			attachmentLabel := "Attached: " + strings.Join(names, ", ")
+			maxLabelWidth := msgWidth - 4
+			if lipgloss.Width(attachmentLabel) > maxLabelWidth {
+				attachmentLabel = m.truncateWithEllipsis(attachmentLabel, maxLabelWidth)
+			}
+			content += "\n\n" + attachmentStyle.Render(attachmentLabel)
+		}
+		rendered = userMsgStyle.Width(msgWidth + 1).Render(content)
+	case "assistant":
+		var assistantParts []string
+		if msg.ReasoningContent != "" {
+			assistantParts = append(assistantParts, thoughtHeaderStyle.Width(msgWidth+1).Render("Thoughts:"))
+			assistantParts = append(assistantParts, thinkingStyle.Width(msgWidth-2).Render(msg.ReasoningContent))
+		}
+		if msg.Content.String() != "" {
+			innerWidth := m.Viewport.Width() - AIMsgOverhead
+			if innerWidth < 1 {
+				innerWidth = max(msgWidth-AIMsgOverhead, 1)
+			}
+			md := m.renderMarkdownBlock(msg.Content.String(), innerWidth)
+			assistantParts = append(assistantParts, aiMsgStyle.Width(msgWidth+1).Render(md))
+		}
+		for _, tc := range msg.ToolCalls {
+			// Try to use CallString() for meaningful display
+			callStr := tc.Function.Name
+			if m.Focused != nil {
+				if registry := m.Focused.Registry(); registry != nil {
+					if tool := registry.Get(tc.Function.Name); tool != nil {
+						if args := json.RawMessage(tc.Function.Arguments); len(args) > 0 {
+							callStr = tool.CallString(args)
+						}
+					}
+				}
+			}
+			assistantParts = append(assistantParts, tagStyle.Width(msgWidth+1).Render(fmt.Sprintf("◆ %s", callStr)))
+		}
+		rendered = strings.Join(assistantParts, "\n")
+	}
+	return rendered
+}
+
+func (m *Model) rebuildHistoryCache(s *AppState, history []client.ChatMessage) {
+	var historyBlocks []string
+	var historyRenderBlocks []RenderBlock
+	currentLine := 0
+	for idx, r := range s.RenderedHistory {
+		if r == "" {
+			continue
+		}
+		historyBlocks = append(historyBlocks, r)
+		linesCount := strings.Count(r, "\n") + 1
+		copyText := history[idx].Content.String()
+		if history[idx].Role == "user" {
+			copyText = history[idx].Content.UIString()
+		}
+		historyRenderBlocks = append(historyRenderBlocks, RenderBlock{
+			MessageIndex: idx,
+			Content:      copyText,
+			StartLine:    currentLine,
+			EndLine:      currentLine + linesCount - 1,
+		})
+		currentLine += linesCount
+	}
+	if len(historyBlocks) == 0 {
+		s.CachedHistoryLines = nil
+	} else {
+		s.CachedHistoryLines = strings.Split(strings.Join(historyBlocks, "\n"), "\n")
+	}
+	s.CachedHistoryBlocks = historyRenderBlocks
+}
+
+func (m *Model) ensureFullHistoryRendered() {
+	if m.Focused == nil {
+		return
+	}
+	s := m.GetAgentState(m.Focused.ID())
+	if s == nil || !s.PendingLazyHistory {
+		return
+	}
+	history := m.Focused.History()
+	msgWidth := m.Viewport.Width() - 2
+	if msgWidth < 1 {
+		msgWidth = 80
+	}
+	for i := 0; i < s.LazyHistoryStartIdx && i < len(history) && i < len(s.RenderedHistory); i++ {
+		if s.RenderedHistory[i] == "" {
+			s.RenderedHistory[i] = m.renderHistoryMessage(history[i], msgWidth)
+		}
+	}
+	s.PendingLazyHistory = false
+	s.LazyHistoryStartIdx = 0
+	m.rebuildHistoryCache(s, history)
+	m.updateViewport()
+}
+
 func (m *Model) restoreFullHistoryForScroll() {
+	m.ensureFullHistoryRendered()
 	s := m.GetAgentState(m.Focused.ID())
 	if !s.StreamingWindow {
 		return

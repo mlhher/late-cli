@@ -148,5 +148,37 @@ func (m *Model) GetRenderer(width int) *glamour.TermRenderer {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.Spinner.Tick)
+	cmds := []tea.Cmd{textarea.Blink, m.Spinner.Tick}
+	if cmd := m.loadLazyHistoryCmd(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	return tea.Batch(cmds...)
+}
+
+func (m Model) loadLazyHistoryCmd() tea.Cmd {
+	if m.Focused == nil {
+		return nil
+	}
+	s := m.GetAgentState(m.Focused.ID())
+	if s == nil || !s.PendingLazyHistory || s.LazyHistoryStartIdx <= 0 {
+		return nil
+	}
+	agentID := m.Focused.ID()
+	history := m.Focused.History()
+	startIdx := s.LazyHistoryStartIdx
+	msgWidth := m.Viewport.Width() - 2
+	if msgWidth < 1 {
+		msgWidth = 80
+	}
+
+	return func() tea.Msg {
+		rendered := make([]string, startIdx)
+		for i := 0; i < startIdx; i++ {
+			rendered[i] = m.renderHistoryMessage(history[i], msgWidth)
+		}
+		return LazyHistoryLoadedMsg{
+			AgentID:  agentID,
+			Rendered: rendered,
+		}
+	}
 }

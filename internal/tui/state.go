@@ -111,6 +111,8 @@ type AppState struct {
 	CachedHistoryHashes  []uint64 // Content identity for same-length history mutations
 	StreamingWindow      bool     // Viewport currently contains only the recent history window
 	StreamingWindowStart int      // Full-history line represented by viewport line zero
+	PendingLazyHistory   bool     // Whether earlier history messages still need background rendering
+	LazyHistoryStartIdx  int      // First index that was rendered for the initial visible window
 
 	RenderBlocks []RenderBlock // Line ranges of rendered blocks
 
@@ -127,6 +129,7 @@ type Model struct {
 	Height         int
 	Renderer       *glamour.TermRenderer
 	InspectingTool bool
+	LazyHistory    bool // When true, startup renders only the visible tail of history and defers older messages
 
 	// Unified Orchestration
 	Root    common.Orchestrator
@@ -259,6 +262,12 @@ type BootstrapStatusMsg struct {
 	Warning     bool
 	Active      bool
 	RefreshView bool
+}
+
+// LazyHistoryLoadedMsg delivers asynchronously rendered past messages to the model.
+type LazyHistoryLoadedMsg struct {
+	AgentID  string
+	Rendered []string
 }
 
 // FindOrchestrator recursively searches for an orchestrator by ID.
