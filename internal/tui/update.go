@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"late/internal/assets"
 	"late/internal/common"
@@ -32,6 +33,31 @@ type clearToastMsg struct{}
 type composeFinishedMsg struct {
 	content string
 	err     error
+}
+
+// pluginCommandResultMsg carries the outcome of an asynchronously executed
+// plugin slash-command handler. Handlers run off the TUI update loop (a
+// slow plugin script must not freeze input and rendering), so the result
+// is delivered back as a message.
+type pluginCommandResultMsg struct {
+	cmd     string // the full input as typed (for plain-prompt fall-through)
+	name    string // the slash command name
+	output  string
+	handled bool
+	err     error
+}
+
+// messageHookResultMsg carries the outcome of asynchronously running a
+// plugin's onMessageSend hooks (PluginManager.HookedMessage). Each hook
+// script runs off the TUI update loop — a slow or misbehaving script must
+// not freeze input and rendering for up to hookTimeout per hook — so the
+// (possibly transformed) message is delivered back as a message and the
+// actual submission happens once it arrives. See submitMessage.
+type messageHookResultMsg struct {
+	target        common.Orchestrator // the agent that was focused when Enter was pressed
+	attachedFiles []string
+	input         string // expandedInput, pre-hook (for input-history dedup)
+	submitted     string // post-hook text to actually submit
 }
 
 // StartPromptMsg submits a prompt as soon as the TUI is ready.
@@ -125,6 +151,78 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		m.Input.SetValue("> " + msg.content)
 		m.Input.CursorEnd()
+		return m, nil
+	}
+	if msg, ok := msg.(PluginChangeMsg); ok {
+		m.SetPluginCommands(msg.Commands)
+		m.SetThemes(msg.Themes)
+		// Re-register plugin-provided tools (MCP adapters + inline tools):
+		// removed or disabled plugins stop advertising their tools, new or
+		// re-enabled plugins' tools become callable. Done here in the
+		// update loop so the registry map is only touched from one place.
+		if reg := m.Root.Registry(); reg != nil {
+			for _, name := range msg.RemovedTools {
+				reg.Unregister(name)
+			}
+			for _, t := range msg.AddedTools {
+				reg.Register(t)
+			}
+		}
+		m.ShowAutocomplete = false
+		// If the theme picker was open against a stale list, re-clamp the
+		// cursor so the user doesn't see an out-of-range index.
+		if m.ThemeIndex >= len(m.ThemeEntries) {
+			m.ThemeIndex = len(m.ThemeEntries) - 1
+		}
+		if m.ThemeIndex < 0 {
+			m.ThemeIndex = 0
+		}
+		// Force viewport refresh so help text and status bar update
+		m.updateViewport()
+		return m, nil
+	}
+	if msg, ok := msg.(pluginCommandResultMsg); ok {
+		if !msg.handled {
+			// The plugin registered the name but has no handler (legacy
+			// plain-prompt dispatch) — submit the input as a normal prompt.
+			return m.submitMessage(msg.cmd)
+		}
+		// Capture in input history (avoid consecutive duplicates).
+		if len(m.InputHistory) == 0 || m.InputHistory[len(m.InputHistory)-1] != msg.cmd {
+			m.InputHistory = append(m.InputHistory, msg.cmd)
+		}
+		m.HistoryIndex = -1
+		m.HistoryWorking = ""
+
+		// Reset input box.
+		m.Input.Reset()
+		m.Input.SetValue("> ")
+
+		// Toast UX for handler output.
+		if msg.err != nil {
+			m.ToastMessage = fmt.Sprintf("error executing %s: %v", msg.name, msg.err)
+		} else if msg.output != "" {
+			firstLine := strings.SplitN(strings.TrimSpace(msg.output), "\n", 2)[0]
+			m.ToastMessage = fmt.Sprintf("executed %s: %s", msg.name, firstLine)
+			if len(m.ToastMessage) > 80 {
+				m.ToastMessage = m.ToastMessage[:77] + "..."
+			}
+		} else {
+			m.ToastMessage = fmt.Sprintf("%s executed", msg.name)
+		}
+		m.ToastExpireTime = time.Now().UnixMilli() + 3000
+		clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+			return clearToastMsg{}
+		})
+		m.updateViewport()
+		return m, clearCmd
+	}
+	if msg, ok := msg.(messageHookResultMsg); ok {
+		if err := msg.target.Submit(msg.submitted, msg.attachedFiles); err != nil {
+			m.Err = err
+			return m, nil
+		}
+		m = m.finishSubmit(msg.target, msg.input)
 		return m, nil
 	}
 
@@ -397,6 +495,46 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		focusedState := m.GetAgentState(m.Focused.ID())
+
+		// Theme selector view key handling
+		if m.Mode == ViewThemes {
+			switch msg.String() {
+			case "up", "k":
+				if len(m.ThemeEntries) > 0 {
+					m.ThemeIndex = max(0, m.ThemeIndex-1)
+					m.updateViewport()
+				}
+				return m, nil
+			case "down", "j":
+				if len(m.ThemeEntries) > 0 {
+					m.ThemeIndex = min(len(m.ThemeEntries)-1, m.ThemeIndex+1)
+					m.updateViewport()
+				}
+				return m, nil
+			case "enter":
+				if info := m.FindThemeByIndex(m.ThemeIndex); info != nil {
+					if err := m.ApplyTheme(info); err != nil {
+						m.ToastMessage = "theme apply failed: " + err.Error()
+						m.ToastExpireTime = time.Now().UnixMilli() + 4000
+					} else {
+						m.ToastMessage = "theme applied: " + info.ThemeName
+						m.ToastExpireTime = time.Now().UnixMilli() + 3000
+					}
+					clearCmd := tea.Tick(4*time.Second, func(t time.Time) tea.Msg {
+						return clearToastMsg{}
+					})
+					m.Mode = ViewChat
+					m.updateViewport()
+					return m, clearCmd
+				}
+				return m, nil
+			case "esc", "q":
+				m.Mode = ViewChat
+				m.updateViewport()
+				return m, nil
+			}
+			return m, nil
+		}
 
 		// Model picker view key handling
 		if m.Mode == ViewModelPicker {
@@ -914,70 +1052,111 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				m.updateViewport()
 				return m, nil
 			}
-
-			// Preflight context check
-			maxTokens := m.Focused.MaxTokens()
-			if focusedState.State == StateIdle && maxTokens > 0 && !focusedState.ContextWarningShown {
-				// Use 10% safety margin (90% threshold)
-				threshold := 0.9
-				if float64(focusedState.CumulativeTokenCount) >= float64(maxTokens)*threshold {
-					focusedState.State = StateContextWarning
-					focusedState.ContextWarningShown = true
+			// /themes [name] - list available plugin themes, or apply one.
+			// "/themes" alone opens the picker; "/themes <name>" applies by
+			// bare name or by namespaced ID. The "name" branch lives below.
+			if cmd == "/themes" {
+				m.Input.Reset()
+				m.Input.SetValue("> ")
+				if len(m.ThemeEntries) == 0 {
+					m.ToastMessage = "no plugin themes installed"
+					m.ToastExpireTime = time.Now().UnixMilli() + 3000
+					clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+						return clearToastMsg{}
+					})
+					m.updateViewport()
+					return m, clearCmd
+				}
+				// Default the cursor to the currently active theme (or 0).
+				m.ThemeIndex = 0
+				for i, t := range m.ThemeEntries {
+					if t.ID == m.SelectedTheme {
+						m.ThemeIndex = i
+						break
+					}
+				}
+				m.Mode = ViewThemes
+				m.updateViewport()
+				return m, nil
+			}
+			if strings.HasPrefix(cmd, "/themes ") {
+				// User supplied a name; resolve and apply inline.
+				name := strings.TrimSpace(strings.TrimPrefix(cmd, "/themes "))
+				m.Input.Reset()
+				m.Input.SetValue("> ")
+				if name == "" {
+					m.Mode = ViewThemes
 					m.updateViewport()
 					return m, nil
 				}
+				info := m.FindTheme(name)
+				if info == nil {
+					m.ToastMessage = "theme not found: " + name
+					m.ToastExpireTime = time.Now().UnixMilli() + 3000
+					clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+						return clearToastMsg{}
+					})
+					m.updateViewport()
+					return m, clearCmd
+				}
+				if err := m.ApplyTheme(info); err != nil {
+					m.ToastMessage = "theme apply failed: " + err.Error()
+					m.ToastExpireTime = time.Now().UnixMilli() + 4000
+				} else {
+					m.ToastMessage = "theme applied: " + info.ThemeName
+					m.ToastExpireTime = time.Now().UnixMilli() + 3000
+				}
+				clearCmd := tea.Tick(4*time.Second, func(t time.Time) tea.Msg {
+					return clearToastMsg{}
+				})
+				m.updateViewport()
+				return m, clearCmd
 			}
 
-			// Re-validate attachments in case the model changed since file selection
-			if len(m.AttachedFiles) > 0 && !m.Focused.SupportsVision() {
-				var filtered []string
-				for _, f := range m.AttachedFiles {
-					data, err := os.ReadFile(f)
-					if err != nil {
-						continue
-					}
-					mimeType := http.DetectContentType(data)
-					if !strings.HasPrefix(mimeType, "image/") {
-						filtered = append(filtered, f)
+			// Plugin command handler dispatch.
+			//
+			// If the input matches a registered plugin command AND a
+			// CommandHandler is wired (see cmd/late/main.go), run the
+			// handler ASYNCHRONOUSLY against the trailing args — a slow
+			// plugin script must not freeze input and rendering. The
+			// handler may:
+			//   - return handled=true with non-empty output → toast
+			//     "executed <name>: <first line>"; run ends here.
+			//   - return handled=true with empty output  → silent toast.
+			//   - return handled=true with err != nil    → error toast.
+			//   - return handled=false                   → fall through to
+			//     the legacy "dispatch as a plain prompt" path below
+			//     (handled in pluginCommandResultMsg).
+			if isPluginCmd(cmd, m.PluginCommands) && m.CommandHandler != nil {
+				parts := strings.Fields(cmd)
+				if len(parts) > 0 {
+					name := parts[0]
+					args := parts[1:]
+					return m, func() tea.Msg {
+						output, handled, hErr := m.CommandHandler(context.Background(), name, args)
+						return pluginCommandResultMsg{
+							cmd:     cmd,
+							name:    name,
+							output:  output,
+							handled: handled,
+							err:     hErr,
+						}
 					}
 				}
-				if len(filtered) != len(m.AttachedFiles) {
-					m.AttachedFiles = filtered
-					focusedState.StatusText = "Images dropped: model no longer supports vision"
-					return m, nil
-				}
 			}
 
-			// Replace pasted placeholders with original content. Use a
-			// single left-to-right pass so a paste whose content contains
-			// another paste's placeholder token is never corrupted.
-			expandedInput := expandPastes(input, m.Pastes)
-
-			if err := m.Focused.Submit(expandedInput, m.AttachedFiles); err != nil {
-				m.Err = err
-				return m, nil
+			// Plugin-provided slash commands — check if the input is a registered plugin command
+			if isPluginCmd(cmd, m.PluginCommands) {
+				// Plugin commands without a handler are dispatched as regular
+				// user prompts to the agent. The plugin's registered skills,
+				// tools, and MCP servers handle the semantics.
+				// Fall through to normal submission below.
 			}
 
-			// Save to input history (avoid consecutive duplicates)
-			if len(m.InputHistory) == 0 || m.InputHistory[len(m.InputHistory)-1] != expandedInput {
-				m.InputHistory = append(m.InputHistory, expandedInput)
-			}
-			m.Pastes = make(map[string]string)
-			m.HistoryIndex = -1
-			m.HistoryWorking = ""
-
-			m.Input.Reset()
-			m.Input.SetValue("> ")
-			m.AttachedFiles = nil // Clear attachments after submit
-
-			// Only update state to thinking if it was idle, else let it stay in its current busy state
-			if focusedState.State == StateIdle || focusedState.State == StateContextWarning {
-				focusedState.State = StateThinking
-				focusedState.ContextWarningShown = false // Reset after successful submission
-			}
-			// Token count will be calculated in ContentEvent handler
-			m.updateViewport()
-			return m, nil
+			// Run the full submit pipeline (preflight context warning,
+			// attachment re-validation, paste expansion, plugin message
+			// hooks, history, and orchestrator submission).
+			return m.submitMessage(input)
 
 		case "alt+enter":
 			m.Input.InsertString("\n")
@@ -1182,6 +1361,118 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 	return m, nil
 }
 
+// submitMessage runs the full "user pressed Enter" pipeline for a message:
+// preflight context warning, attachment re-validation, paste expansion,
+// plugin message hooks (onMessageSend), input history, and orchestrator
+// submission. Returns the model without submitting when the context is
+// exhausted or the input was otherwise rejected.
+func (m Model) submitMessage(input string) (Model, tea.Cmd) {
+	focusedState := m.GetAgentState(m.Focused.ID())
+
+	// Preflight context check
+	maxTokens := m.Focused.MaxTokens()
+	if focusedState.State == StateIdle && maxTokens > 0 && !focusedState.ContextWarningShown {
+		// Use 10% safety margin (90% threshold)
+		threshold := 0.9
+		if float64(focusedState.CumulativeTokenCount) >= float64(maxTokens)*threshold {
+			focusedState.State = StateContextWarning
+			focusedState.ContextWarningShown = true
+			m.updateViewport()
+			return m, nil
+		}
+	}
+
+	// Re-validate attachments in case the model changed since file selection
+	if len(m.AttachedFiles) > 0 && !m.Focused.SupportsVision() {
+		var filtered []string
+		for _, f := range m.AttachedFiles {
+			data, err := os.ReadFile(f)
+			if err != nil {
+				continue
+			}
+			mimeType := http.DetectContentType(data)
+			if !strings.HasPrefix(mimeType, "image/") {
+				filtered = append(filtered, f)
+			}
+		}
+		if len(filtered) != len(m.AttachedFiles) {
+			m.AttachedFiles = filtered
+			focusedState.StatusText = "Images dropped: model no longer supports vision"
+			return m, nil
+		}
+	}
+
+	// Replace pasted placeholders with original content. Use a
+	// single left-to-right pass so a paste whose content contains
+	// another paste's placeholder token is never corrupted.
+	expandedInput := expandPastes(input, m.Pastes)
+
+	if m.MessageHook == nil {
+		// No plugin onMessageSend hooks registered — submit synchronously,
+		// unchanged from before hooks existed.
+		if err := m.Focused.Submit(expandedInput, m.AttachedFiles); err != nil {
+			m.Err = err
+			return m, nil
+		}
+		return m.finishSubmit(m.Focused, expandedInput), nil
+	}
+
+	// A plugin registered onMessageSend hooks: each one runs an external
+	// script, bounded by a 15s timeout apiece (internal/plugin/hooks.go).
+	// Run them off the Bubble Tea update loop (Update() must return before
+	// the program can process the next message or repaint) so a slow or
+	// misbehaving hook can't freeze keystrokes/rendering. The message is
+	// visibly submitted — input cleared, history recorded, state flipped
+	// to thinking — only once messageHookResultMsg arrives with the
+	// (possibly transformed) text; see its handler in updateInternal. This
+	// mirrors how pluginCommandResultMsg already defers plugin
+	// slash-command handlers the same way.
+	target := m.Focused
+	attachedFiles := m.AttachedFiles
+	hook := m.MessageHook
+	return m, func() tea.Msg {
+		return messageHookResultMsg{
+			target:        target,
+			attachedFiles: attachedFiles,
+			input:         expandedInput,
+			submitted:     applyMessageHook(hook, expandedInput),
+		}
+	}
+}
+
+// finishSubmit performs the bookkeeping that follows a successful
+// target.Submit call: input-history append (deduped), paste/history-nav
+// reset, input box clear, and the idle/context-warning -> thinking state
+// transition. Shared by submitMessage's synchronous (no onMessageSend
+// hooks) and async (messageHookResultMsg) paths so both leave the model
+// in the same state. target is passed explicitly (rather than read from
+// m.Focused) because the async path must target whichever agent was
+// focused when Enter was pressed, even if focus has since changed.
+func (m Model) finishSubmit(target common.Orchestrator, expandedInput string) Model {
+	focusedState := m.GetAgentState(target.ID())
+
+	// Save to input history (avoid consecutive duplicates)
+	if len(m.InputHistory) == 0 || m.InputHistory[len(m.InputHistory)-1] != expandedInput {
+		m.InputHistory = append(m.InputHistory, expandedInput)
+	}
+	m.Pastes = make(map[string]string)
+	m.HistoryIndex = -1
+	m.HistoryWorking = ""
+
+	m.Input.Reset()
+	m.Input.SetValue("> ")
+	m.AttachedFiles = nil // Clear attachments after submit
+
+	// Only update state to thinking if it was idle, else let it stay in its current busy state
+	if focusedState.State == StateIdle || focusedState.State == StateContextWarning {
+		focusedState.State = StateThinking
+		focusedState.ContextWarningShown = false // Reset after successful submission
+	}
+	// Token count will be calculated in ContentEvent handler
+	m.updateViewport()
+	return m
+}
+
 func (m *Model) updateLayout() {
 	if m.Width == 0 || m.Height == 0 {
 		return
@@ -1230,6 +1521,19 @@ func (m *Model) updateAutocomplete() {
 		for _, cmd := range AvailableCommands {
 			if strings.HasPrefix(strings.ToLower(cmd.Name), prefix) {
 				matches = append(matches, cmd)
+			}
+		}
+		// Plugin-provided commands (deduplicated against built-in commands)
+		builtinSet := make(map[string]bool, len(AvailableCommands))
+		for _, c := range AvailableCommands {
+			builtinSet[strings.ToLower(c.Name)] = true
+		}
+		for _, cmd := range m.PluginCommands {
+			if builtinSet[strings.ToLower(cmd)] {
+				continue // skip plugin commands that shadow built-in commands
+			}
+			if strings.HasPrefix(strings.ToLower(cmd), prefix) {
+				matches = append(matches, CommandDef{Name: cmd})
 			}
 		}
 		if len(matches) > 0 {
@@ -1478,4 +1782,43 @@ func isBinary(data []byte) bool {
 	}
 
 	return false
+}
+
+// isPluginCmd checks whether the given input is a registered plugin command.
+// The command name is matched on the first whitespace-separated field, so
+// positional arguments are supported ("/lint file.go" matches "/lint").
+func isPluginCmd(input string, pluginCmds []string) bool {
+	input = strings.TrimSpace(input)
+	fields := strings.Fields(input)
+	if len(fields) == 0 {
+		return false
+	}
+	cmd := fields[0]
+	for _, pc := range pluginCmds {
+		if cmd == pc {
+			return true
+		}
+	}
+	return false
+}
+
+// SetPluginCommands replaces the model's PluginCommands slice with the provided list.
+// This is called from main.go after plugin discovery to register dynamic slash commands.
+func (m *Model) SetPluginCommands(commands []string) {
+	m.PluginCommands = make([]string, len(commands))
+	copy(m.PluginCommands, commands)
+}
+
+// ListedPluginCommands returns the list of plugin-provided slash commands
+// currently registered. Renamed from `PluginCommands()` to avoid shadowing
+// the same-named field on the Model struct (Go would resolve the bare
+// identifier inside the method body to the method itself, breaking
+// `len(m.PluginCommands)` callers in update.go/view.go).
+func (m *Model) ListedPluginCommands() []string {
+	if len(m.PluginCommands) == 0 {
+		return nil
+	}
+	result := make([]string, len(m.PluginCommands))
+	copy(result, m.PluginCommands)
+	return result
 }

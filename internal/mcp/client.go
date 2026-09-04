@@ -23,6 +23,21 @@ type Client struct {
 	sessions  map[string]*mcp.ClientSession
 	tools     map[string]*ToolAdapter
 	sdkClient *mcp.Client // single SDK client instance managing all sessions
+
+	// serverConfigs records the MCPServer config each active session was
+	// last connected with (pre-env-expansion), keyed by server name. Used
+	// by Reconcile to detect a same-named server whose command/args/env/
+	// url/dir changed, so it gets closed and reconnected instead of being
+	// silently left on its old config.
+	serverConfigs map[string]MCPServer
+
+	// OnToolsChanged, if set, is called (without c.mu held) after
+	// handleToolListChanged updates c.tools in response to a server's own
+	// tools/list_changed notification. Callers use this to re-pull
+	// GetTools() and refresh any downstream tool registry — otherwise a
+	// live server's dynamic tool changes are only picked up incidentally,
+	// whenever something else happens to re-call GetTools().
+	OnToolsChanged func()
 }
 
 // NewClient creates a new MCP client with a single underlying SDK client
@@ -30,8 +45,9 @@ type Client struct {
 // re-discover tools when a server's tool list changes dynamically.
 func NewClient() *Client {
 	c := &Client{
-		sessions: make(map[string]*mcp.ClientSession),
-		tools:    make(map[string]*ToolAdapter),
+		sessions:      make(map[string]*mcp.ClientSession),
+		tools:         make(map[string]*ToolAdapter),
+		serverConfigs: make(map[string]MCPServer),
 	}
 	c.sdkClient = mcp.NewClient(
 		&mcp.Implementation{
@@ -53,28 +69,25 @@ type ToolAdapter struct {
 	mcpTool    *mcp.Tool
 	session    *mcp.ClientSession
 	serverName string // the MCP server name from mcp_config.json
+	// name is the sanitized, length-limited, collision-free tool name
+	// assigned at connect time; empty falls back to the computed form.
+	name string
 }
 
-// Name returns the namespaced tool name in the form "{server}__{tool}".
-// Namespacing prevents allowed_tools.json collisions when multiple MCP
-// servers expose tools with the same bare name.
+// Name returns the namespaced tool name in the form "{server}__{tool}",
+// sanitized for OpenAI-compatible endpoints (only [A-Za-z0-9_-], capped
+// at common.MaxToolNameLen). Namespacing prevents allowed_tools.json
+// collisions when multiple MCP servers expose tools with the same bare
+// name. When a sanitized name would still collide with another server's
+// tool, Connect assigns a deterministic hash suffix before registering.
 func (t *ToolAdapter) Name() string {
+	if t.name != "" {
+		return t.name
+	}
 	if t.serverName != "" {
-		return sanitizeToolName(t.serverName) + "__" + sanitizeToolName(t.mcpTool.Name)
+		return common.NamespaceToolName(t.serverName, t.mcpTool.Name)
 	}
-	return sanitizeToolName(t.mcpTool.Name)
-}
-
-func sanitizeToolName(s string) string {
-	var sb strings.Builder
-	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
-			sb.WriteRune(r)
-		} else {
-			sb.WriteRune('_')
-		}
-	}
-	return sb.String()
+	return common.SanitizeToolName(t.mcpTool.Name)
 }
 
 
@@ -158,7 +171,27 @@ func (t *ToolAdapter) CallString(args json.RawMessage) string {
 // serverName is stored on each ToolAdapter so that tool names are namespaced
 // as "{server}__{tool}" in allowed_tools.json, preventing collisions between
 // servers that expose tools with the same bare name.
+//
+// Connecting to a server name that already has a session closes the old
+// session first (reconnecting must not leak the previous subprocess).
 func (c *Client) Connect(ctx context.Context, transport mcp.Transport, serverName string) error {
+	// Close any previous session for the same server name before opening a
+	// new one so reconnects never leak the old subprocess.
+	c.mu.Lock()
+	old := c.sessions[serverName]
+	if old != nil {
+		delete(c.sessions, serverName)
+		for n, t := range c.tools {
+			if t.serverName == serverName {
+				delete(c.tools, n)
+			}
+		}
+	}
+	c.mu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+
 	session, err := c.sdkClient.Connect(ctx, transport, nil)
 	if err != nil {
 		return fmt.Errorf("failed to connect to MCP server: %w", err)
@@ -177,8 +210,10 @@ func (c *Client) Connect(ctx context.Context, transport mcp.Transport, serverNam
 		}
 	}
 
-	// Store session keyed by server name so Close() shuts down every
-	// subprocess, not just the last one connected.
+	// Assign collision-free names (avoiding names taken by other servers)
+	// and store the session keyed by server name so Close() shuts down
+	// every subprocess, not just the last one connected.
+	c.assignToolNames(serverName, adapters)
 	c.mu.Lock()
 	c.sessions[serverName] = session
 	for _, adapter := range adapters {
@@ -187,6 +222,30 @@ func (c *Client) Connect(ctx context.Context, transport mcp.Transport, serverNam
 	c.mu.Unlock()
 
 	return nil
+}
+
+// assignToolNames assigns each adapter a name that is unique across all
+// currently registered tools (excluding this server's own, which are
+// about to be replaced). Rare sanitization collisions get a deterministic
+// hash suffix.
+func (c *Client) assignToolNames(serverName string, adapters []*ToolAdapter) {
+	c.mu.RLock()
+	used := make(map[string]bool, len(c.tools))
+	for n, t := range c.tools {
+		if t.serverName != serverName {
+			used[n] = true
+		}
+	}
+	c.mu.RUnlock()
+
+	bases := make([]string, len(adapters))
+	for i, a := range adapters {
+		bases[i] = a.Name()
+	}
+	uniq := common.DeduplicateToolNames(bases, used)
+	for i, a := range adapters {
+		a.name = uniq[i]
+	}
 }
 // handleToolListChanged re-discovers tools for a server when the SDK notifies
 // us of a tools/list change. It removes stale tool adapters for that server
@@ -224,7 +283,9 @@ func (c *Client) handleToolListChanged(ctx context.Context, req *mcp.ToolListCha
 		}
 	}
 
-	// Remove stale tool adapters for this server and register the new set.
+	// Assign collision-free names, then remove stale tool adapters for this
+	// server and register the new set.
+	c.assignToolNames(serverName, adapters)
 	c.mu.Lock()
 	for name, t := range c.tools {
 		if t.serverName == serverName {
@@ -235,6 +296,10 @@ func (c *Client) handleToolListChanged(ctx context.Context, req *mcp.ToolListCha
 		c.tools[adapter.Name()] = adapter
 	}
 	c.mu.Unlock()
+
+	if c.OnToolsChanged != nil {
+		c.OnToolsChanged()
+	}
 }
 
 // GetTools returns all MCP tools as Tool interface instances.
@@ -314,15 +379,23 @@ func (b *lockedBuffer) String() string {
 // using the SDK's CommandTransport for proper process lifecycle (SIGTERM → wait → SIGKILL).
 // Stderr is discarded to prevent MCP server output from bleeding into the TUI.
 func NewStdioTransport(ctx context.Context, command string, args []string, env []string) (mcp.Transport, error) {
-	return NewStdioTransportWithStderr(ctx, command, args, env, io.Discard)
+	return NewStdioTransportWithStderr(ctx, command, args, env, io.Discard, "")
 }
 
 // NewStdioTransportWithStderr is like NewStdioTransport but writes the subprocess's
 // stderr to the provided writer instead of discarding it. This is used by
 // ConnectFromConfig to buffer stderr for diagnostics on connection failure.
-func NewStdioTransportWithStderr(ctx context.Context, command string, args []string, env []string, stderr io.Writer) (mcp.Transport, error) {
+//
+// When `workDir` is non-empty, the subprocess launches with `cmd.Dir = workDir`,
+// so any relative paths in `args` (and any CWD-relative behavior the user
+// scripts rely on) resolve against that directory. This matters for plugin
+// servers shipped via npm-scoped guests whose script paths are plugin-relative.
+func NewStdioTransportWithStderr(ctx context.Context, command string, args []string, env []string, stderr io.Writer, workDir string) (mcp.Transport, error) {
 	cmd := exec.Command(command, args...)
 	cmd.Env = append(os.Environ(), env...)
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
 
 	serr, err := cmd.StderrPipe()
 	if err != nil {
@@ -383,13 +456,18 @@ func TransportForServer(ctx context.Context, server *MCPServer) (mcp.Transport, 
 		envSlice = append(envSlice, k+"="+v)
 	}
 
-	t, err := NewStdioTransportWithStderr(ctx, server.Command, server.Args, envSlice, io.Discard)
+	t, err := NewStdioTransportWithStderr(ctx, server.Command, server.Args, envSlice, io.Discard, server.Dir)
 	if err != nil {
 		return nil, err
 	}
 	return t, nil
 }
 
+// ConnectFromConfig connects to every enabled server in config. Servers
+// that are already connected (same name) are skipped, so calling this
+// with a config that includes previously-connected servers does not
+// reconnect them — this is what lets main merge plugin servers into an
+// already-connected user config without restarting every user server.
 func (c *Client) ConnectFromConfig(ctx context.Context, config *MCPConfig) error {
 	for name, server := range config.McpServers {
 		if server.Disabled {
@@ -397,7 +475,20 @@ func (c *Client) ConnectFromConfig(ctx context.Context, config *MCPConfig) error
 			continue
 		}
 
-		// Expand environment variables in server configuration
+		// Snapshot the desired config before env-var expansion so change
+		// detection (here and in Reconcile) isn't sensitive to expansion
+		// producing a different string each reload for the same inputs.
+		desiredConfig := server
+
+		c.mu.RLock()
+		_, already := c.sessions[name]
+		unchanged := already && mcpServerEqual(c.serverConfigs[name], desiredConfig)
+		c.mu.RUnlock()
+		if unchanged {
+			continue // already connected with this exact config — don't reconnect
+		}
+
+		// Expand server variables in server configuration
 		ExpandServerEnvVars(&server)
 
 		var transport mcp.Transport
@@ -411,7 +502,7 @@ func (c *Client) ConnectFromConfig(ctx context.Context, config *MCPConfig) error
 				envSlice = append(envSlice, k+"="+v)
 			}
 			var stderrBuf lockedBuffer
-			transport, err = NewStdioTransportWithStderr(ctx, server.Command, server.Args, envSlice, &stderrBuf)
+			transport, err = NewStdioTransportWithStderr(ctx, server.Command, server.Args, envSlice, &stderrBuf, server.Dir)
 			if err == nil {
 				err = c.Connect(ctx, transport, name)
 			}
@@ -433,7 +524,79 @@ func (c *Client) ConnectFromConfig(ctx context.Context, config *MCPConfig) error
 				return fmt.Errorf("failed to connect to server %s: %w", name, err)
 			}
 		}
+
+		c.mu.Lock()
+		c.serverConfigs[name] = desiredConfig
+		c.mu.Unlock()
 	}
 
 	return nil
+}
+
+// mcpServerEqual reports whether two MCPServer configs are equivalent for
+// reconnect-detection purposes: same command/args/env/url/transport/dir.
+// Disabled is deliberately excluded — callers handle enable/disable via
+// the desired-set membership check, not this comparison.
+func mcpServerEqual(a, b MCPServer) bool {
+	if a.Command != b.Command || a.URL != b.URL || a.TransportType != b.TransportType || a.Dir != b.Dir {
+		return false
+	}
+	if len(a.Args) != len(b.Args) {
+		return false
+	}
+	for i := range a.Args {
+		if a.Args[i] != b.Args[i] {
+			return false
+		}
+	}
+	if len(a.Env) != len(b.Env) {
+		return false
+	}
+	for k, v := range a.Env {
+		if b.Env[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// Reconcile brings the connected server set in line with config: sessions
+// for servers that are no longer present (or disabled) are closed, and
+// new servers are connected. A server whose name is still present and
+// enabled but whose command/args/env/url/dir changed is also closed so
+// ConnectFromConfig reconnects it with the new config instead of leaving
+// it running on the old one. Used by the plugin watcher so
+// installing/removing/editing a plugin's MCP server takes effect without
+// restarting Late.
+func (c *Client) Reconcile(ctx context.Context, config *MCPConfig) error {
+	desired := make(map[string]bool)
+	for name, server := range config.McpServers {
+		if !server.Disabled {
+			desired[name] = true
+		}
+	}
+
+	c.mu.Lock()
+	var toClose []*mcp.ClientSession
+	for name, s := range c.sessions {
+		server, stillDesired := config.McpServers[name]
+		changed := stillDesired && !server.Disabled && !mcpServerEqual(c.serverConfigs[name], server)
+		if !desired[name] || changed {
+			delete(c.sessions, name)
+			delete(c.serverConfigs, name)
+			toClose = append(toClose, s)
+			for n, t := range c.tools {
+				if t.serverName == name {
+					delete(c.tools, n)
+				}
+			}
+		}
+	}
+	c.mu.Unlock()
+
+	for _, s := range toClose {
+		_ = s.Close()
+	}
+
+	return c.ConnectFromConfig(ctx, config)
 }

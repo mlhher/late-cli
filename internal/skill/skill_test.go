@@ -123,3 +123,82 @@ func TestDiscoverSkills(t *testing.T) {
 		t.Errorf("Expected 2 skills, got %d", len(skills))
 	}
 }
+
+// TestDiscoverSkills_FollowsSymlinks is a regression test: plugin-provided
+// skills are registered as symlinks namespaced "<plugin>:<skill>" (see
+// PluginManager.RegisterPluginSkills), but os.DirEntry.IsDir() reports
+// false for a symlink even when it points at a directory. DiscoverSkills
+// must resolve entries with os.Stat so symlinked skill directories aren't
+// silently skipped, and must validate/load against the symlink's resolved
+// target (whose basename is the plain skill name) rather than the
+// namespaced link name itself, which never matches the skill's own
+// declared name.
+func TestDiscoverSkills_FollowsSymlinks(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	realDir := filepath.Join(tmpDir, "real-target", "linked-skill")
+	if err := os.MkdirAll(realDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "SKILL.md"), []byte("---\nname: linked-skill\ndescription: via symlink\n---\nbody"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	skillsDir := filepath.Join(tmpDir, "skills")
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, filepath.Join(skillsDir, "myplugin:linked-skill")); err != nil {
+		t.Fatal(err)
+	}
+
+	skills, err := DiscoverSkills([]string{skillsDir})
+	if err != nil {
+		t.Fatalf("DiscoverSkills failed: %v", err)
+	}
+	if len(skills) != 1 {
+		t.Fatalf("expected symlinked skill to be discovered, got %d skills", len(skills))
+	}
+	if skills[0].Metadata.Name != "linked-skill" {
+		t.Errorf("expected name 'linked-skill', got %q", skills[0].Metadata.Name)
+	}
+}
+
+// TestDiscoverSkills_ScopedNesting is a regression test: a scoped plugin
+// name ("@scope/plugin") produces a namespaced skill symlink one directory
+// level deeper than an unscoped plugin's (skillsDir/@scope/plugin:skill
+// rather than skillsDir/plugin:skill — see
+// PluginManager.RegisterPluginSkills). DiscoverSkills must descend into a
+// directory that itself has no SKILL.md (a scope container) to find the
+// symlinked skill(s) one level down.
+func TestDiscoverSkills_ScopedNesting(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	realDir := filepath.Join(tmpDir, "real-target", "scoped-skill")
+	if err := os.MkdirAll(realDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "SKILL.md"), []byte("---\nname: scoped-skill\ndescription: nested\n---\nbody"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	skillsDir := filepath.Join(tmpDir, "skills")
+	scopeDir := filepath.Join(skillsDir, "@scope")
+	if err := os.MkdirAll(scopeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, filepath.Join(scopeDir, "plugin:scoped-skill")); err != nil {
+		t.Fatal(err)
+	}
+
+	skills, err := DiscoverSkills([]string{skillsDir})
+	if err != nil {
+		t.Fatalf("DiscoverSkills failed: %v", err)
+	}
+	if len(skills) != 1 {
+		t.Fatalf("expected scoped-nested skill to be discovered, got %d skills", len(skills))
+	}
+	if skills[0].Metadata.Name != "scoped-skill" {
+		t.Errorf("expected name 'scoped-skill', got %q", skills[0].Metadata.Name)
+	}
+}

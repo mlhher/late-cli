@@ -149,6 +149,15 @@ func DiscoverSkillReferences(s *Skill) []string {
 }
 
 // DiscoverSkills finds skills in the specified directories.
+//
+// Entries are resolved with os.Stat (which follows symlinks) rather than
+// os.DirEntry.IsDir (which reflects the raw entry type and is false for a
+// symlink even when it points at a directory) — plugin-provided skills are
+// registered as symlinks (see PluginManager.RegisterPluginSkills) and
+// would otherwise be silently skipped. A directory that itself contains no
+// SKILL.md (e.g. a scope container like "@scope/", holding one or more
+// namespaced "@scope/plugin:skill" symlinks one level down) is scanned one
+// level deeper, matching the exact nesting scoped plugin names produce.
 func DiscoverSkills(dirs []string) ([]*Skill, error) {
 	var skills []*Skill
 	for _, dir := range dirs {
@@ -165,18 +174,65 @@ func DiscoverSkills(dirs []string) ([]*Skill, error) {
 		}
 
 		for _, entry := range entries {
-			if entry.IsDir() {
-				skillDir := filepath.Join(dir, entry.Name())
-				skill, err := LoadSkill(skillDir)
-				if err != nil {
-					// We might want to log this and continue instead of failing entirely
-					// For now, let's just log to stderr or something if I had a logger.
-					// Since I don't have a logger here, I'll just skip it.
+			skillDir := filepath.Join(dir, entry.Name())
+			if !isResolvedDir(skillDir) {
+				continue
+			}
+
+			if skill, ok := tryLoadSkillDir(skillDir); ok {
+				skills = append(skills, skill)
+				continue
+			}
+
+			// No SKILL.md directly inside — try one level down (scope
+			// container case).
+			nested, err := os.ReadDir(skillDir)
+			if err != nil {
+				continue
+			}
+			for _, ne := range nested {
+				nestedDir := filepath.Join(skillDir, ne.Name())
+				if !isResolvedDir(nestedDir) {
 					continue
 				}
-				skills = append(skills, skill)
+				if skill, ok := tryLoadSkillDir(nestedDir); ok {
+					skills = append(skills, skill)
+				}
 			}
 		}
 	}
 	return skills, nil
+}
+
+// isResolvedDir reports whether path is a directory once symlinks are
+// resolved (os.Stat, unlike os.DirEntry.IsDir, follows symlinks).
+func isResolvedDir(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+// tryLoadSkillDir loads dir as a skill if it contains SKILL.md, returning
+// (nil, false) for a non-skill directory or one whose SKILL.md fails to
+// parse. If dir is (or is inside) a symlink, it is resolved to its real
+// target first: LoadSkill validates that the skill's declared name
+// matches the directory's basename, but a plugin-registered skill symlink
+// is namespaced as "<plugin>:<skill>" (see
+// PluginManager.RegisterPluginSkills) — never equal to the skill's own
+// bare name — so validating against the symlink's own name would reject
+// every plugin skill. Validating against the resolved real directory
+// (whose basename is the plain skill name) is what the check actually
+// intends.
+func tryLoadSkillDir(dir string) (*Skill, bool) {
+	if _, err := os.Stat(filepath.Join(dir, "SKILL.md")); err != nil {
+		return nil, false
+	}
+	loadDir := dir
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		loadDir = resolved
+	}
+	skill, err := LoadSkill(loadDir)
+	if err != nil {
+		return nil, false
+	}
+	return skill, true
 }

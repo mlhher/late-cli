@@ -1,5 +1,9 @@
 package tui
 
+import (
+	"encoding/json"
+)
+
 var LateTheme = []byte(`
 {
   "document": {
@@ -123,3 +127,42 @@ var LateTheme = []byte(`
   }
 }
 `)
+
+// ResolveRenderTheme merges plugin-provided glamour modifications on top of
+// the bundled base theme. The merge is a recursive top-level merge: keys in
+// `mod` win, but unmodified keys retain their base values.
+func ResolveRenderTheme(name string, mod map[string]any) ([]byte, error) {
+	if len(mod) == 0 {
+		return LateTheme, nil
+	}
+
+	var base map[string]any
+	if err := json.Unmarshal(LateTheme, &base); err != nil {
+		return nil, err
+	}
+
+	for k, v := range mod {
+		base[k] = mergeAny(base[k], v)
+	}
+
+	// Theme name is read by humans debugging glamour; harmless otherwise.
+	if name != "" {
+		base["_late_theme_name"] = name
+	}
+
+	return json.Marshal(base)
+}
+
+// mergeAny performs a shallow merge when both sides are maps, otherwise
+// the override wins. Returns `override` if `base` is not a map.
+func mergeAny(base, override any) any {
+	if bm, ok := base.(map[string]any); ok {
+		if om, ok := override.(map[string]any); ok {
+			for k, v := range om {
+				bm[k] = mergeAny(bm[k], v)
+			}
+			return bm
+		}
+	}
+	return override
+}

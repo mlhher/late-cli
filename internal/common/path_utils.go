@@ -21,3 +21,11 @@ func LateProjectMCPConfigPath() string {
 func LateUserMCPConfigPath() (string, error) {
 	return pathutil.LateUserMCPConfigPath()
 }
+
+func LatePluginsDir() (string, error) {
+	return pathutil.LatePluginsDir()
+}
+
+func LateProjectPluginsDir() string {
+	return pathutil.LateProjectPluginsDir()
+}
