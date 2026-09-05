@@ -20,6 +20,21 @@ func TestLateThemeJSONValid(t *testing.T) {
 			t.Errorf("expected LateTheme to contain key %q", key)
 		}
 	}
+
+	doc, ok := parsed["document"].(map[string]interface{})
+	if !ok || doc["background_color"] != "#0B0C0E" {
+		t.Errorf("expected document background_color to be #0B0C0E, got %v", doc["background_color"])
+	}
+}
+
+func TestCodeBlockRendering(t *testing.T) {
+	model := NewModel(&mockOrchestrator{}, nil, nil)
+	rendered := model.renderMarkdownBlock("```go\nfmt.Println(\"hello\")\n```", 80)
+
+	// Ensure chroma doesn't emit background color sequences for tokens
+	if strings.Contains(rendered, "\x1b[48;5;233m") || strings.Contains(rendered, "48;2;18;20;25") {
+		t.Errorf("rendered code block contains chroma background escape sequence:\n%q", rendered)
+	}
 }
 
 func TestRenderWelcomeMessage(t *testing.T) {
