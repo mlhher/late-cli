@@ -6,12 +6,14 @@ import (
 	"hash/fnv"
 	"image/color"
 	"math"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	"late/internal/client"
+	"late/internal/common"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -60,11 +62,11 @@ func (m Model) View() tea.View {
 		hLfRt := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("←/→"), statusTextStyle.Render(" Choose Model "))
 		hEnter := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("Enter"), statusTextStyle.Render(" Save "))
 		hEsc := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("Esc"), statusTextStyle.Render(" Cancel "))
-		pickerHints := lipgloss.JoinHorizontal(lipgloss.Left, hUpDn, statusBg("  "), hLfRt, statusBg("  "), hEnter, statusBg("  "), hEsc)
+		pickerHints := lipgloss.JoinHorizontal(lipgloss.Left, hUpDn, "  ", hLfRt, "  ", hEnter, "  ", hEsc)
 
 		iStr = lipgloss.NewStyle().
 			Border(lipgloss.NormalBorder(), true, false, false, false).
-			BorderForeground(lipgloss.Color("#232329")).
+			BorderForeground(borderColor).
 			BorderBackground(appBgColor).
 			Background(appBgColor).
 			Width(m.Width).
@@ -97,25 +99,19 @@ func (m *Model) inputView() string {
 	textareaView := m.Input.View()
 	paddedTextarea := lipgloss.NewStyle().Padding(0, 1).Background(appBgColor).Render(textareaView)
 
-	// Dynamic border style on the outer container: pulse separator color when active
 	outerStyle := baseStyle.Copy().
 		Width(m.Width).
 		AlignVertical(lipgloss.Bottom).
 		Border(lipgloss.NormalBorder(), true, false, false, false).
-		BorderForeground(lipgloss.Color("#232329")).
+		BorderForeground(borderColor).
 		BorderBackground(appBgColor).
 		MarginBackground(appBgColor)
 
 	s := m.GetAgentState(m.Focused.ID())
 	if s.State == StateThinking || s.State == StateStreaming {
-		ms := float64(time.Now().UnixNano()) / 1e6
-		pulse := (math.Sin(ms/250.0) + 1.0) / 2.0 // oscillate 0 to 1
-
-		targetColor := secondaryColor
-
-		borderGrad := lipgloss.Blend1D(100, lipgloss.Color("#232329"), targetColor)
-		pulseColor := borderGrad[int(pulse*99)]
-		outerStyle = outerStyle.BorderForeground(pulseColor)
+		outerStyle = outerStyle.BorderForeground(activeBorder)
+	} else if s.State == StateConfirmTool {
+		outerStyle = outerStyle.BorderForeground(accentCoral)
 	}
 
 	return outerStyle.Render(paddedTextarea)
@@ -138,20 +134,20 @@ func (m *Model) autocompleteView() string {
 		prefix := "  "
 		nameStyle := lipgloss.NewStyle().
 			Foreground(subtextColor).
-			Background(thoughtBgColor).
-			PaddingLeft(2)
+			Background(cardBgColor).
+			PaddingLeft(1)
 
 		descStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240")).
-			Background(thoughtBgColor)
+			Foreground(mutedTextColor).
+			Background(cardBgColor)
 
 		if i == m.AutocompleteIndex {
 			prefix = "▸ "
 			nameStyle = nameStyle.Foreground(primaryColor).Bold(true)
-			descStyle = descStyle.Foreground(subtextColor)
+			descStyle = descStyle.Foreground(textColor)
 		}
 
-		nameStr := nameStyle.Render(fmt.Sprintf("%s%-9s", prefix, item.Name))
+		nameStr := nameStyle.Render(fmt.Sprintf("%s%-10s", prefix, item.Name))
 
 		descWidth := (w - 4) - lipgloss.Width(nameStr)
 		if descWidth < 0 {
@@ -167,24 +163,13 @@ func (m *Model) autocompleteView() string {
 	box := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder(), true, false, false, false).
 		BorderForeground(secondaryColor).
-		BorderBackground(thoughtBgColor).
-		Background(thoughtBgColor).
+		BorderBackground(cardBgColor).
+		Background(cardBgColor).
 		Width(w).
 		MaxHeight(len(lines) + 2).
 		Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 
 	return box
-}
-
-// statusBg wraps a string in the status bar background color.
-// VTE-based terminals (Ptyxis, GNOME Console) don't inherit a container's
-// background after inner ANSI resets (\e[0m). Every character cell —
-// including plain spaces and separators — needs its own explicit background
-// to prevent the terminal's theme background from leaking through.
-var statusBgStyle = lipgloss.NewStyle().Background(appBgColor)
-
-func statusBg(s string) string {
-	return statusBgStyle.Render(s)
 }
 
 // formatTokenCount formats a token count with k/m suffix for compact display.
@@ -208,14 +193,14 @@ func (m *Model) renderContextBar(current, max int) string {
 		// Unknown max: show the styled count in angle brackets
 		countStr := lipgloss.NewStyle().Foreground(secondaryColor).Background(appBgColor).Render(m.formatTokenCount(current))
 		unknownStyle := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Render("?")
-		return countStr + statusBg(" ") + unknownStyle
+		return countStr + " " + unknownStyle
 	}
 
 	if max == 0 {
 		// Reported unlimited: show with infinity indicator
 		countStr := lipgloss.NewStyle().Foreground(secondaryColor).Background(appBgColor).Render(m.formatTokenCount(current))
 		infStyle := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Render("∞")
-		return countStr + statusBg(" ") + infStyle
+		return countStr + " " + infStyle
 	}
 
 	barWidth := 10
@@ -232,7 +217,7 @@ func (m *Model) renderContextBar(current, max int) string {
 	var barColor color.Color
 	switch {
 	case pct >= 85:
-		barColor = warningColor
+		barColor = accentCoral
 	case pct >= 60:
 		barColor = primaryColor
 	default:
@@ -240,7 +225,7 @@ func (m *Model) renderContextBar(current, max int) string {
 	}
 
 	fillStyle := lipgloss.NewStyle().Foreground(barColor).Background(appBgColor)
-	emptyStyle := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor)
+	emptyStyle := lipgloss.NewStyle().Foreground(borderColor).Background(appBgColor)
 
 	bar := ""
 	for range filled {
@@ -250,27 +235,27 @@ func (m *Model) renderContextBar(current, max int) string {
 		bar += emptyStyle.Render("░")
 	}
 
-	bracketStyle := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor)
+	bracketStyle := lipgloss.NewStyle().Foreground(mutedTextColor).Background(appBgColor)
 	barStr := bracketStyle.Render("[") + bar + bracketStyle.Render("]")
 
-	pctStyle := lipgloss.NewStyle().Foreground(barColor).Background(appBgColor)
+	pctStyle := lipgloss.NewStyle().Foreground(barColor).Background(appBgColor).Bold(true)
 	label := pctStyle.Render(fmt.Sprintf("%d%%", pct))
 
 	size := fmt.Sprintf("%s/%s", m.formatTokenCount(current), m.formatTokenCount(max))
 	sizeStyle := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor)
 
-	return barStr + statusBg(" ") + label + statusBg(" (") + sizeStyle.Render(size) + statusBg(")")
+	return barStr + " " + label + " (" + sizeStyle.Render(size) + ")"
 }
 
 func (m *Model) renderMinimalEqualizer() string {
-	t := float64(time.Now().UnixMilli()) / 180.0
+	t := float64(time.Now().UnixMilli()) / 140.0
 	bars := []rune(" ▂▃▄▅▆▇█")
 	numBars := len(bars)
 
-	var cols [3]rune
-	for i := 0; i < 3; i++ {
-		phase := float64(i) * 1.5
-		val := (math.Sin(t+phase) + 1.0) / 2.0 // oscillates 0 to 1
+	var cols [5]rune
+	phases := [5]float64{0.0, 1.3, 2.7, 4.0, 5.2}
+	for i := 0; i < 5; i++ {
+		val := (math.Sin(t+phases[i]) + 1.0) / 2.0 // oscillates 0 to 1
 		idx := int(val * float64(numBars-1))
 		if idx < 0 {
 			idx = 0
@@ -281,7 +266,7 @@ func (m *Model) renderMinimalEqualizer() string {
 		cols[i] = bars[idx]
 	}
 
-	bracketStyle := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor)
+	bracketStyle := lipgloss.NewStyle().Foreground(mutedTextColor).Background(appBgColor)
 	equalizerStyle := lipgloss.NewStyle().Foreground(secondaryColor).Background(appBgColor)
 
 	var sb strings.Builder
@@ -293,17 +278,31 @@ func (m *Model) renderMinimalEqualizer() string {
 	return sb.String()
 }
 
+func (m *Model) renderIdleEqualizer() string {
+	bracketStyle := lipgloss.NewStyle().Foreground(mutedTextColor).Background(appBgColor)
+	barStyle := lipgloss.NewStyle().Foreground(borderColor).Background(appBgColor)
+
+	var sb strings.Builder
+	sb.WriteString(bracketStyle.Render("["))
+	for i := 0; i < 5; i++ {
+		sb.WriteString(barStyle.Render(" "))
+	}
+	sb.WriteString(bracketStyle.Render("]"))
+	return sb.String()
+}
+
 func (m *Model) renderScannerTrack(symbol string, symbolColor color.Color) string {
 	t := float64(time.Now().UnixMilli()) / 120.0
-	pos := int(math.Round(2.5 + 2.5*math.Sin(t)))
+	pos := int(math.Round(3.0 + 3.0*math.Sin(t)))
 
-	track := []rune("──────")
+	track := []rune("·······")
 	if pos >= 0 && pos < len(track) {
 		track[pos] = []rune(symbol)[0]
 	}
 
-	bracketStyle := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor)
+	bracketStyle := lipgloss.NewStyle().Foreground(mutedTextColor).Background(appBgColor)
 	symbolStyle := lipgloss.NewStyle().Foreground(symbolColor).Background(appBgColor)
+	dotStyle := lipgloss.NewStyle().Foreground(borderColor).Background(appBgColor)
 
 	var sb strings.Builder
 	sb.WriteString(bracketStyle.Render("["))
@@ -311,7 +310,7 @@ func (m *Model) renderScannerTrack(symbol string, symbolColor color.Color) strin
 		if string(r) == symbol {
 			sb.WriteString(symbolStyle.Render(string(r)))
 		} else {
-			sb.WriteString(bracketStyle.Render(string(r)))
+			sb.WriteString(dotStyle.Render(string(r)))
 		}
 	}
 	sb.WriteString(bracketStyle.Render("]"))
@@ -326,73 +325,87 @@ func (m *Model) statusBarView() string {
 	}
 
 	if m.Mode == ViewModelPicker {
-		bullet := lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Render("◆")
-		label := lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true).Render("models")
-		leftSection := bullet + statusBg(" ") + label
-
-		status := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Render("Configuring active agent models")
+		leftSection := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("models")
+		status := lipgloss.NewStyle().Foreground(subtextColor).Render("configure agent models")
 		hasToast := m.ToastMessage != "" && time.Now().UnixMilli() < m.ToastExpireTime
 		if hasToast {
 			if m.ToastWarning {
-				status = statusWarningStyle.Render("⚠ " + m.ToastMessage)
+				status = statusWarningStyle.Render(m.ToastMessage)
 			} else {
-				status = lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true).Render("✓ " + m.ToastMessage)
+				status = statusSuccessStyle.Render(m.ToastMessage)
 			}
 		}
 
-		rightSection := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Render("enter Save • esc Cancel")
+		rightSection := lipgloss.NewStyle().Foreground(subtextColor).Render("enter save · esc cancel")
 
 		usableW := w - 2
 		leftWidth := lipgloss.Width(leftSection)
 		rightWidth := lipgloss.Width(rightSection)
 		statusWidth := lipgloss.Width(status)
 
-		spaceWidth := usableW - leftWidth - rightWidth - statusWidth - 3
+		spaceWidth := usableW - leftWidth - rightWidth - statusWidth - 2
 		if spaceWidth < 0 {
 			spaceWidth = 0
 		}
-		space := statusBg(strings.Repeat(" ", spaceWidth))
+		space := strings.Repeat(" ", spaceWidth)
 
-		parts := []string{leftSection, statusBg("   "), status, space, rightSection}
+		parts := []string{leftSection, "  ", status, space, rightSection}
 		content := lipgloss.JoinHorizontal(lipgloss.Left, parts...)
-		paddedContent := statusBg(" ") + content + statusBg(" ")
-		return statusBarBaseStyle.Width(w).Render(paddedContent)
+		return statusBarBaseStyle.Width(w).Render(" " + content + " ")
 	}
 
 	s := m.GetAgentState(m.Focused.ID())
 
-	var leftSection string
-	statusText := s.StatusText
+	var leftItems []string
 
+	// State (far left)
+	var statePart string
+	statusText := s.StatusText
 	switch s.State {
 	case StateThinking:
-		scanner := m.renderScannerTrack("✦", primaryColor)
-		label := lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true).Render("working")
-		leftSection = scanner + statusBg(" ") + label
+		statePart = m.renderScannerTrack("✦", primaryColor)
 	case StateStreaming:
-		eq := m.renderMinimalEqualizer()
-		label := lipgloss.NewStyle().Foreground(secondaryColor).Background(appBgColor).Bold(true).Render("streaming")
-		leftSection = eq + statusBg(" ") + label
+		statePart = m.renderMinimalEqualizer()
 	case StateConfirmTool:
-		icon := lipgloss.NewStyle().Foreground(warningColor).Background(appBgColor).Render("❖")
-		label := lipgloss.NewStyle().Foreground(warningColor).Background(appBgColor).Bold(true).Render("confirm")
-		leftSection = icon + statusBg(" ") + label
-		statusText = "Authorize Tool Execution (y/s/p/g/n)"
+		statePart = m.renderIdleEqualizer()
+		statusText = "authorize execution (y/s/p/g/n)"
 	default:
-		bullet := lipgloss.NewStyle().Foreground(secondaryColor).Background(appBgColor).Render("●")
-		label := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Render("idle")
-		leftSection = bullet + statusBg(" ") + label
+		statePart = m.renderIdleEqualizer()
+	}
+	leftItems = append(leftItems, statePart)
+
+	// Branch or CWD (whisper-muted, unobtrusive context)
+	if m.ShowCWD {
+		if m.GitBranch != "" {
+			branchPart := lipgloss.NewStyle().Foreground(mutedTextColor).Render(m.GitBranch)
+			leftItems = append(leftItems, branchPart)
+		} else if m.CWD != "" {
+			display := filepath.Base(m.CWD)
+			if display == "/" || display == "." {
+				display = m.CWD
+			}
+			repoPart := lipgloss.NewStyle().Foreground(mutedTextColor).Render(display)
+			leftItems = append(leftItems, repoPart)
+		}
 	}
 
-	// Append CWD to the left section
-	if m.ShowCWD && m.CWD != "" {
-		cwdStyle := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor)
-		display := m.CWD
-		// Truncate long paths
-		if lipgloss.Width(display) > 40 {
-			display = "…" + display[len(display)-38:]
+	leftSection := strings.Join(leftItems, statusDivider)
+
+	// Center: toast or active action text
+	var status string
+	hasToast := m.ToastMessage != "" && time.Now().UnixMilli() < m.ToastExpireTime
+	if hasToast {
+		if m.ToastWarning {
+			status = lipgloss.NewStyle().Foreground(accentCoral).Bold(true).Render(m.ToastMessage)
+		} else {
+			status = lipgloss.NewStyle().Foreground(accentEmerald).Render(m.ToastMessage)
 		}
-		leftSection += statusBg("  ") + cwdStyle.Render(display)
+	} else if statusText != "" && statusText != "Working..." && statusText != "Ready" && statusText != "Closed" {
+		if s.State == StateConfirmTool {
+			status = statusWarningStyle.Render(statusText)
+		} else {
+			status = lipgloss.NewStyle().Foreground(subtextColor).Italic(true).Render(statusText)
+		}
 	}
 
 	// Check if any other agent is waiting for confirmation
@@ -403,87 +416,42 @@ func (m *Model) statusBarView() string {
 			break
 		}
 	}
-
-	var warning string
 	if otherWaiting {
-		warning = statusWarningStyle.Render("⚠️ SUBAGENT CONFIRM REQUIRED")
-		if strings.Contains(statusText, "spawned") {
-			statusText = ""
-		}
-	}
-
-	// If there's an active toast message, render it. Otherwise, standard status text.
-	var status string
-	hasToast := m.ToastMessage != "" && time.Now().UnixMilli() < m.ToastExpireTime
-	if hasToast {
-		if m.ToastWarning {
-			status = statusWarningStyle.Render("⚠ " + m.ToastMessage)
-		} else {
-			status = lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true).Render("✓ " + m.ToastMessage)
-		}
-	} else if statusText != "" && statusText != "Working..." && statusText != "Ready" && statusText != "Closed" {
-		if s.State == StateConfirmTool {
-			status = statusWarningStyle.Render(statusText)
-		} else {
-			status = lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Italic(true).Render(statusText)
-		}
-	}
-
-	// Append warning to status area if present
-	if warning != "" {
+		warn := statusWarningStyle.Render("subagent confirm required")
 		if status != "" {
-			status += statusBg("   ") + warning
+			status += " · " + warn
 		} else {
-			status = warning
+			status = warn
 		}
 	}
 
-	// Build breadcrumbs
+	// Right: Attachments, Context, Breadcrumbs, Help
+	var rightItems []string
+	if len(m.AttachedFiles) > 0 {
+		rightItems = append(rightItems, lipgloss.NewStyle().Foreground(secondaryColor).Render(fmt.Sprintf("%d files", len(m.AttachedFiles))))
+	}
+
+	maxTokens := m.Focused.MaxTokens()
+	if s.CumulativeTokenCount > 0 {
+		rightItems = append(rightItems, m.renderContextBar(s.CumulativeTokenCount, maxTokens))
+	}
+
+	// Breadcrumbs
 	var pathParts []string
 	curr := m.Focused
 	for curr != nil {
 		pathParts = append([]string{curr.ID()}, pathParts...)
 		curr = curr.Parent()
 	}
-
-	var breadcrumbStr string
-	if len(pathParts) > 0 {
-		breadcrumbStr = breadcrumbLateStyle.Render("late")
-		for _, part := range pathParts {
-			breadcrumbStr += statusBg(" ") + breadcrumbSeparatorStyle.Render("›") + statusBg(" ") + breadcrumbAgentStyle.Render(part)
-		}
+	if len(pathParts) > 1 {
+		rightItems = append(rightItems, strings.Join(pathParts, " › "))
 	}
 
-	// Build right-side telemetry: Attached files, Context bar, Breadcrumbs, Help
-	var attachedStr string
-	if len(m.AttachedFiles) > 0 {
-		attachedStr = statusAttachedStyle.Render(fmt.Sprintf("📎 %d files", len(m.AttachedFiles)))
-	}
+	rightItems = append(rightItems, lipgloss.NewStyle().Foreground(mutedTextColor).Render("ctrl+h help"))
+	rightSection := strings.Join(rightItems, statusDivider)
 
-	// Context bar
-	var tokenStr string
-	maxTokens := m.Focused.MaxTokens()
-	if s.CumulativeTokenCount > 0 {
-		tokenStr = m.renderContextBar(s.CumulativeTokenCount, maxTokens)
-	}
-
-	helpStr := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Render("ctrl+h Help")
-
-	var rightParts []string
-	if attachedStr != "" {
-		rightParts = append(rightParts, attachedStr)
-	}
-	if tokenStr != "" {
-		rightParts = append(rightParts, tokenStr)
-	}
-	if breadcrumbStr != "" {
-		rightParts = append(rightParts, breadcrumbStr)
-	}
-	rightParts = append(rightParts, helpStr)
-	rightSection := strings.Join(rightParts, statusBg("   "))
-
-	// Adjust layout and truncate status text in the middle if necessary
-	usableW := w - 2 // Usable width excluding left/right padding space
+	// Layout spacing
+	usableW := w - 2
 	if usableW < 1 {
 		usableW = 1
 	}
@@ -494,52 +462,31 @@ func (m *Model) statusBarView() string {
 	spaceWidth := usableW - leftWidth - rightWidth
 	if status != "" {
 		statusWidth := lipgloss.Width(status)
-		if statusWidth+3 > spaceWidth {
-			// Truncate status text to fit
-			maxStatusW := spaceWidth - 3
+		if statusWidth+2 > spaceWidth {
+			maxStatusW := spaceWidth - 2
 			if maxStatusW < 0 {
 				maxStatusW = 0
 			}
-			if hasToast {
-				prefix := "✓ "
-				style := lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true)
-				if m.ToastWarning {
-					prefix = "⚠ "
-					style = statusWarningStyle
-				}
-				truncated := m.truncateWithEllipsis(prefix+m.ToastMessage, maxStatusW)
-				status = style.Render(truncated)
-			} else {
-				truncated := m.truncateWithEllipsis(statusText, maxStatusW)
-				if s.State == StateConfirmTool {
-					status = statusWarningStyle.Render(truncated)
-				} else {
-					status = lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Italic(true).Render(truncated)
-				}
-			}
+			status = m.truncateWithEllipsis(status, maxStatusW)
 			statusWidth = lipgloss.Width(status)
 		}
-		if status != "" {
-			spaceWidth = spaceWidth - statusWidth - 3
-		}
+		spaceWidth = spaceWidth - statusWidth - 2
 	}
-
 	if spaceWidth < 0 {
 		spaceWidth = 0
 	}
 
-	space := statusBg(strings.Repeat(" ", spaceWidth))
+	space := strings.Repeat(" ", spaceWidth)
 
 	var parts []string
 	parts = append(parts, leftSection)
 	if status != "" {
-		parts = append(parts, statusBg("   "), status)
+		parts = append(parts, "  ", status)
 	}
 	parts = append(parts, space, rightSection)
 
 	content := lipgloss.JoinHorizontal(lipgloss.Left, parts...)
-	paddedContent := statusBg(" ") + content + statusBg(" ")
-	return statusBarBaseStyle.Width(w).Render(paddedContent)
+	return statusBarBaseStyle.Width(w).Render(" " + content + " ")
 }
 
 func (m *Model) updateViewport() {
@@ -568,16 +515,16 @@ func (m *Model) updateViewport() {
 
 		var prompt string
 		if busy {
-			prompt = "**Stop current agent?**\n\nThe agent is still working. Stopping will discard the current response.\n\n> Press **[y]** Yes, stop it  |  **[n]** No, continue"
+			prompt = "**Stop active agent?**\n\nThe agent is currently executing. Stopping will immediately halt tool execution and streaming.\n\n> Press **[y]** Yes, stop it  ·  **[n]** No, continue"
 		} else {
-			prompt = "**Exit Late?**\n\n> Press **[y]** Yes, quit  |  **[n]** No, stay"
+			prompt = "**Exit Late?**\n\nAre you sure you want to exit the session?\n\n> Press **[y]** Yes, quit  ·  **[n]** No, stay"
 		}
 		md, _ := m.Renderer.Render(prompt)
 		dialog := lipgloss.NewStyle().
 			Border(lipgloss.DoubleBorder()).
-			BorderForeground(warningColor).
+			BorderForeground(accentCoral).
 			Padding(1, 2).
-			Background(appBgColor).
+			Background(cardBgColor).
 			Render(md)
 
 		// Center the dialog with a solid background
@@ -596,17 +543,29 @@ func (m *Model) updateViewport() {
 
 		helpText := `# Late Help & Keybindings
 
-Here is a list of available keyboard shortcuts:
+### Navigation & Focus
+  **tab**             Switch active agent / subagent tab
+  **shift+home/end**  Scroll to top / bottom of chat history
+  **↑ / ↓**           Browse prompt input history
 
-  **ctrl+o**        Toggle File Picker (attach files to prompt)
-  **ctrl+x**        Clear attached files
-  **ctrl+g** / **esc**   Interrupt / stop active agent
-  **tab**           Switch focus between active subagents
-  **alt+enter**     Insert newline in prompt
-  **enter**         Submit prompt
-  **ctrl+h**        Toggle this Help menu
+### Prompt & Composition
+  **enter**           Submit prompt
+  **alt+enter**       Insert newline into prompt
+  **/compose**        Draft prompt in external $EDITOR
 
-Press **ctrl+h** or **esc** to return to the chat.`
+### Attachments & Tools
+  **ctrl+o**          Toggle file / image attachment picker
+  **ctrl+x**          Clear attached files
+  **ctrl+g** / **esc** Interrupt / stop active agent
+
+### Slash Commands
+  **/model**          Configure AI models for agents
+  **/new**            Start fresh conversation session
+  **/log**            Browse git commit history & diffs
+  **/rewind**         Time-travel back to previous prompt
+  **/quit**           Exit Late
+
+Press **ctrl+h** or **esc** to return to chat.`
 
 		// Total outer width is m.Viewport.Width()
 		// Usable inner width = outer width - padding (4) - border (2) = outer width - 6
@@ -617,7 +576,7 @@ Press **ctrl+h** or **esc** to return to the chat.`
 		rendered := m.renderMarkdownBlock(helpText, msgWidth)
 		boxed := lipgloss.NewStyle().
 			Padding(1, 2).
-			Border(lipgloss.DoubleBorder()).
+			Border(lipgloss.RoundedBorder()).
 			BorderForeground(secondaryColor).
 			Width(msgWidth).
 			Background(appBgColor).
@@ -669,30 +628,24 @@ Press **ctrl+h** or **esc** to return to the chat.`
 		var rendered string
 		switch msg.Role {
 		case "user":
+			promptPrefix := promptSymbolStyle.Render("❯ ")
 			content := msg.Content.UIString()
+			userText := userMsgStyle.Width(msgWidth - 3).Render(content)
+			userBlock := promptPrefix + userText
 			if len(msg.AttachedFiles) > 0 {
 				var names []string
 				for _, f := range msg.AttachedFiles {
-					name := filepath.Base(f)
-					if len(name) > 20 {
-						name = name[:17] + "..."
-					}
-					names = append(names, name)
+					names = append(names, filepath.Base(f))
 				}
-
-				attachmentLabel := "Attached: " + strings.Join(names, ", ")
-				maxLabelWidth := msgWidth - 4
-				if lipgloss.Width(attachmentLabel) > maxLabelWidth {
-					attachmentLabel = m.truncateWithEllipsis(attachmentLabel, maxLabelWidth)
-				}
-				content += "\n\n" + attachmentStyle.Render(attachmentLabel)
+				userBlock += "\n" + attachmentStyle.Render("  ↳ attached: "+strings.Join(names, ", "))
 			}
-			rendered = userMsgStyle.Width(msgWidth + 1).Render(content)
+			rendered = "\n" + userBlock + "\n"
 		case "assistant":
 			var assistantParts []string
 			if msg.ReasoningContent != "" {
-				assistantParts = append(assistantParts, thoughtHeaderStyle.Width(msgWidth+1).Render("Thoughts:"))
-				assistantParts = append(assistantParts, thinkingStyle.Width(msgWidth-2).Render(msg.ReasoningContent))
+				thoughtHeader := thoughtHeaderStyle.Render("· thinking")
+				thoughtBody := thinkingStyle.Width(msgWidth - 4).Render(msg.ReasoningContent)
+				assistantParts = append(assistantParts, thoughtHeader, thoughtBody)
 			}
 			if msg.Content.String() != "" {
 				innerWidth := m.Viewport.Width() - AIMsgOverhead
@@ -700,7 +653,7 @@ Press **ctrl+h** or **esc** to return to the chat.`
 					innerWidth = 1
 				}
 				md := m.renderMarkdownBlock(msg.Content.String(), innerWidth)
-				assistantParts = append(assistantParts, aiMsgStyle.Width(msgWidth+1).Render(md))
+				assistantParts = append(assistantParts, md)
 			}
 			for _, tc := range msg.ToolCalls {
 				// Try to use CallString() for meaningful display
@@ -712,7 +665,7 @@ Press **ctrl+h** or **esc** to return to the chat.`
 						}
 					}
 				}
-				assistantParts = append(assistantParts, tagStyle.Width(msgWidth+1).Render(fmt.Sprintf("◆ %s", callStr)))
+				assistantParts = append(assistantParts, m.renderToolBadge(tc.Function.Name, callStr, false, msgWidth+1))
 			}
 			rendered = strings.Join(assistantParts, "\n")
 		}
@@ -796,10 +749,12 @@ Press **ctrl+h** or **esc** to return to the chat.`
 	// Dedup check: Only render streaming if NOT in an interaction state (where history already has the tools)
 	if (s.State == StateStreaming || s.State == StateThinking) && s.State != StateConfirmTool {
 		var activeParts []string
+
 		if s.StreamingState.ReasoningContent != "" {
-			activeParts = append(activeParts, thoughtHeaderStyle.Width(msgWidth+1).Render("Thoughts:"))
+			thoughtHeader := thoughtHeaderStyle.Render("· thinking")
 			reasoning := streamingTextWindow(s.StreamingState.ReasoningContent, msgWidth, m.Viewport.Height()*3)
-			activeParts = append(activeParts, thinkingStyle.Width(msgWidth-2).Render(reasoning))
+			thoughtBody := thinkingStyle.Width(msgWidth - 4).Render(reasoning)
+			activeParts = append(activeParts, thoughtHeader, thoughtBody)
 		}
 		if s.StreamingState.Content != "" {
 			innerWidth := m.Viewport.Width() - AIMsgOverhead
@@ -846,13 +801,8 @@ Press **ctrl+h** or **esc** to return to the chat.`
 				t := strings.TrimLeft(tail, "\n")
 				if t != "" {
 					t = streamingTextWindow(t, msgWidth, m.Viewport.Height()*2)
-					// Pulsing Caret for streaming effect
-					ms := float64(time.Now().UnixNano()) / 1e6
-					caretOpacity := (math.Sin(ms/150.0) + 1.0) / 2.0
-					caretGrad := lipgloss.Blend1D(100, appBgColor, primaryColor)
-					caretCol := caretGrad[int(caretOpacity*99)]
-					caret := lipgloss.NewStyle().Foreground(caretCol).Render("█")
-
+					// Caret for streaming effect
+					caret := lipgloss.NewStyle().Foreground(primaryColor).Render("█")
 					tailStyled = aiMsgStyle.Copy().Foreground(textColor).Width(msgWidth + 1).Render(t + caret)
 				}
 			}
@@ -881,7 +831,7 @@ Press **ctrl+h** or **esc** to return to the chat.`
 					}
 				}
 			}
-			activeParts = append(activeParts, m.renderAnimatedTag(fmt.Sprintf("%s %s", m.Spinner.View(), callStr), tagStyle, msgWidth+1, true))
+			activeParts = append(activeParts, m.renderToolBadge(tc.Function.Name, callStr, true, msgWidth+1))
 		}
 		if len(activeParts) > 0 {
 			r := strings.Join(activeParts, "\n")
@@ -896,7 +846,7 @@ Press **ctrl+h** or **esc** to return to the chat.`
 			})
 			currentLine += linesCount
 		} else if s.State == StateThinking {
-			r := m.renderAnimatedTag("Thinking", thinkingStyle, msgWidth-2, true)
+			r := m.renderAnimatedTag("· thinking...", thinkingStyle, msgWidth-2, true)
 			blocks = append(blocks, r)
 			linesCount := strings.Count(r, "\n") + 1
 
@@ -917,9 +867,9 @@ Press **ctrl+h** or **esc** to return to the chat.`
 		if runtime.GOOS == "windows" && displayName == "bash" {
 			displayName = "PowerShell"
 		}
-		prompt := fmt.Sprintf("The agent wants to execute a **%s** command.\n\n```json\n%s\n```\n\n> Press **[y]** Allow once | **[s]** Allow always (session) | **[p]** Allow always (project) | **[g]** Allow always (global) | **[n]** Deny", displayName, tc.Function.Arguments)
+		prompt := fmt.Sprintf("**Security Authorization Required**\n\nThe agent requests permission to execute a **%s** command:\n\n```json\n%s\n```\n\n> Press **[y]** Allow once  ·  **[s]** Allow always (session)  ·  **[p]** Allow always (project)  ·  **[g]** Allow always (global)  ·  **[n]** Deny", displayName, tc.Function.Arguments)
 		md, _ := m.Renderer.Render(prompt)
-		r := aiMsgStyle.Width(msgWidth + 1).Border(lipgloss.DoubleBorder()).BorderForeground(warningColor).Render(md)
+		r := aiMsgStyle.Width(msgWidth + 1).Border(lipgloss.DoubleBorder()).BorderForeground(accentCoral).Render(md)
 		blocks = append(blocks, r)
 		linesCount := strings.Count(r, "\n") + 1
 
@@ -933,7 +883,7 @@ Press **ctrl+h** or **esc** to return to the chat.`
 	}
 
 	if s.State == StateContextWarning {
-		prompt := "⚠️ **Context Limit Warning**\n\nYou are approaching the maximum context size for this session (over 90% used). It is highly recommended to **start a new session** to ensure the agent maintains full context and accuracy.\n\n> Press **[Enter]** again to proceed anyway, or start a new session."
+		prompt := "**Context Limit Warning**\n\nYou are approaching the maximum context size for this session (over 90% used). It is highly recommended to **start a new session** to ensure the agent maintains full context and accuracy.\n\n> Press **[Enter]** again to proceed anyway, or start a new session."
 		md, _ := m.Renderer.Render(prompt)
 		r := aiMsgStyle.Width(msgWidth + 1).Border(lipgloss.DoubleBorder()).BorderForeground(warningColor).Render(md)
 		blocks = append(blocks, r)
@@ -953,7 +903,7 @@ Press **ctrl+h** or **esc** to return to the chat.`
 		var prompt string
 		var r string
 		if strings.Contains(errStr, "exceeds the available context size") || strings.Contains(errStr, "context_length_exceeded") {
-			prompt = "🛑 **Context Limit Exceeded**\n\nThis session has hit the model's absolute context limit. The agent cannot proceed further in this session.\n\n**Action Required:** Please **start a new session** to continue your work."
+			prompt = "**Context Limit Exceeded**\n\nThis session has hit the model's absolute context limit. The agent cannot proceed further in this session.\n\n**Action Required:** Please **start a new session** to continue your work."
 			md, _ := m.Renderer.Render(prompt)
 			r = aiMsgStyle.Width(msgWidth + 1).Border(lipgloss.DoubleBorder()).BorderForeground(lipgloss.Color("#FF0000")).Render(md)
 		} else {
@@ -1014,11 +964,7 @@ Press **ctrl+h** or **esc** to return to the chat.`
 	m.LastFocusedID = m.Focused.ID()
 
 	atBottom := m.Viewport.AtBottom()
-	paddedContent := lipgloss.NewStyle().
-		Width(m.Viewport.Width()).
-		Background(appBgColor).
-		Render(fullContent)
-	m.Viewport.SetContent(paddedContent)
+	m.Viewport.SetContent(fullContent)
 	if atBottom {
 		m.Viewport.GotoBottom()
 	}
@@ -1081,11 +1027,12 @@ func historyHashesMatch(history []client.ChatMessage, hashes []uint64) bool {
 
 func (m *Model) renderFullStreamingResponse(s *AppState, msgWidth int) string {
 	var activeParts []string
+
 	if s.StreamingState.ReasoningContent != "" {
-		activeParts = append(activeParts, thoughtHeaderStyle.Width(msgWidth+1).Render("Thoughts:"))
-		reasoningWidth := max(msgWidth-2, 1)
+		thoughtHeader := thoughtHeaderStyle.Render("· thinking")
+		reasoningWidth := max(msgWidth-4, 1)
 		reasoning := ansi.Wordwrap(s.StreamingState.ReasoningContent, reasoningWidth, "")
-		activeParts = append(activeParts, thinkingStyle.Width(reasoningWidth).Render(reasoning))
+		activeParts = append(activeParts, thoughtHeader, thinkingStyle.Width(reasoningWidth).Render(reasoning))
 	}
 	if s.StreamingState.Content != "" {
 		innerWidth := max(m.Viewport.Width()-AIMsgOverhead, 1)
@@ -1101,10 +1048,10 @@ func (m *Model) renderFullStreamingResponse(s *AppState, msgWidth int) string {
 				}
 			}
 		}
-		activeParts = append(activeParts, m.renderAnimatedTag(fmt.Sprintf("%s %s", m.Spinner.View(), callStr), tagStyle, msgWidth+1, true))
+		activeParts = append(activeParts, m.renderToolBadge(tc.Function.Name, callStr, true, msgWidth+1))
 	}
 	if len(activeParts) == 0 && s.State == StateThinking {
-		activeParts = append(activeParts, m.renderAnimatedTag("Thinking", thinkingStyle, msgWidth-2, true))
+		activeParts = append(activeParts, m.renderAnimatedTag("· thinking...", thinkingStyle, msgWidth-2, true))
 	}
 	return strings.Join(activeParts, "\n")
 }
@@ -1221,6 +1168,40 @@ func (m *Model) renderAnimatedTag(text string, baseStyle lipgloss.Style, width i
 	return baseStyle.Copy().Width(width).Render(sb.String())
 }
 
+func (m *Model) renderToolBadge(toolName, callStr string, isStreaming bool, width int) string {
+	var icon string
+	lower := strings.ToLower(toolName + " " + callStr)
+	switch {
+	case strings.Contains(lower, "bash") || strings.Contains(lower, "powershell") || strings.Contains(lower, "shell"):
+		icon = "$"
+	case strings.Contains(lower, "write") || strings.Contains(lower, "edit") || strings.Contains(lower, "replace"):
+		icon = "edit"
+	case strings.Contains(lower, "read") || strings.Contains(lower, "view") || strings.Contains(lower, "cat"):
+		icon = "read"
+	case strings.Contains(lower, "find") || strings.Contains(lower, "grep") || strings.Contains(lower, "search"):
+		icon = "find"
+	case strings.Contains(lower, "subagent") || strings.Contains(lower, "spawn") || strings.Contains(lower, "agent"):
+		icon = "agent"
+	case strings.Contains(lower, "git"):
+		icon = "git"
+	default:
+		icon = "call"
+	}
+
+	badgeStyle := tagStyle.Copy().Foreground(subtextColor)
+
+	if isStreaming {
+		text := fmt.Sprintf("  ↳ %s: %s · running", icon, callStr)
+		return m.renderAnimatedTag(text, badgeStyle, width, true)
+	}
+
+	text := fmt.Sprintf("  ↳ %s: %s", icon, callStr)
+	if lipgloss.Width(text) > width {
+		text = m.truncateWithEllipsis(text, width)
+	}
+	return badgeStyle.Copy().Width(width).Render(text)
+}
+
 func (m *Model) truncateWithEllipsis(s string, w int) string {
 	if lipgloss.Width(s) <= w {
 		return s
@@ -1258,51 +1239,134 @@ func (m *Model) renderMarkdownBlock(content string, innerWidth int) string {
 // re-rendered each frame).
 // renderWelcomeMessage builds the rich welcome screen shown when history is empty.
 func (m *Model) renderWelcomeMessage() string {
-	msgWidth := m.Viewport.Width() - 6
-	if msgWidth < 1 {
-		msgWidth = 74
+	w := m.Viewport.Width()
+	if w < 1 {
+		w = 80
 	}
 
-	// Build model line
-	modelStr := ""
-	if m.ModelName != "" {
-		modelStr = fmt.Sprintf("**Model:** %s", m.ModelName)
+	// 1. Brandmark Header
+	var banner string
+	if w >= 60 {
+		l1 := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("  █    ████▄ ▀█████ █▀ █████")
+		l2 := lipgloss.NewStyle().Foreground(primaryGlow).Bold(true).Render("  █    █▄▄█▄   ██   ██ █▄▄  ")
+		l3 := lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("  ████ █   █   ██   ██ █████")
+		banner = l1 + "\n" + l2 + "\n" + l3
 	} else {
-		modelStr = "**Model:** —"
+		banner = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("  L A T E")
 	}
 
-	// Build context size line
+	tagline := lipgloss.NewStyle().Foreground(subtextColor).Render("  Autonomous Agentic Pair-Programmer") +
+		lipgloss.NewStyle().Foreground(mutedTextColor).Render(" · v"+common.Version)
+
+	// 2. System Status Badges
+	modelName := m.ModelName
+	if modelName == "" {
+		modelName = "default"
+	}
+	modelPill := lipgloss.NewStyle().Background(cardBgColor).Padding(0, 1).Render(
+		lipgloss.NewStyle().Foreground(subtextColor).Render("model: ") +
+			lipgloss.NewStyle().Foreground(textColor).Render(modelName),
+	)
+
 	maxTokens := m.Focused.MaxTokens()
-	ctxStr := ""
+	var ctxStr string
 	if maxTokens > 0 {
-		ctxStr = fmt.Sprintf("**Context:** %s tokens", m.formatTokenCount(maxTokens))
+		ctxStr = fmt.Sprintf("%s tokens", m.formatTokenCount(maxTokens))
 	} else if maxTokens == 0 {
-		ctxStr = "**Context:** unlimited"
+		ctxStr = "unlimited"
 	} else {
-		ctxStr = "**Context:** —"
+		ctxStr = "auto"
 	}
+	ctxPill := lipgloss.NewStyle().Background(cardBgColor).Padding(0, 1).Render(
+		lipgloss.NewStyle().Foreground(subtextColor).Render("context: ") +
+			lipgloss.NewStyle().Foreground(textColor).Render(ctxStr),
+	)
 
-	welcome := fmt.Sprintf(`# Welcome to **Late**
+	cwd := m.CWD
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	cwdBase := filepath.Base(cwd)
+	gitInfo := ""
+	if m.GitBranch != "" {
+		gitInfo = lipgloss.NewStyle().Foreground(secondaryColor).Render(" " + m.GitBranch)
+	}
+	repoPill := lipgloss.NewStyle().Background(cardBgColor).Padding(0, 1).Render(
+		lipgloss.NewStyle().Foreground(subtextColor).Render("repo: ") +
+			lipgloss.NewStyle().Foreground(textColor).Render(cwdBase) + gitInfo,
+	)
 
-Your AI coding agent. Type a prompt below to get started.
-
-%s
-%s
-`, modelStr, ctxStr)
-
-	// Add subagent info if configured
+	var subagentsPill string
 	if m.SubagentInfo != "" {
-		welcome += fmt.Sprintf("\n**Subagents:** %s\n", m.SubagentInfo)
+		subagentsPill = lipgloss.NewStyle().Background(cardBgColor).Padding(0, 1).Render(
+			lipgloss.NewStyle().Foreground(subtextColor).Render("subagents: ") +
+				lipgloss.NewStyle().Foreground(textColor).Render(m.SubagentInfo),
+		)
 	}
 
-	// Render through glamour for markdown formatting
-	rendered := m.renderMarkdownBlock(welcome, msgWidth)
+	var telemetryRow string
+	if w >= 80 {
+		pills := []string{modelPill, "  ", ctxPill, "  ", repoPill}
+		if subagentsPill != "" {
+			pills = append(pills, "  ", subagentsPill)
+		}
+		telemetryRow = "  " + lipgloss.JoinHorizontal(lipgloss.Left, pills...)
+	} else {
+		telemetryRow = "  " + lipgloss.JoinHorizontal(lipgloss.Left, modelPill, "  ", ctxPill) + "\n  " + repoPill
+		if subagentsPill != "" {
+			telemetryRow += "  " + subagentsPill
+		}
+	}
+
+	// 3. Quick Actions Command Matrix
+	cardWidth := min(w-4, 68)
+	if cardWidth < 36 {
+		cardWidth = 36
+	}
+
+	headerStyle := lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+	keyStyle := lipgloss.NewStyle().Foreground(secondaryColor).Bold(true)
+	descStyle := lipgloss.NewStyle().Foreground(subtextColor)
+
+	quickCard := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Background(cardBgColor).
+		Padding(0, 2).
+		Width(cardWidth).
+		Render(lipgloss.JoinVertical(lipgloss.Left,
+			headerStyle.Render("Essential Commands"),
+			"",
+			keyStyle.Render(" /model    ") + descStyle.Render("Select AI models for agents"),
+			keyStyle.Render(" /new      ") + descStyle.Render("Start fresh conversation"),
+			keyStyle.Render(" /log      ") + descStyle.Render("Browse git commit log & diffs"),
+			keyStyle.Render(" /rewind   ") + descStyle.Render("Time-travel back to any prompt"),
+			keyStyle.Render(" /compose  ") + descStyle.Render("Draft prompt in external $EDITOR"),
+			keyStyle.Render(" ctrl+o    ") + descStyle.Render("Attach files or images"),
+			keyStyle.Render(" ctrl+h    ") + descStyle.Render("Full keyboard shortcut reference"),
+		))
+
+	promptHint := lipgloss.NewStyle().Foreground(subtextColor).Italic(true).Render(
+		"  Type a prompt below to get started, or '/' for all commands.",
+	)
+
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		"",
+		banner,
+		tagline,
+		"",
+		telemetryRow,
+		"",
+		"  " + quickCard,
+		"",
+		promptHint,
+	)
 
 	return lipgloss.NewStyle().
-		Padding(1, 2).
+		Padding(1, 1).
 		Width(m.Viewport.Width()).
 		Background(appBgColor).
-		Render(rendered)
+		Render(body)
 }
 
 // renderCommitLogView renders the commit history or commit detail in the viewport.
@@ -1359,7 +1423,8 @@ func (m *Model) renderCommitLogView() {
 				PaddingLeft(2)
 			hashStyle := lipgloss.NewStyle().
 				Foreground(secondaryColor).
-				Background(appBgColor)
+				Background(cardBgColor).
+				Padding(0, 1)
 			dateStyle := lipgloss.NewStyle().
 				Foreground(subtextColor).
 				Background(appBgColor).
@@ -1372,27 +1437,29 @@ func (m *Model) renderCommitLogView() {
 				prefix = "▸ "
 				itemStyle = lipgloss.NewStyle().
 					Foreground(primaryColor).
-					Background(thoughtBgColor).
+					Background(userMsgBg).
 					PaddingLeft(2).
 					Bold(true)
 				hashStyle = lipgloss.NewStyle().
 					Foreground(primaryColor).
-					Background(thoughtBgColor).
-					Bold(true)
+					Background(cardBgColor).
+					Bold(true).
+					Padding(0, 1)
 				dateStyle = lipgloss.NewStyle().
 					Foreground(primaryColor).
-					Background(thoughtBgColor).
+					Background(userMsgBg).
 					Italic(true)
 				msgStyle = lipgloss.NewStyle().
 					Foreground(textColor).
-					Background(thoughtBgColor)
+					Background(userMsgBg).
+					Bold(true)
 			}
 
 			headMarker := ""
 			if entry.IsHEAD {
-				headMarker = " " + lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Render("(HEAD)")
+				headMarker = " " + lipgloss.NewStyle().Foreground(appBgColor).Background(accentEmerald).Bold(true).Padding(0, 1).Render("HEAD")
 				if i == m.CommitIndex {
-					headMarker = " " + lipgloss.NewStyle().Foreground(primaryColor).Background(thoughtBgColor).Render("(HEAD)")
+					headMarker = " " + lipgloss.NewStyle().Foreground(appBgColor).Background(primaryColor).Bold(true).Padding(0, 1).Render("HEAD")
 				}
 			}
 
@@ -1400,32 +1467,28 @@ func (m *Model) renderCommitLogView() {
 			dateStr := dateStyle.Render(entry.Date)
 			msgStr := msgStyle.Render(entry.Message)
 
-			line := prefix + hashStr + statusBg("  ") + msgStr + headMarker
-			metaLine := statusBg("   ") + dateStyle.Render(entry.Author) + statusBg(" · ") + dateStr
+			line := prefix + hashStr + " " + msgStr + headMarker
+			metaLine := "    " + dateStyle.Render(entry.Author) + " · " + dateStr
 
 			lines = append(lines, itemStyle.Render(line))
 			if i == m.CommitIndex {
 				lines = append(lines, itemStyle.Render(metaLine))
 			} else {
-				lines = append(lines, statusBg("   ")+dateStr)
+				lines = append(lines, "    "+dateStr)
 			}
-			lines = append(lines, statusBg(""))
+			lines = append(lines, "")
 		}
 	}
 
 	// Footer hint
 	footer := lipgloss.NewStyle().
-		Foreground(subtextColor).
+		Foreground(mutedTextColor).
 		Background(appBgColor).
 		PaddingLeft(1).
 		Render(fmt.Sprintf("↑↓ navigate · Enter view · Esc back  (%d commits)", len(m.CommitEntries)))
 	lines = append(lines, "", footer)
 
-	paddedContent := lipgloss.NewStyle().
-		Width(m.Viewport.Width()).
-		Background(appBgColor).
-		Render(strings.Join(lines, "\n"))
-	m.Viewport.SetContent(paddedContent)
+	m.Viewport.SetContent(strings.Join(lines, "\n"))
 }
 
 // renderRewindView renders the user message history for rewinding.
@@ -1444,7 +1507,7 @@ func (m *Model) renderRewindView() {
 		Bold(true).
 		Background(appBgColor).
 		PaddingLeft(1).
-		Render("── Rewind Conversation ──────────────────────────────")
+		Render("── Rewind Conversation (Time-Travel) ───────────────")
 	lines = append(lines, header, "")
 
 	if len(m.RewindEntries) == 0 {
@@ -1455,7 +1518,7 @@ func (m *Model) renderRewindView() {
 			Render("No user messages found to rewind to."))
 	} else {
 		for i, entry := range m.RewindEntries {
-			prefix := "  "
+			prefix := "  ○ "
 			itemStyle := lipgloss.NewStyle().
 				Foreground(textColor).
 				Background(appBgColor).
@@ -1464,47 +1527,50 @@ func (m *Model) renderRewindView() {
 				Foreground(textColor).
 				Background(appBgColor)
 
+			targetTag := ""
 			if i == m.RewindIndex {
-				prefix = "▸ "
+				prefix = "▸ ● "
 				itemStyle = lipgloss.NewStyle().
 					Foreground(primaryColor).
-					Background(thoughtBgColor).
+					Background(userMsgBg).
 					PaddingLeft(2).
 					Bold(true)
 				msgStyle = lipgloss.NewStyle().
 					Foreground(textColor).
-					Background(thoughtBgColor)
+					Background(userMsgBg).
+					Bold(true)
+				targetTag = " " + lipgloss.NewStyle().Foreground(secondaryColor).Background(cardBgColor).Padding(0, 1).Render("← Rewind target")
 			}
 
 			// Clean/truncate message content for list preview
 			displayMsg := entry.Content
 			// Replace newlines with spaces for single-line display in list
 			displayMsg = strings.ReplaceAll(displayMsg, "\n", " ")
-			if len(displayMsg) > msgWidth-6 {
-				displayMsg = displayMsg[:msgWidth-9] + "..."
+			maxMsgW := msgWidth - 24
+			if maxMsgW < 20 {
+				maxMsgW = 20
+			}
+			if len(displayMsg) > maxMsgW {
+				displayMsg = displayMsg[:maxMsgW-3] + "..."
 			}
 
 			msgStr := msgStyle.Render(displayMsg)
-			line := prefix + msgStr
+			line := prefix + msgStr + targetTag
 
 			lines = append(lines, itemStyle.Render(line))
-			lines = append(lines, statusBg(""))
+			lines = append(lines, "")
 		}
 	}
 
 	// Footer hint
 	footer := lipgloss.NewStyle().
-		Foreground(subtextColor).
+		Foreground(mutedTextColor).
 		Background(appBgColor).
 		PaddingLeft(1).
-		Render(fmt.Sprintf("↑↓ navigate · Enter rewind to here · Esc back  (%d messages)", len(m.RewindEntries)))
+		Render(fmt.Sprintf("↑↓ choose message · Enter rewind here · Esc cancel  (%d messages)", len(m.RewindEntries)))
 	lines = append(lines, "", footer)
 
-	paddedContent := lipgloss.NewStyle().
-		Width(m.Viewport.Width()).
-		Background(appBgColor).
-		Render(strings.Join(lines, "\n"))
-	m.Viewport.SetContent(paddedContent)
+	m.Viewport.SetContent(strings.Join(lines, "\n"))
 }
 
 // overlayCentered places the dialog string centered over the background string,
@@ -1677,7 +1743,7 @@ func (m *Model) renderModelPickerView() {
 							Background(primaryColor).
 							Bold(true).
 							Padding(0, 1).
-							Render(modelLabel)
+							Render("✦ " + modelLabel)
 					} else {
 						// Row is inactive: highlight selected model with secondary color
 						optStr = lipgloss.NewStyle().
@@ -1691,7 +1757,7 @@ func (m *Model) renderModelPickerView() {
 					// Not selected
 					optStr = lipgloss.NewStyle().
 						Foreground(subtextColor).
-						Background(appBgColor).
+						Background(cardBgColor).
 						Padding(0, 1).
 						Render(modelLabel)
 				}
@@ -1701,9 +1767,9 @@ func (m *Model) renderModelPickerView() {
 			rowContent := agentNameRendered + strings.Join(modelChoices, "  ")
 
 			// Wrap row in a box style if it's active for extra pop
-			rowStyle := lipgloss.NewStyle().Background(appBgColor)
+			rowStyle := lipgloss.NewStyle().Background(appBgColor).Padding(0, 1)
 			if aIdx == m.ModelPickerAgentIndex {
-				rowStyle = lipgloss.NewStyle().Background(thoughtBgColor)
+				rowStyle = lipgloss.NewStyle().Background(userMsgBg).Padding(0, 1)
 			}
 
 			lines = append(lines, rowStyle.Render(rowContent))
@@ -1714,15 +1780,11 @@ func (m *Model) renderModelPickerView() {
 
 	// Footer hints
 	footer := lipgloss.NewStyle().
-		Foreground(subtextColor).
+		Foreground(mutedTextColor).
 		Background(appBgColor).
 		PaddingLeft(2).
-		Render("Press [Enter] to save, [Esc] to cancel.")
+		Render("[Enter] Save & Apply  ·  [Esc] Cancel  ·  [↑/↓] Select Agent  ·  [←/→] Choose Model")
 	lines = append(lines, footer)
 
-	paddedContent := lipgloss.NewStyle().
-		Width(m.Viewport.Width()).
-		Background(appBgColor).
-		Render(strings.Join(lines, "\n"))
-	m.Viewport.SetContent(paddedContent)
+	m.Viewport.SetContent(strings.Join(lines, "\n"))
 }

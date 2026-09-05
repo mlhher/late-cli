@@ -3,6 +3,7 @@ package tui
 import (
 	"late/internal/common"
 	"late/internal/config"
+	"late/internal/git"
 	"os"
 
 	"charm.land/bubbles/v2/filepicker"
@@ -16,7 +17,7 @@ import (
 
 func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *config.Config) Model {
 	ti := textarea.New()
-	ti.Placeholder = "Ask Late anything..."
+	ti.Placeholder = "Ask Late to build, refactor, search, run bash... (Type / for commands)"
 	ti.Focus()
 	ti.CharLimit = 100000 // Allow pasting large code blocks
 	ti.SetWidth(72)
@@ -30,17 +31,17 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 	ti.KeyMap.InsertNewline.SetEnabled(false)
 
 	// Set opaque background for textarea content
-	bgStyle := lipgloss.NewStyle().Background(lipgloss.Color("#0E0E10")).Foreground(textColor)
+	bgStyle := lipgloss.NewStyle().Background(appBgColor).Foreground(textColor)
 	styles := ti.Styles()
 	styles.Focused.Base = bgStyle
 	styles.Focused.Text = bgStyle
-	styles.Focused.Placeholder = bgStyle.Foreground(lipgloss.Color("#4A4B50"))
+	styles.Focused.Placeholder = bgStyle.Foreground(lipgloss.Color("#555D6E"))
 	styles.Focused.CursorLine = bgStyle
 	styles.Focused.Prompt = bgStyle
 
 	styles.Blurred.Base = bgStyle
 	styles.Blurred.Text = bgStyle
-	styles.Blurred.Placeholder = bgStyle.Foreground(lipgloss.Color("#4A4B50"))
+	styles.Blurred.Placeholder = bgStyle.Foreground(lipgloss.Color("#555D6E"))
 	styles.Blurred.CursorLine = bgStyle
 	styles.Blurred.Prompt = bgStyle
 	ti.SetStyles(styles)
@@ -49,9 +50,6 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 	// This prevents the "50% width" issue if the default 60 is too small for a large terminal
 	vp := viewport.New(viewport.WithWidth(0), viewport.WithHeight(0))
 	vp.MouseWheelDelta = 6 // Lines per wheel tick; default 3 feels slow on chat history
-	// VTE-based terminals: set explicit background on the viewport so its
-	// internal padding cells don't become transparent after ANSI resets.
-	vp.Style = lipgloss.NewStyle().Background(appBgColor)
 	// Initial welcome is set to empty; updateViewport in view.go renders
 	// the rich welcome when history is empty using renderWelcomeMessage().
 	vp.SetContent("")
@@ -83,6 +81,7 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 		HistoryIndex:        -1,
 		CWD:                 cwd,
 		ShowCWD:             true,
+		GitBranch:           git.CurrentBranch(cwd),
 		cachedRendererWidth: -1, // Force first creation
 		Pastes:              make(map[string]string),
 		AppConfig:           cfg,
