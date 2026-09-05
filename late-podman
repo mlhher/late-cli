@@ -1,0 +1,542 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: late-podman [--image IMAGE] [--exec COMMAND] [--rebuild] [-e VAR[=VAL]] [--] [LATE_ARGS...]
+
+Run Late in a rootless Podman container with the current directory mounted at
+/workspace. The image must be Linux, glibc-based, and contain bash plus the
+development tools required by the project.
+
+Options:
+  --image IMAGE    OCI image to run (otherwise read .late/podman-image)
+  --exec COMMAND   Run a Bash command before Late (may be specified repeatedly)
+  -e, --env VAR    Set or forward environment variable (may be specified repeatedly)
+  --rebuild        Force rebuild of devcontainer image and re-run setup commands
+  -h, --help       Show this help
+
+When no image is configured, an interactive prompt offers to save the selected
+image in .late/podman-image.
+EOF
+}
+
+die() {
+    printf 'late-podman: %s\n' "$*" >&2
+    exit 1
+}
+
+image=""
+rebuild=false
+startup_command=""
+cli_env=()
+late_args=()
+
+while (($#)); do
+    case "$1" in
+        --image)
+            (($# >= 2)) || die "--image requires an argument"
+            image=$2
+            shift 2
+            ;;
+        --image=*)
+            image=${1#*=}
+            [[ -n "$image" ]] || die "--image requires an argument"
+            shift
+            ;;
+        --exec)
+            (($# >= 2)) || die "--exec requires an argument"
+            if [[ -n "$startup_command" ]]; then
+                startup_command+=$'\n'
+            fi
+            startup_command+=$2
+            shift 2
+            ;;
+        --exec=*)
+            command_value=${1#*=}
+            [[ -n "$command_value" ]] || die "--exec requires an argument"
+            if [[ -n "$startup_command" ]]; then
+                startup_command+=$'\n'
+            fi
+            startup_command+=$command_value
+            shift
+            ;;
+        -e|--env)
+            (($# >= 2)) || die "$1 requires an argument"
+            env_pair=$2
+            if [[ "$env_pair" == *=* ]]; then
+                cli_env+=("$env_pair")
+            elif [[ -v "$env_pair" ]]; then
+                cli_env+=("$env_pair=${!env_pair}")
+            else
+                cli_env+=("$env_pair=")
+            fi
+            shift 2
+            ;;
+        --env=*)
+            env_pair=${1#*=}
+            [[ -n "$env_pair" ]] || die "--env requires an argument"
+            if [[ "$env_pair" == *=* ]]; then
+                cli_env+=("$env_pair")
+            elif [[ -v "$env_pair" ]]; then
+                cli_env+=("$env_pair=${!env_pair}")
+            else
+                cli_env+=("$env_pair=")
+            fi
+            shift
+            ;;
+        --rebuild)
+            rebuild=true
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            late_args+=("$@")
+            break
+            ;;
+        *)
+            late_args+=("$1")
+            shift
+            ;;
+    esac
+done
+
+[[ $(uname -s) == Linux ]] || die "only Linux hosts are supported"
+command -v podman >/dev/null 2>&1 || die "Podman is required but was not found in PATH"
+
+late_binary=$(command -v late 2>/dev/null || true)
+[[ -n "$late_binary" && -x "$late_binary" ]] || die "the late binary was not found in PATH"
+late_binary=$(readlink -f "$late_binary")
+
+workspace=$(pwd -P)
+image_file="$workspace/.late/podman-image"
+devcontainer_env=()
+devcontainer_mounts=()
+devcontainer_post_create=""
+devcontainer_post_start=""
+
+clean_name=$(printf "%s" "$(basename "$workspace")" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9_.-' '_' | sed 's/^[^a-z0-9]*//; s/[^a-z0-9]*$//')
+[[ -n "$clean_name" ]] || clean_name="workspace"
+
+compute_hash() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$@" 2>/dev/null | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$@" 2>/dev/null | awk '{print $1}'
+    elif command -v md5sum >/dev/null 2>&1; then
+        md5sum "$@" 2>/dev/null | awk '{print $1}'
+    else
+        cksum "$@" 2>/dev/null | awk '{print $1}'
+    fi
+}
+
+hash_string() {
+    printf '%s' "$1" | compute_hash
+}
+
+find_devcontainer_file() {
+    local root="$1"
+    if [[ -f "$root/.devcontainer/devcontainer.json" ]]; then
+        printf '%s\n' "$root/.devcontainer/devcontainer.json"
+    elif [[ -f "$root/.devcontainer.json" ]]; then
+        printf '%s\n' "$root/.devcontainer.json"
+    elif [[ -d "$root/.devcontainer" ]]; then
+        local found
+        found=$(find "$root/.devcontainer" -mindepth 2 -maxdepth 2 -name "devcontainer.json" 2>/dev/null | sort | head -n 1 || true)
+        if [[ -n "$found" ]]; then
+            printf '%s\n' "$found"
+        fi
+    elif [[ -f "$root/.late/devcontainer.json" ]]; then
+        printf '%s\n' "$root/.late/devcontainer.json"
+    elif [[ -f "$root/.late/devcontainer.local.json" ]]; then
+        printf '%s\n' "$root/.late/devcontainer.local.json"
+    fi
+}
+
+devcontainer_file=$(find_devcontainer_file "$workspace")
+
+if [[ -n "$devcontainer_file" ]]; then
+    devcontainer_dir=$(dirname "$devcontainer_file")
+    if command -v python3 >/dev/null 2>&1; then
+        eval "$(python3 -c '
+import sys, re, json, os, shlex
+
+path = sys.argv[1]
+workspace = sys.argv[2] if len(sys.argv) > 2 else os.getcwd()
+
+def load_json(p):
+    if not os.path.isfile(p):
+        return {}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return {}
+    out = []
+    i = 0
+    in_str = False
+    in_block = False
+    while i < len(text):
+        if in_block:
+            if text[i:i+2] == "*/":
+                in_block = False
+                i += 2
+            else:
+                i += 1
+            continue
+        if in_str:
+            out.append(text[i])
+            if text[i] == "\\" and i + 1 < len(text):
+                out.append(text[i+1])
+                i += 2
+                continue
+            if text[i] == "\"":
+                in_str = False
+            i += 1
+            continue
+        if text[i:i+2] == "//":
+            while i < len(text) and text[i] != "\n":
+                i += 1
+            continue
+        if text[i:i+2] == "/*":
+            in_block = True
+            i += 2
+            continue
+        if text[i] == "\"":
+            in_str = True
+            out.append(text[i])
+            i += 1
+            continue
+        out.append(text[i])
+        i += 1
+    cleaned = "".join(out)
+    cleaned = re.sub(r",\s*([\]}])", r"\1", cleaned)
+    try:
+        res = json.loads(cleaned)
+        return res if isinstance(res, dict) else {}
+    except Exception:
+        return {}
+
+data = load_json(path)
+if not data:
+    sys.exit(0)
+
+devcontainer_dir = os.path.dirname(path)
+candidate_overrides = [
+    os.path.join(devcontainer_dir, "devcontainer.local.json"),
+    os.path.join(workspace, ".devcontainer.local.json"),
+    os.path.join(workspace, ".late", "devcontainer.json"),
+    os.path.join(workspace, ".late", "devcontainer.local.json"),
+]
+
+for override_path in candidate_overrides:
+    if os.path.isfile(override_path) and os.path.abspath(override_path) != os.path.abspath(path):
+        local_data = load_json(override_path)
+        if isinstance(local_data, dict):
+            local_mounts = local_data.get("mounts", [])
+            if isinstance(local_mounts, list):
+                if "mounts" not in data or not isinstance(data["mounts"], list):
+                    data["mounts"] = []
+                data["mounts"].extend(local_mounts)
+            local_cenv = local_data.get("containerEnv", {})
+            if isinstance(local_cenv, dict):
+                if "containerEnv" not in data or not isinstance(data["containerEnv"], dict):
+                    data["containerEnv"] = {}
+                data["containerEnv"].update(local_cenv)
+            local_renv = local_data.get("remoteEnv", {})
+            if isinstance(local_renv, dict):
+                if "remoteEnv" not in data or not isinstance(data["remoteEnv"], dict):
+                    data["remoteEnv"] = {}
+                data["remoteEnv"].update(local_renv)
+
+cenv = data.get("containerEnv", {})
+if not isinstance(cenv, dict):
+    cenv = {}
+
+def sub_vars(s, ws, ce):
+    if not isinstance(s, str):
+        return s
+    ws_basename = os.path.basename(ws)
+    def repl(m):
+        expr = m.group(1).strip()
+        if expr == "localWorkspaceFolder":
+            return ws
+        elif expr == "localWorkspaceFolderBasename":
+            return ws_basename
+        elif expr.startswith("localEnv:"):
+            parts = expr[len("localEnv:"):].split(":", 1)
+            var = parts[0]
+            default = parts[1] if len(parts) > 1 else ""
+            return os.environ.get(var, default)
+        elif expr.startswith("containerEnv:"):
+            parts = expr[len("containerEnv:"):].split(":", 1)
+            var = parts[0]
+            default = parts[1] if len(parts) > 1 else ""
+            return str(ce.get(var, os.environ.get(var, default)))
+        return m.group(0)
+    return re.sub(r"\$\{([^}]+)\}", repl, s)
+
+img = data.get("image", "")
+build = data.get("build", {})
+dockerfile = ""
+context = ""
+if isinstance(build, str):
+    dockerfile = build
+elif isinstance(build, dict):
+    dockerfile = build.get("dockerfile", "")
+    context = build.get("context", "")
+elif "dockerfile" in data:
+    dockerfile = data.get("dockerfile", "")
+
+def parse_cmd(val):
+    if isinstance(val, str):
+        return val
+    elif isinstance(val, list):
+        return " ".join(shlex.quote(str(x)) for x in val)
+    elif isinstance(val, dict):
+        return "\n".join(str(v) for v in val.values())
+    return ""
+
+post_create = sub_vars(parse_cmd(data.get("postCreateCommand", "")), workspace, cenv)
+post_start = sub_vars(parse_cmd(data.get("postStartCommand", "")), workspace, cenv)
+
+print(f"dc_image={shlex.quote(img)}")
+print(f"dc_dockerfile={shlex.quote(dockerfile)}")
+print(f"dc_context={shlex.quote(context)}")
+print(f"devcontainer_post_create={shlex.quote(post_create)}")
+print(f"devcontainer_post_start={shlex.quote(post_start)}")
+
+for k, v in cenv.items():
+    kv = f"{k}={sub_vars(str(v), workspace, cenv)}"
+    print(f"devcontainer_env+=({shlex.quote(kv)})")
+
+renv = data.get("remoteEnv", {})
+if isinstance(renv, dict):
+    for k, v in renv.items():
+        kv = f"{k}={sub_vars(str(v), workspace, cenv)}"
+        print(f"devcontainer_env+=({shlex.quote(kv)})")
+
+raw_mounts = data.get("mounts", [])
+if isinstance(raw_mounts, list):
+    for m in raw_mounts:
+        if isinstance(m, str):
+            subbed = sub_vars(m, workspace, cenv)
+            print(f"devcontainer_mounts+=({shlex.quote(subbed)})")
+        elif isinstance(m, dict):
+            m_type = sub_vars(str(m.get("type", "bind")), workspace, cenv)
+            m_src = sub_vars(str(m.get("source", m.get("src", ""))), workspace, cenv)
+            m_tgt = sub_vars(str(m.get("target", m.get("dst", m.get("destination", "")))), workspace, cenv)
+            if m_src and m_tgt:
+                opts = [f"type={m_type}", f"source={m_src}", f"target={m_tgt}"]
+                if m.get("readonly", m.get("ro", False)):
+                    opts.append("ro=true")
+                for k, v in m.items():
+                    if k not in ("type", "source", "src", "target", "dst", "destination", "readonly", "ro"):
+                        if isinstance(v, (str, int, float, bool)):
+                            opts.append(f"{k}={sub_vars(str(v), workspace, cenv)}")
+                mount_str = ",".join(opts)
+                print(f"devcontainer_mounts+=({shlex.quote(mount_str)})")
+' "$devcontainer_file" "$workspace" 2>/dev/null || true)"
+    fi
+fi
+
+cli_image="${image:-}"
+need_build=false
+
+if [[ -z "$cli_image" && -n "${dc_dockerfile:-}" ]]; then
+    dc_df_path="$devcontainer_dir/$dc_dockerfile"
+    if [[ ! -f "$dc_df_path" ]]; then
+        dc_df_path="$workspace/$dc_dockerfile"
+    fi
+    [[ -f "$dc_df_path" ]] || die "Dockerfile not found: $dc_dockerfile"
+    
+    dc_ctx_path="$devcontainer_dir"
+    if [[ -n "${dc_context:-}" ]]; then
+        dc_ctx_path="$devcontainer_dir/$dc_context"
+    fi
+    
+    image="localhost/late-devcontainer-${clean_name}:latest"
+    build_hash_file="$workspace/.late/build-hash"
+    build_hash=$(compute_hash "$dc_df_path" "$devcontainer_file" 2>/dev/null || true)
+    
+    if [[ "$rebuild" == true ]]; then
+        need_build=true
+    elif ! podman image exists "$image" 2>/dev/null; then
+        need_build=true
+    elif [[ -n "$build_hash" ]]; then
+        saved_build_hash=$(cat "$build_hash_file" 2>/dev/null || true)
+        if [[ "$saved_build_hash" != "$build_hash" ]]; then
+            need_build=true
+        fi
+    fi
+
+    if [[ "$need_build" == true ]]; then
+        echo "=> Building devcontainer image from $dc_df_path..."
+        build_opts=()
+        if [[ "$rebuild" == true ]]; then
+            build_opts+=(--no-cache)
+        fi
+        podman build "${build_opts[@]}" -t "$image" -f "$dc_df_path" "$dc_ctx_path"
+        mkdir -p "$workspace/.late"
+        if [[ -n "$build_hash" ]]; then
+            printf '%s\n' "$build_hash" > "$build_hash_file"
+        fi
+    fi
+elif [[ -z "$image" && -f "$image_file" ]]; then
+    IFS= read -r image < "$image_file" || true
+    [[ -n "$image" ]] || die "$image_file is empty"
+elif [[ -z "$image" && -n "${dc_image:-}" ]]; then
+    image="$dc_image"
+fi
+
+if [[ -z "$image" ]]; then
+    [[ -t 0 && -t 1 ]] || die "no image configured; use --image IMAGE, create .devcontainer/devcontainer.json, or create .late/podman-image"
+    read -r -p "Development container image: " image </dev/tty
+    [[ -n "$image" ]] || die "an image is required"
+
+    save_image=""
+    read -r -p "Remember this image in .late/podman-image? [y/N] " save_image </dev/tty
+    if [[ "$save_image" == [yY] || "$save_image" == [yY][eE][sS] ]]; then
+        mkdir -p "$workspace/.late"
+        printf '%s\n' "$image" > "$image_file"
+        printf 'Saved %s\n' "$image_file"
+    fi
+fi
+
+post_create_cmd=""
+post_create_hash=""
+if [[ -n "$devcontainer_post_create" ]]; then
+    post_create_hash_file="$workspace/.late/post-create-hash"
+    current_pc_hash=$(hash_string "$devcontainer_post_create")
+    run_post_create=false
+    if [[ "$rebuild" == true || "$need_build" == true || ! -f "$post_create_hash_file" ]]; then
+        run_post_create=true
+    else
+        saved_pc_hash=$(cat "$post_create_hash_file" 2>/dev/null || true)
+        if [[ "$saved_pc_hash" != "$current_pc_hash" ]]; then
+            run_post_create=true
+        fi
+    fi
+
+    if [[ "$run_post_create" == true ]]; then
+        post_create_cmd="$devcontainer_post_create"
+        post_create_hash="$current_pc_hash"
+    fi
+fi
+
+per_run_command=""
+if [[ -n "$devcontainer_post_start" ]]; then
+    per_run_command="$devcontainer_post_start"
+fi
+if [[ -n "$startup_command" ]]; then
+    if [[ -n "$per_run_command" ]]; then
+        per_run_command+=$'\n'
+    fi
+    per_run_command+="$startup_command"
+fi
+
+run_args=(run --rm --network=host --security-opt label=disable)
+[[ -t 0 ]] && run_args+=(-i)
+[[ -t 1 ]] && run_args+=(-t)
+
+run_args+=(
+    --mount "type=bind,src=$workspace,target=/workspace"
+    --workdir /workspace
+    --mount "type=bind,src=$late_binary,target=/usr/local/bin/late,ro=true"
+    --volume late-podman-sessions:/root/.local/share/late
+    --volume "late-podman-cache-${clean_name}:/root/.cache"
+    --entrypoint bash
+    -e TERM="${TERM:-xterm-256color}"
+)
+
+for mount_spec in "${devcontainer_mounts[@]}"; do
+    run_args+=(--mount "$mount_spec")
+done
+
+for env_var in "${devcontainer_env[@]}"; do
+    run_args+=(-e "$env_var")
+done
+
+for env_var in "${cli_env[@]}"; do
+    run_args+=(-e "$env_var")
+done
+
+if [[ -v TZ ]]; then
+    run_args+=(-e "TZ=$TZ")
+elif [[ -f /etc/localtime ]]; then
+    run_args+=(--mount "type=bind,src=/etc/localtime,target=/etc/localtime,ro=true")
+fi
+
+git_setup=""
+if host_git_name=$(git config --get user.name 2>/dev/null) && [[ -n "$host_git_name" ]]; then
+    run_args+=(-e "GIT_AUTHOR_NAME=$host_git_name" -e "GIT_COMMITTER_NAME=$host_git_name")
+    git_setup+="git config --global user.name $(printf '%q' "$host_git_name")"$'\n'
+fi
+if host_git_email=$(git config --get user.email 2>/dev/null) && [[ -n "$host_git_email" ]]; then
+    run_args+=(-e "GIT_AUTHOR_EMAIL=$host_git_email" -e "GIT_COMMITTER_EMAIL=$host_git_email")
+    git_setup+="git config --global user.email $(printf '%q' "$host_git_email")"$'\n'
+fi
+
+git_setup+="git config --global --add safe.directory /workspace"$'\n'
+
+host_gpg_format=$(git config --get gpg.format 2>/dev/null || true)
+host_signing_key=$(git config --get user.signingkey 2>/dev/null || true)
+host_gpg_sign=$(git config --get commit.gpgsign 2>/dev/null || true)
+
+if [[ "$host_gpg_format" == "ssh" && -n "$host_signing_key" ]]; then
+    git_setup+="git config --global gpg.format ssh"$'\n'
+    git_setup+="git config --global user.signingkey $(printf '%q' "$host_signing_key")"$'\n'
+    if [[ "$host_gpg_sign" == "true" ]]; then
+        git_setup+="git config --global commit.gpgsign true"$'\n'
+    fi
+fi
+
+if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
+    run_args+=(
+        --mount "type=bind,src=$SSH_AUTH_SOCK,target=/tmp/ssh-agent.sock"
+        -e SSH_AUTH_SOCK=/tmp/ssh-agent.sock
+    )
+fi
+
+config_home=${XDG_CONFIG_HOME:-${HOME:?HOME is not set}/.config}
+if [[ -d "$config_home/late" ]]; then
+    run_args+=(--mount "type=bind,src=$config_home/late,target=/root/.config/late,ro=true")
+fi
+
+for variable in OPENAI_BASE_URL OPENAI_API_KEY OPENAI_MODEL LATE_SUBAGENT_BASE_URL LATE_SUBAGENT_API_KEY LATE_SUBAGENT_MODEL COLORTERM LANG LC_ALL; do
+    if [[ -v "$variable" ]]; then
+        run_args+=(-e "$variable=${!variable}")
+    fi
+done
+
+container_script='set -e
+git_setup=$1
+post_create_cmd=$2
+post_create_hash=$3
+per_run_cmd=$4
+shift 4
+
+if [[ -n "$git_setup" ]]; then
+    eval "$git_setup"
+fi
+
+if [[ -n "$post_create_cmd" ]]; then
+    echo "=> [late-podman] Running postCreateCommand..."
+    eval "$post_create_cmd"
+    if [[ -n "$post_create_hash" ]]; then
+        mkdir -p /workspace/.late
+        printf "%s\n" "$post_create_hash" > /workspace/.late/post-create-hash
+    fi
+fi
+
+if [[ -n "$per_run_cmd" ]]; then
+    eval "$per_run_cmd"
+fi
+
+exec /usr/local/bin/late --i-promise-i-have-backups-and-will-not-file-issues "$@"'
+
+exec podman "${run_args[@]}" "$image" -c "$container_script" late-podman "$git_setup" "$post_create_cmd" "$post_create_hash" "$per_run_command" "${late_args[@]}"

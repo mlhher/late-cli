@@ -244,6 +244,52 @@ You can also create an `.llmignore` file alongside your `.gitignore` to specific
 | `--enable-images` | Treat models as supporting images (for none llama.cpp servers) |
 | `--save-subagent-histories` | Persist subagent conversation histories to disk. Off by default (subagent transcripts are large); can also be enabled via `save_subagent_histories` in the config file |
 
+## Native Containerized Execution (`late-podman`)
+
+Let the agent run anything it wants inside an isolated container, fully autonomously—solving tasks from start to finish without having to babysit it.
+
+Runs on any Linux distro with Podman. Works out of the box on Silverblue and Universal Blue, with built-in SELinux support. On other systems, it only requires installing Podman (e.g. `sudo pacman -S podman` or `sudo apt install podman`).
+
+On Linux systems with rootless Podman, `late-podman` runs Late in a glibc-based
+development image and mounts the current directory at `/workspace`:
+
+```bash
+late-podman --image registry.example/my-project-dev
+```
+
+The image must contain Bash and every language or SDK required by the project.
+If no `--image` is supplied, Late automatically searches for configuration in the following order:
+1. `.devcontainer/devcontainer.json` (or `.devcontainer.json`) with `build.dockerfile`
+2. `.late/podman-image`
+3. `.devcontainer/devcontainer.json` with `image`
+4. Interactive terminal prompt
+
+Images built from a `Dockerfile` and `postCreateCommand` setups are cached automatically and only rerun when their definitions change. Use `--rebuild` to force rebuild the image and re-run setup commands.
+
+Developer-specific mounts and environment variables can be defined in untracked local override files (`.devcontainer/devcontainer.local.json` or `.late/devcontainer.json`), which are automatically merged into the container configuration.
+
+Use `-e` or `--env` to set or forward environment variables into the container (e.g. `-e KEY=value` or `-e KEY` to forward from host). Timezone (`TZ` / `/etc/localtime`), host Git identity (`user.name`, `user.email`), `safe.directory`, and running SSH agents (`SSH_AUTH_SOCK`) are forwarded automatically.
+
+Use `--exec` to prepare the container before Late starts. It is a Bash command,
+may be repeated, and Late starts only if every command succeeds:
+
+```bash
+late-podman --image fedora:latest \
+  -e CGO_ENABLED=1 \
+  --exec "dnf install -y golang nodejs npm" \
+  --exec "npm install" \
+  -- --continue
+```
+
+If your project contains a `.devcontainer/devcontainer.json`, any `postCreateCommand` is run on initial container setup, and `postStartCommand` runs on container start before `--exec` commands.
+
+Alpine and other musl-based images are unsupported. The launcher uses rootless
+Podman, does not relabel the host workspace, and does not mount the host home or
+container socket. It uses the host network so model servers listening on
+`localhost`, including loopback-only servers, remain reachable with the same
+Late configuration. Consequently, processes inside the development container
+can also reach other services listening on the host.
+
 ## Sessions
 
 Late automatically saves your session history. Resume or manage sessions:

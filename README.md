@@ -77,6 +77,7 @@ The orchestrator’s context grows only from what actually matters: your exact i
 | **KV-Cache** | **Ruthless KV-cache management (No prompt-reprocessing)** | Brute-force dumping |
 | **System Prompt** | **~1,000 tokens (Always planning)** | 300 - 10,000+  tokens (from no workflow to over-constrained) |
 | **Dependencies** | **Zero-dependency static binary** | Python / Node.js and others |
+| **Sandboxing** | **Native rootless container (`late-podman`)** | Runs unprotected on bare metal |
 | **Setup Required** | **None (OOTB `llama-server` support)** | Mandatory OAuth / JSON / YAML / TOML |
 | **Telemetry** | **None** | Opt-out phoning home |
 | **Built For** | **10x throughput builders** | Rebuilding the same bottleneck |
@@ -103,6 +104,7 @@ export OPENAI_MODEL="model-name"
 
 ## More Features
 
+* **Native Containerized Execution (`late-podman`):** Run the agent fully autonomously inside an isolated devcontainer—solving tasks from start to finish without having to babysit it.
 * **Hybrid Model Routing:** Let your smartest model work as orchestrator, while having a middle model investigate the repo and your fastest model execute the orchestrator's implementation plan (e.g. Fable/Kimi/GPT orchestrating, Qwen3.8 researching, Gemma4 executing).
 * **Human-in-the-loop:** Safe commands will be auto-approved to maintain agent velocity. Anything deemed suspicious will be stopped by Late and will prompt you for permission. Features session, project, and global trust scopes.
 * **Exact-Match Diffs:** Strict `search`/`replace` blocks with autonomous self-healing on mismatch. Edits fail loud. We never silently corrupt your files.

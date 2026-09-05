@@ -242,6 +242,45 @@ Late 的原生搜索工具会自动遵循你的项目 `.gitignore`，通过排�
 | `--enable-images` | 将模型视为支持图像（适用于非 llama.cpp 的服务器） |
 | `--save-subagent-histories` | 将子智能体的对话历史记录持久化保存到磁盘。默认关闭（子智能体转录内容较大）；也可以在配置文件中通过 `save_subagent_histories` 开启 |
 
+## 原生容器化执行 (`late-podman`)
+
+让智能体在完全隔离的容器环境中自主运行任何操作——端到端独立解决任务，全程无需人工看管。
+
+支持任何装有 Podman 的 Linux 发行版。在 Silverblue 与 Universal Blue 上开箱即用，内置原生 SELinux 支持。在其他系统上只需安装 Podman（例如 `sudo pacman -S podman` 或 `sudo apt install podman`）即可。
+
+在装有无根 (rootless) Podman 的 Linux 系统上，`late-podman` 会在基于 glibc 的开发镜像中运行 Late，并将当前目录挂载到 `/workspace`：
+
+```bash
+late-podman --image registry.example/my-project-dev
+```
+
+容器镜像必须包含 Bash 以及项目所需的所有编程语言或 SDK。
+如果未指定 `--image`，Late 将按以下顺序自动查找容器配置：
+1. `.devcontainer/devcontainer.json` (或 `.devcontainer.json`) 中的 `build.dockerfile`
+2. `.late/podman-image`
+3. `.devcontainer/devcontainer.json` 中的 `image`
+4. 交互式终端提示
+
+基于 `Dockerfile` 构建的镜像以及 `postCreateCommand` 初始化配置会自动缓存，仅在文件内容发生变更时重新运行。使用 `--rebuild` 标志可强制重新构建镜像并重新执行设置命令。
+
+开发者个人的自定义挂载和环境变量可在不受 Git 追踪的本地重写文件中配置（`.devcontainer/devcontainer.local.json` 或 `.late/devcontainer.json`），这些配置会自动合并到容器配置中。
+
+使用 `-e` 或 `--env` 可向容器设置或透传环境变量（例如 `-e KEY=value`，或 `-e KEY` 从宿主机透传同名变量）。时区 (`TZ` / `/etc/localtime`)、宿主机 Git 身份 (`user.name`、`user.email`)、`safe.directory` 以及运行中的 SSH 代理 (`SSH_AUTH_SOCK`) 都会自动透传进容器。
+
+使用 `--exec` 可在 Late 启动前于容器内预先执行 Bash 命令。该参数可多次指定，仅当所有命令均执行成功时，Late 才会启动：
+
+```bash
+late-podman --image fedora:latest \
+  -e CGO_ENABLED=1 \
+  --exec "dnf install -y golang nodejs npm" \
+  --exec "npm install" \
+  -- --continue
+```
+
+如果你的项目包含 `.devcontainer/devcontainer.json`，任何 `postCreateCommand` 都会在容器初次设置时执行，而 `postStartCommand` 则会在每次容器启动时、在 `--exec` 命令之前执行。
+
+不支持 Alpine 及其他基于 musl 的镜像。启动器采用无根 (rootless) Podman，不会重新标记宿主机的 workspace 目录标签，也不会挂载宿主机的 home 目录或容器 socket。容器默认使用宿主机网络 (`--network=host`)，因此监听在 `localhost` 上的模型服务器（包括仅监听回环地址的服务器）均可直接连通，无需更改 Late 配置；容器内的进程同样可以访问宿主机上运行的其他服务。
+
 ## 会话管理 (Sessions)
 
 Late 会自动保存你的聊天会话历史。你可以通过以下命令恢复或管理历史会话：

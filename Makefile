@@ -1,4 +1,4 @@
-.PHONY: build test clean install run help
+.PHONY: build test test-podman clean install run help
 
 # Project variables
 BINARY_NAME=late
@@ -17,6 +17,10 @@ build: ## Build the late binary
 test: ## Run tests for the entire project
 	@echo "Running tests..."
 	@go test -v -race ./...
+	@./test/late-podman-test.sh
+
+test-podman: ## Test the Podman launcher without requiring Podman
+	@./test/late-podman-test.sh
 
 clean: ## Remove build artifacts
 	@echo "Cleaning..."
@@ -26,6 +30,7 @@ install: build ## Build and install the binary to your Go bin path
 	@echo "Installing to ~/.local/bin/late..."
 	@go build ${LDFLAGS} -o bin/${BINARY_NAME} ./cmd/late
 	@mv bin/${BINARY_NAME} ~/.local/bin/late
+	@install -m 0755 late-podman ~/.local/bin/late-podman
 
 run: build ## Build and run the project
 	@./bin/${BINARY_NAME}
