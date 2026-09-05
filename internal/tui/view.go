@@ -1264,8 +1264,8 @@ func (m *Model) renderWelcomeMessage() string {
 		modelName = "default"
 	}
 	modelPill := lipgloss.NewStyle().Background(cardBgColor).Padding(0, 1).Render(
-		lipgloss.NewStyle().Foreground(subtextColor).Render("model: ") +
-			lipgloss.NewStyle().Foreground(textColor).Render(modelName),
+		lipgloss.NewStyle().Foreground(subtextColor).Background(cardBgColor).Render("model: ") +
+			lipgloss.NewStyle().Foreground(textColor).Background(cardBgColor).Render(modelName),
 	)
 
 	maxTokens := m.Focused.MaxTokens()
@@ -1278,8 +1278,8 @@ func (m *Model) renderWelcomeMessage() string {
 		ctxStr = "auto"
 	}
 	ctxPill := lipgloss.NewStyle().Background(cardBgColor).Padding(0, 1).Render(
-		lipgloss.NewStyle().Foreground(subtextColor).Render("context: ") +
-			lipgloss.NewStyle().Foreground(textColor).Render(ctxStr),
+		lipgloss.NewStyle().Foreground(subtextColor).Background(cardBgColor).Render("context: ") +
+			lipgloss.NewStyle().Foreground(textColor).Background(cardBgColor).Render(ctxStr),
 	)
 
 	cwd := m.CWD
@@ -1289,18 +1289,18 @@ func (m *Model) renderWelcomeMessage() string {
 	cwdBase := filepath.Base(cwd)
 	gitInfo := ""
 	if m.GitBranch != "" {
-		gitInfo = lipgloss.NewStyle().Foreground(secondaryColor).Render(" " + m.GitBranch)
+		gitInfo = lipgloss.NewStyle().Foreground(secondaryColor).Background(cardBgColor).Render(" " + m.GitBranch)
 	}
 	repoPill := lipgloss.NewStyle().Background(cardBgColor).Padding(0, 1).Render(
-		lipgloss.NewStyle().Foreground(subtextColor).Render("repo: ") +
-			lipgloss.NewStyle().Foreground(textColor).Render(cwdBase) + gitInfo,
+		lipgloss.NewStyle().Foreground(subtextColor).Background(cardBgColor).Render("repo: ") +
+			lipgloss.NewStyle().Foreground(textColor).Background(cardBgColor).Render(cwdBase) + gitInfo,
 	)
 
 	var subagentsPill string
 	if m.SubagentInfo != "" {
 		subagentsPill = lipgloss.NewStyle().Background(cardBgColor).Padding(0, 1).Render(
-			lipgloss.NewStyle().Foreground(subtextColor).Render("subagents: ") +
-				lipgloss.NewStyle().Foreground(textColor).Render(m.SubagentInfo),
+			lipgloss.NewStyle().Foreground(subtextColor).Background(cardBgColor).Render("subagents: ") +
+				lipgloss.NewStyle().Foreground(textColor).Background(cardBgColor).Render(m.SubagentInfo),
 		)
 	}
 
@@ -1331,7 +1331,7 @@ func (m *Model) renderWelcomeMessage() string {
 	quickCard := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
-		Background(cardBgColor).
+		MarginLeft(2).
 		Padding(0, 2).
 		Width(cardWidth).
 		Render(lipgloss.JoinVertical(lipgloss.Left,
@@ -1357,7 +1357,7 @@ func (m *Model) renderWelcomeMessage() string {
 		"",
 		telemetryRow,
 		"",
-		"  " + quickCard,
+		quickCard,
 		"",
 		promptHint,
 	)

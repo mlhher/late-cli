@@ -5,6 +5,8 @@ import (
 	"late/internal/git"
 	"strings"
 	"testing"
+
+	"charm.land/lipgloss/v2"
 )
 
 func TestLateThemeJSONValid(t *testing.T) {
@@ -43,6 +45,40 @@ func TestRenderWelcomeMessage(t *testing.T) {
 	welcomeNarrow := model.renderWelcomeMessage()
 	if !strings.Contains(welcomeNarrow, "test-model-4") {
 		t.Errorf("expected narrow welcome message to contain model name, got:\n%s", welcomeNarrow)
+	}
+
+	// Verify card borders are vertically aligned (no shift on top or bottom border)
+	var topCol, leftCol, bottomCol int = -1, -1, -1
+	var topRightCol, rightCol, bottomRightCol int = -1, -1, -1
+	for _, rawLine := range strings.Split(welcomeWide, "\n") {
+		if idx := strings.Index(rawLine, "╭"); idx != -1 && topCol == -1 {
+			topCol = lipgloss.Width(rawLine[:idx])
+		}
+		if idx := strings.Index(rawLine, "│"); idx != -1 && leftCol == -1 {
+			leftCol = lipgloss.Width(rawLine[:idx])
+		}
+		if idx := strings.Index(rawLine, "╰"); idx != -1 && bottomCol == -1 {
+			bottomCol = lipgloss.Width(rawLine[:idx])
+		}
+		if idx := strings.Index(rawLine, "╮"); idx != -1 && topRightCol == -1 {
+			topRightCol = lipgloss.Width(rawLine[:idx])
+		}
+		if idx := strings.LastIndex(rawLine, "│"); idx != -1 && rightCol == -1 {
+			rightCol = lipgloss.Width(rawLine[:idx])
+		}
+		if idx := strings.Index(rawLine, "╯"); idx != -1 && bottomRightCol == -1 {
+			bottomRightCol = lipgloss.Width(rawLine[:idx])
+		}
+	}
+	if topCol == -1 || leftCol == -1 || bottomCol == -1 {
+		t.Errorf("expected to find rounded card borders, got top=%d, left=%d, bottom=%d", topCol, leftCol, bottomCol)
+	} else if topCol != leftCol || leftCol != bottomCol {
+		t.Errorf("card left borders are not aligned: top=%d, left=%d, bottom=%d", topCol, leftCol, bottomCol)
+	}
+	if topRightCol == -1 || rightCol == -1 || bottomRightCol == -1 {
+		t.Errorf("expected to find right card borders, got topRight=%d, right=%d, bottomRight=%d", topRightCol, rightCol, bottomRightCol)
+	} else if topRightCol != rightCol || rightCol != bottomRightCol {
+		t.Errorf("card right borders are not aligned: topRight=%d, right=%d, bottomRight=%d", topRightCol, rightCol, bottomRightCol)
 	}
 }
 
