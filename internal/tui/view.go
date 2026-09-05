@@ -584,7 +584,7 @@ Press **ctrl+h** or **esc** to return to chat.`
 	}
 
 	history := m.Focused.History()
-	msgWidth := m.Viewport.Width() - 2
+	msgWidth := m.Viewport.Width()
 	if msgWidth < 1 {
 		msgWidth = 80
 	}
@@ -592,6 +592,17 @@ Press **ctrl+h** or **esc** to return to chat.`
 	s := m.GetAgentState(m.Focused.ID())
 	s.LastRenderTime = time.Now().UnixMilli()
 	streaming := s.State == StateStreaming || s.State == StateThinking
+
+	if s.CachedWidth != m.Viewport.Width() {
+		s.RenderedHistory = nil
+		s.CachedHistoryLines = nil
+		s.CachedHistoryBlocks = nil
+		s.CachedHistoryHashes = nil
+		s.LastTotalContent = ""
+		s.StreamingStyledCache = ""
+		s.StreamingChunkCount = 0
+		s.CachedWidth = m.Viewport.Width()
+	}
 
 	if len(s.CachedHistoryHashes) != len(s.RenderedHistory) {
 		s.RenderedHistory = nil
@@ -627,7 +638,7 @@ Press **ctrl+h** or **esc** to return to chat.`
 		case "user":
 			promptPrefix := promptSymbolStyle.Render("❯ ")
 			content := msg.Content.UIString()
-			userText := userMsgStyle.Width(msgWidth - 3).Render(content)
+			userText := userMsgStyle.Width(msgWidth - 2).Render(content)
 			userBlock := promptPrefix + userText
 			if len(msg.AttachedFiles) > 0 {
 				var names []string
@@ -662,7 +673,7 @@ Press **ctrl+h** or **esc** to return to chat.`
 						}
 					}
 				}
-				assistantParts = append(assistantParts, m.renderToolBadge(tc.Function.Name, callStr, false, msgWidth+1))
+				assistantParts = append(assistantParts, m.renderToolBadge(tc.Function.Name, callStr, false, msgWidth))
 			}
 			rendered = strings.Join(assistantParts, "\n")
 		}
@@ -779,7 +790,7 @@ Press **ctrl+h** or **esc** to return to chat.`
 			// Render + style NEW chunks and append to cache
 			for i := s.StreamingChunkCount; i < len(chunks); i++ {
 				rendered := m.renderMarkdownBlock(chunks[i], innerWidth)
-				styled := aiMsgStyle.Width(msgWidth + 1).Render(rendered)
+				styled := aiMsgStyle.Width(msgWidth).Render(rendered)
 				if s.StreamingStyledCache != "" {
 					s.StreamingStyledCache += "\n"
 				}
@@ -800,7 +811,7 @@ Press **ctrl+h** or **esc** to return to chat.`
 					t = streamingTextWindow(t, msgWidth, m.Viewport.Height()*2)
 					// Caret for streaming effect
 					caret := lipgloss.NewStyle().Foreground(primaryColor).Render("█")
-					tailStyled = aiMsgStyle.Copy().Foreground(textColor).Width(msgWidth + 1).Render(t + caret)
+					tailStyled = aiMsgStyle.Copy().Foreground(textColor).Width(msgWidth).Render(t + caret)
 				}
 			}
 
@@ -828,7 +839,7 @@ Press **ctrl+h** or **esc** to return to chat.`
 					}
 				}
 			}
-			activeParts = append(activeParts, m.renderToolBadge(tc.Function.Name, callStr, true, msgWidth+1))
+			activeParts = append(activeParts, m.renderToolBadge(tc.Function.Name, callStr, true, msgWidth))
 		}
 		if len(activeParts) > 0 {
 			r := strings.Join(activeParts, "\n")
@@ -1034,7 +1045,7 @@ func (m *Model) renderFullStreamingResponse(s *AppState, msgWidth int) string {
 	if s.StreamingState.Content != "" {
 		innerWidth := max(m.Viewport.Width()-AIMsgOverhead, 1)
 		md := m.renderMarkdownBlock(s.StreamingState.Content, innerWidth)
-		activeParts = append(activeParts, aiMsgStyle.Width(msgWidth+1).Render(md))
+		activeParts = append(activeParts, aiMsgStyle.Width(msgWidth).Render(md))
 	}
 	for _, tc := range s.StreamingState.ToolCalls {
 		callStr := tc.Function.Name
@@ -1045,7 +1056,7 @@ func (m *Model) renderFullStreamingResponse(s *AppState, msgWidth int) string {
 				}
 			}
 		}
-		activeParts = append(activeParts, m.renderToolBadge(tc.Function.Name, callStr, true, msgWidth+1))
+		activeParts = append(activeParts, m.renderToolBadge(tc.Function.Name, callStr, true, msgWidth))
 	}
 	if len(activeParts) == 0 && s.State == StateThinking {
 		activeParts = append(activeParts, m.renderAnimatedTag("· thinking...", thinkingStyle, msgWidth-2, true))
@@ -1061,7 +1072,7 @@ func (m *Model) restoreFullHistoryForScroll() {
 
 	// This is an explicit, infrequent user action, so render the full active
 	// response once. The hot streaming path remains bounded to recent lines.
-	msgWidth := max(m.Viewport.Width()-2, 1)
+	msgWidth := max(m.Viewport.Width(), 1)
 	parts := make([]string, 0, 2)
 	if len(s.CachedHistoryLines) > 0 {
 		parts = append(parts, strings.Join(s.CachedHistoryLines, "\n"))

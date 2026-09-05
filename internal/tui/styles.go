@@ -44,8 +44,8 @@ var (
 	baseStyle = lipgloss.NewStyle().Background(appBgColor)
 
 	// Layout Constants
-	UserMsgOverhead = 4
-	AIMsgOverhead   = 4
+	UserMsgOverhead = 0
+	AIMsgOverhead   = 0
 
 	// Styles
 	appStyle = baseStyle.Copy().

@@ -109,6 +109,7 @@ type AppState struct {
 	CachedHistoryLines   []string // Completed history, split once for windowed streaming
 	CachedHistoryBlocks  []RenderBlock
 	CachedHistoryHashes  []uint64 // Content identity for same-length history mutations
+	CachedWidth          int      // Viewport width at which history was rendered
 	StreamingWindow      bool     // Viewport currently contains only the recent history window
 	StreamingWindowStart int      // Full-history line represented by viewport line zero
 

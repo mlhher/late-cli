@@ -181,7 +181,7 @@ func TestStreamingViewportUsesBoundedHistoryWindow(t *testing.T) {
 func TestRestoreFullHistoryForScroll(t *testing.T) {
 	model, state := newViewportBenchmarkModel(benchmarkHistory(500))
 	state.State = StateStreaming
-	const reasoningTail = "ACTIVE REASONING TAIL"
+	const reasoningTail = "ACTIVE_REASONING_TAIL"
 	state.StreamingState = common.ContentEvent{
 		ID: model.Focused.ID(),
 		ReasoningContent: strings.Repeat(

@@ -114,6 +114,7 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 		State:                initialState,
 		StatusText:           "Ready",
 		CumulativeTokenCount: cumulativeTokens,
+		CachedWidth:          -1,
 	}
 
 	return m

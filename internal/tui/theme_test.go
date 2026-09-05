@@ -2,11 +2,14 @@ package tui
 
 import (
 	"encoding/json"
+	"late/internal/client"
 	"late/internal/git"
 	"strings"
 	"testing"
 
 	"charm.land/lipgloss/v2"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestLateThemeJSONValid(t *testing.T) {
@@ -352,6 +355,83 @@ func TestCentralizedBoxBorders(t *testing.T) {
 			}
 			break
 		}
+	}
+}
+
+func TestChatContentAndTableFullWidth(t *testing.T) {
+	viewportWidth := 100
+	orch := &benchmarkOrchestrator{
+		history: []client.ChatMessage{
+			{
+				Role:    "assistant",
+				Content: client.TextContent("| Header A | Header B |\n| --- | --- |\n| Cell 1 | Cell 2 |"),
+			},
+		},
+	}
+	model := NewModel(orch, nil, nil)
+	model.Width = viewportWidth
+	model.Height = 30
+	model.updateLayout()
+
+	content := model.Viewport.GetContent()
+	lines := strings.Split(content, "\n")
+
+	// Find the horizontal border of the table
+	foundTableBorder := false
+	for _, line := range lines {
+		if strings.Contains(line, "─") {
+			w := lipgloss.Width(line)
+			if w == viewportWidth {
+				foundTableBorder = true
+				break
+			}
+		}
+	}
+	if !foundTableBorder {
+		t.Errorf("expected table border line to span full viewport width %d, content was:\n%s", viewportWidth, content)
+	}
+
+	// Test user prompt width
+	userMsg := "A short user prompt"
+	orch.history = []client.ChatMessage{
+		{
+			Role:    "user",
+			Content: client.TextContent(userMsg),
+		},
+	}
+	// Invalidate and update
+	model.AgentStates[model.Focused.ID()].CachedWidth = -1
+	model.updateViewport()
+
+	userContent := model.Viewport.GetContent()
+	if !strings.Contains(ansi.Strip(userContent), "❯ "+userMsg) {
+		t.Errorf("expected prompt prefix and user message, got:\n%s", userContent)
+	}
+
+	// Test resizing to 120 columns
+	orch.history = []client.ChatMessage{
+		{
+			Role:    "assistant",
+			Content: client.TextContent("| Header A | Header B |\n| --- | --- |\n| Cell 1 | Cell 2 |"),
+		},
+	}
+	newWidth := 120
+	updatedModel, _ := model.Update(tea.WindowSizeMsg{Width: newWidth, Height: 30})
+	model = updatedModel.(Model)
+
+	resizedContent := model.Viewport.GetContent()
+	foundResizedTable := false
+	for _, line := range strings.Split(resizedContent, "\n") {
+		if strings.Contains(line, "─") {
+			w := lipgloss.Width(line)
+			if w == newWidth {
+				foundResizedTable = true
+				break
+			}
+		}
+	}
+	if !foundResizedTable {
+		t.Errorf("expected table border line to span full resized width %d, content was:\n%s", newWidth, resizedContent)
 	}
 }
 

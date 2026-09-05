@@ -109,6 +109,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 		m.Height = msg.Height
 		for _, s := range m.AgentStates {
 			s.RenderedHistory = nil
+			s.CachedWidth = -1
 		}
 		m.updateLayout()
 	}
