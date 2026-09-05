@@ -293,3 +293,65 @@ func TestStatusBarStatePills(t *testing.T) {
 	}
 }
 
+func TestCentralizedBoxBorders(t *testing.T) {
+	model := NewModel(&mockOrchestrator{}, nil, nil)
+	model.Viewport.SetWidth(90)
+	model.Viewport.SetHeight(100)
+
+	// Help view uses rounded borders
+	model.Mode = ViewHelp
+	model.updateViewport()
+	content := model.Viewport.View()
+	if !strings.Contains(content, "╭") || !strings.Contains(content, "╰") {
+		t.Errorf("expected /help to use rounded border corners (╭/╰), got:\n%s", content)
+	}
+	if strings.Contains(content, "╔") || strings.Contains(content, "╚") {
+		t.Errorf("expected /help not to use double border corners (╔/╚), got:\n%s", content)
+	}
+
+	// Verify symmetric margins: 1 column on left, 1 column on right
+	for _, rawLine := range strings.Split(content, "\n") {
+		if strings.Contains(rawLine, "╭") {
+			idx := strings.Index(rawLine, "╭")
+			leftMargin := lipgloss.Width(rawLine[:idx])
+			if leftMargin != 1 {
+				t.Errorf("expected left margin of 1, got %d", leftMargin)
+			}
+			topRightIdx := strings.Index(rawLine, "╮")
+			boxWidth := lipgloss.Width(rawLine[idx : topRightIdx+len("╮")])
+			if boxWidth != 88 { // 90 viewport - 2 margin
+				t.Errorf("expected box width 88, got %d", boxWidth)
+			}
+			break
+		}
+	}
+
+	// Commit detail view uses rounded borders
+	model.Mode = ViewChat
+	model.CommitDetail = "commit abc\nAuthor: test\n\nfeat: something"
+	model.renderCommitLogView()
+	commitContent := model.Viewport.View()
+	if !strings.Contains(commitContent, "╭") || !strings.Contains(commitContent, "╰") {
+		t.Errorf("expected commit detail to use rounded border corners (╭/╰), got:\n%s", commitContent)
+	}
+	if strings.Contains(commitContent, "╔") || strings.Contains(commitContent, "╚") {
+		t.Errorf("expected commit detail not to use double border corners (╔/╚), got:\n%s", commitContent)
+	}
+
+	for _, rawLine := range strings.Split(commitContent, "\n") {
+		if strings.Contains(rawLine, "╭") {
+			idx := strings.Index(rawLine, "╭")
+			leftMargin := lipgloss.Width(rawLine[:idx])
+			if leftMargin != 1 {
+				t.Errorf("expected commit detail left margin of 1, got %d", leftMargin)
+			}
+			topRightIdx := strings.Index(rawLine, "╮")
+			boxWidth := lipgloss.Width(rawLine[idx : topRightIdx+len("╮")])
+			if boxWidth != 88 {
+				t.Errorf("expected commit detail box width 88, got %d", boxWidth)
+			}
+			break
+		}
+	}
+}
+

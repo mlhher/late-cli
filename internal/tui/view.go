@@ -520,11 +520,9 @@ func (m *Model) updateViewport() {
 			prompt = "**Exit Late?**\n\nAre you sure you want to exit the session?\n\n> Press **[y]** Yes, quit  ·  **[n]** No, stay"
 		}
 		md, _ := m.Renderer.Render(prompt)
-		dialog := lipgloss.NewStyle().
-			Border(lipgloss.DoubleBorder()).
-			BorderForeground(accentCoral).
-			Padding(1, 2).
-			Background(cardBgColor).
+		dialog := modalBoxStyle.
+			MarginLeft(0).
+			BorderForeground(warnBorderColor).
 			Render(md)
 
 		// Center the dialog with a solid background
@@ -567,19 +565,18 @@ func (m *Model) updateViewport() {
 
 Press **ctrl+h** or **esc** to return to chat.`
 
-		// Total outer width is m.Viewport.Width()
-		// Usable inner width = outer width - padding (4) - border (2) = outer width - 6
-		msgWidth := m.Viewport.Width() - 6
-		if msgWidth < 1 {
-			msgWidth = 74
+		// Symmetric inset: 1 margin on left (via modalBoxStyle.MarginLeft(1)), 1 on right
+		outerWidth := m.Viewport.Width() - 2
+		if outerWidth < 1 {
+			outerWidth = 74
 		}
-		rendered := m.renderMarkdownBlock(helpText, msgWidth)
-		boxed := lipgloss.NewStyle().
-			Padding(1, 2).
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(secondaryColor).
-			Width(msgWidth).
-			Background(appBgColor).
+		innerWidth := outerWidth - 6
+		if innerWidth < 1 {
+			innerWidth = 70
+		}
+		rendered := m.renderMarkdownBlock(helpText, innerWidth)
+		boxed := modalBoxStyle.
+			Width(outerWidth).
 			Render(rendered)
 
 		m.Viewport.SetContent(boxed)
@@ -869,7 +866,7 @@ Press **ctrl+h** or **esc** to return to chat.`
 		}
 		prompt := fmt.Sprintf("**Security Authorization Required**\n\nThe agent requests permission to execute a **%s** command:\n\n```json\n%s\n```\n\n> Press **[y]** Allow once  ·  **[s]** Allow always (session)  ·  **[p]** Allow always (project)  ·  **[g]** Allow always (global)  ·  **[n]** Deny", displayName, tc.Function.Arguments)
 		md, _ := m.Renderer.Render(prompt)
-		r := aiMsgStyle.Width(msgWidth + 1).Border(lipgloss.DoubleBorder()).BorderForeground(accentCoral).Render(md)
+		r := aiMsgStyle.Width(msgWidth).MarginLeft(1).Border(boxBorderStyle).BorderForeground(warnBorderColor).Render(md)
 		blocks = append(blocks, r)
 		linesCount := strings.Count(r, "\n") + 1
 
@@ -885,7 +882,7 @@ Press **ctrl+h** or **esc** to return to chat.`
 	if s.State == StateContextWarning {
 		prompt := "**Context Limit Warning**\n\nYou are approaching the maximum context size for this session (over 90% used). It is highly recommended to **start a new session** to ensure the agent maintains full context and accuracy.\n\n> Press **[Enter]** again to proceed anyway, or start a new session."
 		md, _ := m.Renderer.Render(prompt)
-		r := aiMsgStyle.Width(msgWidth + 1).Border(lipgloss.DoubleBorder()).BorderForeground(warningColor).Render(md)
+		r := aiMsgStyle.Width(msgWidth).MarginLeft(1).Border(boxBorderStyle).BorderForeground(warnBorderColor).Render(md)
 		blocks = append(blocks, r)
 		linesCount := strings.Count(r, "\n") + 1
 
@@ -905,10 +902,10 @@ Press **ctrl+h** or **esc** to return to chat.`
 		if strings.Contains(errStr, "exceeds the available context size") || strings.Contains(errStr, "context_length_exceeded") {
 			prompt = "**Context Limit Exceeded**\n\nThis session has hit the model's absolute context limit. The agent cannot proceed further in this session.\n\n**Action Required:** Please **start a new session** to continue your work."
 			md, _ := m.Renderer.Render(prompt)
-			r = aiMsgStyle.Width(msgWidth + 1).Border(lipgloss.DoubleBorder()).BorderForeground(lipgloss.Color("#FF0000")).Render(md)
+			r = aiMsgStyle.Width(msgWidth).MarginLeft(1).Border(boxBorderStyle).BorderForeground(errorBorderColor).Render(md)
 		} else {
 			prompt = fmt.Sprintf("Error: %v", s.Error)
-			r = thinkingStyle.Foreground(lipgloss.Color("#FF0000")).Render(prompt)
+			r = thinkingStyle.Foreground(errorBorderColor).Render(prompt)
 		}
 		blocks = append(blocks, r)
 		linesCount := strings.Count(r, "\n") + 1
@@ -1329,8 +1326,8 @@ func (m *Model) renderWelcomeMessage() string {
 	descStyle := lipgloss.NewStyle().Foreground(subtextColor)
 
 	quickCard := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(borderColor).
+		Border(boxBorderStyle).
+		BorderForeground(cardBorderColor).
 		MarginLeft(2).
 		Padding(0, 2).
 		Width(cardWidth).
@@ -1374,25 +1371,21 @@ func (m *Model) renderCommitLogView() {
 	s := m.GetAgentState(m.Focused.ID())
 	s.LastTotalContent = ""
 
-	msgWidth := m.Viewport.Width() - 2
-	if msgWidth < 1 {
-		msgWidth = 80
+	outerWidth := m.Viewport.Width() - 2
+	if outerWidth < 1 {
+		outerWidth = 80
 	}
 
 	if m.CommitDetail != "" {
 		// Show full commit detail — render through glamour for syntax highlighting
-		innerWidth := msgWidth - 4
+		innerWidth := outerWidth - 6
 		if innerWidth < 1 {
 			innerWidth = 74
 		}
 		detail := "```\n" + m.CommitDetail + "\n```"
 		rendered := m.renderMarkdownBlock(detail, innerWidth)
-		boxed := lipgloss.NewStyle().
-			Padding(1, 2).
-			Border(lipgloss.DoubleBorder()).
-			BorderForeground(primaryColor).
-			Width(msgWidth).
-			Background(appBgColor).
+		boxed := modalBoxStyle.
+			Width(outerWidth).
 			Render(rendered)
 		m.Viewport.SetContent(boxed)
 		return

@@ -26,6 +26,20 @@ var (
 	borderColor    = lipgloss.Color("#1C1F26") // Hairline Divider
 	activeBorder   = lipgloss.Color("#2D323E") // Focused / Active Border
 
+	// Centralized Border Styles & Colors
+	boxBorderStyle   = lipgloss.RoundedBorder()
+	modalBorderColor = secondaryColor // Primary border color for dialogs & overlays (/help, commit detail)
+	cardBorderColor  = borderColor    // Subtle border for embedded cards & matrices (welcome card)
+	warnBorderColor  = accentCoral    // Warning / confirmation border color (stop dialog, tool permissions)
+	errorBorderColor = accentCoral    // Error border color (context limit exceeded)
+
+	modalBoxStyle = lipgloss.NewStyle().
+			MarginLeft(1).
+			Padding(1, 2).
+			Border(boxBorderStyle).
+			BorderForeground(modalBorderColor).
+			Background(appBgColor)
+
 	// Base Style for inheritance
 	baseStyle = lipgloss.NewStyle().Background(appBgColor)
 
