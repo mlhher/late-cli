@@ -435,3 +435,68 @@ func TestChatContentAndTableFullWidth(t *testing.T) {
 	}
 }
 
+func TestCentralizedChipStyles(t *testing.T) {
+	// Verify centralized chip style background colors
+	if bg := commitHashChipStyle.GetBackground(); bg != chipBgColor {
+		t.Errorf("expected commitHashChipStyle background to be %v, got %v", chipBgColor, bg)
+	}
+	if bg := commitSelectedChipStyle.GetBackground(); bg != chipBgColor {
+		t.Errorf("expected commitSelectedChipStyle background to be %v, got %v", chipBgColor, bg)
+	}
+	if bg := modelPickerChipStyle.GetBackground(); bg != chipBgColor {
+		t.Errorf("expected modelPickerChipStyle background to be %v, got %v", chipBgColor, bg)
+	}
+	if bg := headBadgeStyle.GetBackground(); bg != accentEmerald {
+		t.Errorf("expected headBadgeStyle background to be %v, got %v", accentEmerald, bg)
+	}
+
+	// Verify welcome screen rendering contains chip background color
+	model := NewModel(&mockOrchestrator{}, nil, nil)
+	model.Viewport.SetWidth(90)
+	welcome := model.renderWelcomeMessage()
+	// #1B1E28 in RGB is 27;30;40
+	if !strings.Contains(welcome, "48;2;27;30;40") {
+		t.Errorf("expected welcome message to contain elevated chip background #1B1E28 (48;2;27;30;40), got:\n%s", welcome)
+	}
+
+	// Verify /log rendering contains chip background color for commit hash
+	model.CommitEntries = []git.CommitEntry{
+		{Hash: "abc1234", Author: "dev", Date: "today", Message: "initial commit", IsHEAD: true},
+	}
+	model.renderCommitLogView()
+	logContent := model.Viewport.GetContent()
+	if !strings.Contains(logContent, "48;2;27;30;40") {
+		t.Errorf("expected /log view to contain elevated chip background #1B1E28 (48;2;27;30;40), got:\n%s", logContent)
+	}
+}
+
+func TestRewindCleanTimeline(t *testing.T) {
+	model := NewModel(&mockOrchestrator{}, nil, nil)
+	model.Viewport.SetWidth(100)
+	model.RewindEntries = []RewindEntry{
+		{Index: 0, Content: "First prompt"},
+		{Index: 1, Content: "Second prompt"},
+	}
+	model.RewindIndex = 1
+	model.renderRewindView()
+
+	content := model.Viewport.GetContent()
+
+	plainContent := ansi.Strip(content)
+
+	// Should contain timeline indicators
+	if !strings.Contains(plainContent, "○ First prompt") {
+		t.Errorf("expected unselected entry with ○ indicator, got:\n%s", plainContent)
+	}
+	if !strings.Contains(plainContent, "▸ ● Second prompt") {
+		t.Errorf("expected selected entry with ▸ ● indicator, got:\n%s", plainContent)
+	}
+
+	// Should NOT contain the redundant trailing chip
+	if strings.Contains(plainContent, "Rewind target") {
+		t.Errorf("expected no redundant 'Rewind target' chip in rewind view, got:\n%s", plainContent)
+	}
+}
+
+
+

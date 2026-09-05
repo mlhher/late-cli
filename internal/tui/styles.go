@@ -22,7 +22,8 @@ var (
 	userMsgBg      = appBgColor                // Clean seamless canvas
 	aiMsgBg        = appBgColor                // Clean seamless canvas
 	thoughtBgColor = lipgloss.Color("#0E1015") // Recessed Introspection
-	cardBgColor    = lipgloss.Color("#12141A") // Subtle Container
+	cardBgColor    = lipgloss.Color("#12141A") // Subtle Container (autocomplete popup)
+	chipBgColor    = lipgloss.Color("#1B1E28") // Elevated Pill / Badge Surface
 	borderColor    = lipgloss.Color("#1C1F26") // Hairline Divider
 	activeBorder   = lipgloss.Color("#2D323E") // Focused / Active Border
 
@@ -39,6 +40,28 @@ var (
 			Border(boxBorderStyle).
 			BorderForeground(modalBorderColor).
 			Background(appBgColor)
+
+	// Centralized Pill & Badge Styles (Elevated Neutral Surface)
+	chipStyle = lipgloss.NewStyle().
+			Background(chipBgColor).
+			Padding(0, 1)
+
+	commitHashChipStyle     = chipStyle.Foreground(secondaryColor)
+	commitSelectedChipStyle = chipStyle.Foreground(primaryColor).Bold(true)
+	modelPickerChipStyle    = chipStyle.Foreground(subtextColor)
+	headBadgeStyle          = lipgloss.NewStyle().
+					Foreground(appBgColor).
+					Background(accentEmerald).
+					Bold(true).
+					Padding(0, 1)
+
+	telemetryChipStyle  = chipStyle
+	telemetryLabelStyle = lipgloss.NewStyle().
+				Foreground(subtextColor).
+				Background(chipBgColor)
+	telemetryValueStyle = lipgloss.NewStyle().
+				Foreground(textColor).
+				Background(chipBgColor)
 
 	// Base Style for inheritance
 	baseStyle = lipgloss.NewStyle().Background(appBgColor)
@@ -146,7 +169,7 @@ var (
 
 	keycapStyle = lipgloss.NewStyle().
 			Foreground(subtextColor).
-			Background(cardBgColor).
+			Background(chipBgColor).
 			Padding(0, 1)
 
 	statusAttachedStyle = lipgloss.NewStyle().

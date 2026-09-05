@@ -1271,9 +1271,9 @@ func (m *Model) renderWelcomeMessage() string {
 	if modelName == "" {
 		modelName = "default"
 	}
-	modelPill := lipgloss.NewStyle().Background(cardBgColor).Padding(0, 1).Render(
-		lipgloss.NewStyle().Foreground(subtextColor).Background(cardBgColor).Render("model: ") +
-			lipgloss.NewStyle().Foreground(textColor).Background(cardBgColor).Render(modelName),
+	modelPill := telemetryChipStyle.Render(
+		telemetryLabelStyle.Render("model: ") +
+			telemetryValueStyle.Render(modelName),
 	)
 
 	maxTokens := m.Focused.MaxTokens()
@@ -1285,9 +1285,9 @@ func (m *Model) renderWelcomeMessage() string {
 	} else {
 		ctxStr = "auto"
 	}
-	ctxPill := lipgloss.NewStyle().Background(cardBgColor).Padding(0, 1).Render(
-		lipgloss.NewStyle().Foreground(subtextColor).Background(cardBgColor).Render("context: ") +
-			lipgloss.NewStyle().Foreground(textColor).Background(cardBgColor).Render(ctxStr),
+	ctxPill := telemetryChipStyle.Render(
+		telemetryLabelStyle.Render("context: ") +
+			telemetryValueStyle.Render(ctxStr),
 	)
 
 	cwd := m.CWD
@@ -1297,18 +1297,18 @@ func (m *Model) renderWelcomeMessage() string {
 	cwdBase := filepath.Base(cwd)
 	gitInfo := ""
 	if m.GitBranch != "" {
-		gitInfo = lipgloss.NewStyle().Foreground(secondaryColor).Background(cardBgColor).Render(" " + m.GitBranch)
+		gitInfo = lipgloss.NewStyle().Foreground(secondaryColor).Background(chipBgColor).Render(" " + m.GitBranch)
 	}
-	repoPill := lipgloss.NewStyle().Background(cardBgColor).Padding(0, 1).Render(
-		lipgloss.NewStyle().Foreground(subtextColor).Background(cardBgColor).Render("repo: ") +
-			lipgloss.NewStyle().Foreground(textColor).Background(cardBgColor).Render(cwdBase) + gitInfo,
+	repoPill := telemetryChipStyle.Render(
+		telemetryLabelStyle.Render("repo: ") +
+			telemetryValueStyle.Render(cwdBase) + gitInfo,
 	)
 
 	var subagentsPill string
 	if m.SubagentInfo != "" {
-		subagentsPill = lipgloss.NewStyle().Background(cardBgColor).Padding(0, 1).Render(
-			lipgloss.NewStyle().Foreground(subtextColor).Background(cardBgColor).Render("subagents: ") +
-				lipgloss.NewStyle().Foreground(textColor).Background(cardBgColor).Render(m.SubagentInfo),
+		subagentsPill = telemetryChipStyle.Render(
+			telemetryLabelStyle.Render("subagents: ") +
+				telemetryValueStyle.Render(m.SubagentInfo),
 		)
 	}
 
@@ -1425,10 +1425,7 @@ func (m *Model) renderCommitLogView() {
 				Foreground(textColor).
 				Background(appBgColor).
 				PaddingLeft(2)
-			hashStyle := lipgloss.NewStyle().
-				Foreground(secondaryColor).
-				Background(cardBgColor).
-				Padding(0, 1)
+			hashStyle := commitHashChipStyle
 			dateStyle := lipgloss.NewStyle().
 				Foreground(subtextColor).
 				Background(appBgColor).
@@ -1444,11 +1441,7 @@ func (m *Model) renderCommitLogView() {
 					Background(userMsgBg).
 					PaddingLeft(2).
 					Bold(true)
-				hashStyle = lipgloss.NewStyle().
-					Foreground(primaryColor).
-					Background(cardBgColor).
-					Bold(true).
-					Padding(0, 1)
+				hashStyle = commitSelectedChipStyle
 				dateStyle = lipgloss.NewStyle().
 					Foreground(primaryColor).
 					Background(userMsgBg).
@@ -1461,9 +1454,9 @@ func (m *Model) renderCommitLogView() {
 
 			headMarker := ""
 			if entry.IsHEAD {
-				headMarker = " " + lipgloss.NewStyle().Foreground(appBgColor).Background(accentEmerald).Bold(true).Padding(0, 1).Render("HEAD")
+				headMarker = " " + headBadgeStyle.Render("HEAD")
 				if i == m.CommitIndex {
-					headMarker = " " + lipgloss.NewStyle().Foreground(appBgColor).Background(primaryColor).Bold(true).Padding(0, 1).Render("HEAD")
+					headMarker = " " + headBadgeStyle.Copy().Background(primaryColor).Render("HEAD")
 				}
 			}
 
@@ -1531,7 +1524,6 @@ func (m *Model) renderRewindView() {
 				Foreground(textColor).
 				Background(appBgColor)
 
-			targetTag := ""
 			if i == m.RewindIndex {
 				prefix = "▸ ● "
 				itemStyle = lipgloss.NewStyle().
@@ -1543,14 +1535,13 @@ func (m *Model) renderRewindView() {
 					Foreground(textColor).
 					Background(userMsgBg).
 					Bold(true)
-				targetTag = " " + lipgloss.NewStyle().Foreground(secondaryColor).Background(cardBgColor).Padding(0, 1).Render("← Rewind target")
 			}
 
 			// Clean/truncate message content for list preview
 			displayMsg := entry.Content
 			// Replace newlines with spaces for single-line display in list
 			displayMsg = strings.ReplaceAll(displayMsg, "\n", " ")
-			maxMsgW := msgWidth - 24
+			maxMsgW := msgWidth - 8
 			if maxMsgW < 20 {
 				maxMsgW = 20
 			}
@@ -1559,7 +1550,7 @@ func (m *Model) renderRewindView() {
 			}
 
 			msgStr := msgStyle.Render(displayMsg)
-			line := prefix + msgStr + targetTag
+			line := prefix + msgStr
 
 			lines = append(lines, itemStyle.Render(line))
 			lines = append(lines, "")
@@ -1759,11 +1750,7 @@ func (m *Model) renderModelPickerView() {
 					}
 				} else {
 					// Not selected
-					optStr = lipgloss.NewStyle().
-						Foreground(subtextColor).
-						Background(cardBgColor).
-						Padding(0, 1).
-						Render(modelLabel)
+					optStr = modelPickerChipStyle.Render(modelLabel)
 				}
 				modelChoices = append(modelChoices, optStr)
 			}
