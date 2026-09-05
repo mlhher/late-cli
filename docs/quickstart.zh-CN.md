@@ -240,6 +240,7 @@ Late 的原生搜索工具会自动遵循你的项目 `.gitignore`，通过排�
 | `--subagent-max-turns <n>` | 设置每个子智能体的最大交互轮数 (默认：500) |
 | `--append-system-prompt "..."` | 向系统提示词的末尾追加文本（例如自定义的补充说明） |
 | `--enable-images` | 将模型视为支持图像（适用于非 llama.cpp 的服务器） |
+| `--save-subagent-histories` | 将子智能体的对话历史记录持久化保存到磁盘。默认关闭（子智能体转录内容较大）；也可以在配置文件中通过 `save_subagent_histories` 开启 |
 
 ## 会话管理 (Sessions)
 

@@ -242,6 +242,7 @@ You can also create an `.llmignore` file alongside your `.gitignore` to specific
 | `--subagent-max-turns <n>` | Set max turns per subagent (default: 500) |
 | `--append-system-prompt "..."` | Append text to the system prompt (e.g. further instructions) |
 | `--enable-images` | Treat models as supporting images (for none llama.cpp servers) |
+| `--save-subagent-histories` | Persist subagent conversation histories to disk. Off by default (subagent transcripts are large); can also be enabled via `save_subagent_histories` in the config file |
 
 ## Sessions
 

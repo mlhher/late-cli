@@ -41,6 +41,7 @@ func main() {
 	enableSubagentsReq := flag.Bool("enable-subagents", true, "Enable subagent usage")
 	gemmaThinkingReq := flag.Bool("gemma-thinking", false, "Prepend <|think|> token to system prompt for Gemma 4 models")
 	subagentMaxTurns := flag.Int("subagent-max-turns", 500, "Maximum number of turns for subagents (default: 500)")
+	saveSubagentHistoriesReq := flag.Bool("save-subagent-histories", false, "Persist subagent conversation histories to disk (default: off)")
 	enableSqzReq := flag.Bool("enable-sqz", false, "Enable sqz context compression (if available)")
 	appendSystemPromptReq := flag.String("append-system-prompt", "", "Append text to the system prompt after processing")
 	versionReq := flag.Bool("version", false, "Show version")
@@ -82,6 +83,8 @@ func main() {
 
 	var loadedHistoryPath string
 	var resumedSessionTitle string
+	var loadedSessionMeta *session.SessionMeta
+
 	if *continueReq {
 		meta, err := session.GetLatestSession()
 		if err != nil {
@@ -94,12 +97,14 @@ func main() {
 		}
 		loadedHistoryPath = meta.HistoryPath
 		resumedSessionTitle = fmt.Sprintf("Resumed session: %s (%s)", meta.ID, meta.Title)
+		loadedSessionMeta = meta
 	} else if flag.NArg() > 0 && flag.Arg(0) == "session" {
-		path, _, shouldExit := handleSessionCommand(flag.Args()[1:])
-		if shouldExit {
+		sessCmdResult := handleSessionCommand(flag.Args()[1:])
+		if sessCmdResult.ShouldExit {
 			return
 		}
-		loadedHistoryPath = path
+		loadedHistoryPath = sessCmdResult.HistoryPath
+		loadedSessionMeta = sessCmdResult.Meta
 	}
 
 	if flag.NArg() > 0 && flag.Arg(0) == "worktree" {
@@ -172,6 +177,14 @@ func main() {
 		historyPath = loadedHistoryPath
 	}
 
+	// Effective session ID for this run — derived from the FINAL history path so
+	// resumed sessions keep their original ID (the sessionID var above is a fresh
+	// timestamp even on resume). Used to place subagent histories under the right
+	// per-session folder. The helper falls back to "" for empty or unsafe IDs,
+	// which disables subagent history persistence (in-memory fallback) instead of
+	// writing files outside the session folder.
+	effectiveSessionID := deriveEffectiveSessionID(historyPath)
+
 	// Load existing history
 	history, err := session.LoadHistory(historyPath)
 	if err != nil {
@@ -198,6 +211,20 @@ func main() {
 			enabledTools[toolName] = enabled
 		}
 	}
+
+	// Resolve subagent history persistence opt-in
+	// (explicit CLI flag > saved session preference > config file).
+	saveSubagentHistoriesCLI := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "save-subagent-histories" {
+			saveSubagentHistoriesCLI = true
+		}
+	})
+	var storedSubagentHistoryPreference *bool
+	if loadedSessionMeta != nil {
+		storedSubagentHistoryPreference = loadedSessionMeta.SaveSubagentHistories
+	}
+	saveSubagentHistories := appconfig.ResolveSaveSubagentHistories(appConfig, saveSubagentHistoriesCLI, *saveSubagentHistoriesReq, storedSubagentHistoryPreference)
 
 	// Initialize Core Components
 	resolvedOpenAIConfig := appconfig.ResolveOpenAISettings(appConfig)
@@ -246,6 +273,11 @@ func main() {
 	mainTools["target_edit"] = false
 
 	sess := session.New(c, historyPath, history, systemPrompt, *useToolsReq)
+	if loadedSessionMeta != nil {
+		sess.SetSubagentMetadata(loadedSessionMeta.SubagentSeq, loadedSessionMeta.SaveSubagentHistories)
+	} else {
+		sess.SetSubagentMetadata(0, &saveSubagentHistories)
+	}
 	executor.RegisterTools(sess.Registry, mainTools)
 
 	// Initialize common renderer
@@ -355,7 +387,7 @@ func main() {
 				currentSubagentClient = subagentClient
 			}
 
-			child, err := agent.NewSubagentOrchestrator(currentSubagentClient, goal, ctxFiles, agentType, enabledTools, *injectCWDReq, *gemmaThinkingReq, *subagentMaxTurns, rootAgent, p)
+			child, err := agent.NewSubagentOrchestrator(currentSubagentClient, goal, ctxFiles, agentType, enabledTools, *injectCWDReq, *gemmaThinkingReq, *subagentMaxTurns, effectiveSessionID, saveSubagentHistories, rootAgent, p)
 			if err != nil {
 				return "", err
 			}
@@ -388,6 +420,19 @@ func main() {
 	}
 }
 
+// deriveEffectiveSessionID derives this run's session ID from the FINAL
+// history path so resumed sessions keep their original ID. It returns ""
+// for empty or unsafe results (a crafted meta file could claim an ID like
+// ".."), which disables subagent history persistence for the run
+// (in-memory fallback) instead of writing files outside the session folder.
+func deriveEffectiveSessionID(historyPath string) string {
+	id := strings.TrimSuffix(filepath.Base(historyPath), ".json")
+	if id == "" || id == "." || id == ".." {
+		return ""
+	}
+	return id
+}
+
 func mcpToolEnabled(t tool.Tool, enabledTools map[string]bool) bool {
 	if enabled, exists := enabledTools[t.Name()]; exists {
 		return enabled
@@ -411,9 +456,14 @@ func newModelClient(ctx context.Context, setting appconfig.ModelSetting, enableI
 	return c
 }
 
-// handleSessionCommand processes session subcommands
-// Returns: command, args (remaining), verbose flag
-func handleSessionCommand(args []string) (string, []string, bool) {
+type sessionCommandResult struct {
+	HistoryPath string
+	Meta        *session.SessionMeta
+	ShouldExit  bool
+}
+
+// handleSessionCommand processes session subcommands.
+func handleSessionCommand(args []string) sessionCommandResult {
 	if len(args) == 0 {
 		fmt.Println("Usage: late session <list|load|delete> [args...]")
 		fmt.Println("")
@@ -421,7 +471,7 @@ func handleSessionCommand(args []string) (string, []string, bool) {
 		fmt.Println("  list [-v]      List all saved sessions (use -v for verbose/detailed view)")
 		fmt.Println("  load <id>      Load a session by ID (can use prefix)")
 		fmt.Println("  delete <id>    Delete a session by ID")
-		return "", nil, false
+		return sessionCommandResult{}
 	}
 
 	// Parse flags for specific commands
@@ -449,14 +499,15 @@ func handleSessionCommand(args []string) (string, []string, bool) {
 	switch args[0] {
 	case "list":
 		handleSessionList(verbose)
-		return "", nil, true
+		return sessionCommandResult{ShouldExit: true}
 	case "load":
 		if len(commandArgs) < 1 {
 			fmt.Println("Error: session ID required")
 			fmt.Println("Usage: late session load <id>")
 			os.Exit(1)
 		}
-		return handleSessionLoad(commandArgs[0]), nil, false
+		meta := handleSessionLoad(commandArgs[0])
+		return sessionCommandResult{HistoryPath: meta.HistoryPath, Meta: meta}
 	case "delete":
 		if len(commandArgs) < 1 {
 			fmt.Println("Error: session ID required")
@@ -464,11 +515,11 @@ func handleSessionCommand(args []string) (string, []string, bool) {
 			os.Exit(1)
 		}
 		handleSessionDelete(commandArgs[0])
-		return "", nil, true
+		return sessionCommandResult{ShouldExit: true}
 	default:
 		fmt.Printf("Unknown session command: %s\n", args[0])
 		handleSessionCommand([]string{})
-		return "", nil, true
+		return sessionCommandResult{ShouldExit: true}
 	}
 }
 
@@ -494,8 +545,8 @@ func handleSessionList(verbose bool) {
 	fmt.Println(session.FormatResumePrompt())
 }
 
-// handleSessionLoad returns the history path for the given session ID
-func handleSessionLoad(id string) string {
+// handleSessionLoad returns metadata for the given session ID.
+func handleSessionLoad(id string) *session.SessionMeta {
 	meta, err := session.LoadSessionMeta(id)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading session: %v\n", err)
@@ -510,7 +561,7 @@ func handleSessionLoad(id string) string {
 
 	fmt.Printf("Resuming session: %s (%s)\n", meta.ID, meta.Title)
 	time.Sleep(500 * time.Millisecond) // Give user a moment to see what's happening
-	return meta.HistoryPath
+	return meta
 }
 
 // handleSessionDelete removes a session
@@ -544,6 +595,13 @@ func handleSessionDelete(id string) {
 	if err := os.Remove(meta.HistoryPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Error deleting history: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Delete the session's subagent history folder (hierarchical layout). No-op for
+	// legacy flat sessions without a folder. Non-fatal: the session itself is already
+	// gone, so don't block the success message on leftover artifacts.
+	if err := session.RemoveSessionFolder(meta.ID); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to delete subagent history folder: %v\n", err)
 	}
 
 	fmt.Printf("Deleted session: %s\n", meta.Title)

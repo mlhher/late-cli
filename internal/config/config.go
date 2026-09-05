@@ -56,6 +56,11 @@ type Config struct {
 	LateSubagentAPIKey  string          `json:"late_subagent_api_key,omitempty"`
 	LateSubagentModel   string          `json:"late_subagent_model,omitempty"`
 
+	// SaveSubagentHistories opts in to persisting subagent conversation
+	// histories under <sessions>/<session-id>/subagents/. Default false.
+	// Enable via config file or the --save-subagent-histories CLI flag.
+	SaveSubagentHistories bool `json:"save_subagent_histories,omitempty"`
+
 	// Legacy subagent fields for backward compatibility
 	SubagentBaseURL string `json:"subagent_base_url,omitempty"`
 	SubagentAPIKey  string `json:"subagent_api_key,omitempty"`
@@ -217,6 +222,23 @@ func ResolveSubagentSettingsWithEnv(cfg *Config, openAI OpenAISettings, lookup E
 	}
 
 	return resolved
+}
+
+// ResolveSaveSubagentHistories determines whether subagent history
+// persistence is enabled. Precedence: explicit CLI flag > saved session
+// preference > config file. There is intentionally no environment-variable
+// override.
+func ResolveSaveSubagentHistories(cfg *Config, cliExplicit bool, cliValue bool, savedPreference *bool) bool {
+	if cliExplicit {
+		return cliValue
+	}
+	if savedPreference != nil {
+		return *savedPreference
+	}
+	if cfg != nil {
+		return cfg.SaveSubagentHistories
+	}
+	return false
 }
 
 func nonEmptyEnv(lookup EnvLookup, key string) (string, bool) {

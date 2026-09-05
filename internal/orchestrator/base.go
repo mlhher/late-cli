@@ -26,6 +26,9 @@ type BaseOrchestrator struct {
 	parent   common.Orchestrator
 	children []common.Orchestrator
 
+	// childSeq is a monotonic counter for minting child IDs; guarded by mu
+	childSeq int
+
 	// Running state tracker
 	isRunning   bool
 	pendingMsgs []client.ChatMessage
@@ -41,6 +44,10 @@ type BaseOrchestrator struct {
 }
 
 func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.ToolMiddleware, maxTurns int) *BaseOrchestrator {
+	childSeq := 0
+	if sess != nil {
+		childSeq = sess.SubagentSeq()
+	}
 	return &BaseOrchestrator{
 		id:          id,
 		sess:        sess,
@@ -49,6 +56,7 @@ func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.
 		ctx:         context.Background(),
 		stopCh:      make(chan struct{}),
 		maxTurns:    maxTurns,
+		childSeq:    childSeq,
 	}
 }
 
@@ -440,7 +448,9 @@ func (o *BaseOrchestrator) Registry() *common.ToolRegistry {
 func (o *BaseOrchestrator) Children() []common.Orchestrator {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
-	return o.children
+	out := make([]common.Orchestrator, len(o.children))
+	copy(out, o.children)
+	return out
 }
 
 func (o *BaseOrchestrator) Parent() common.Orchestrator {
@@ -467,6 +477,20 @@ func (o *BaseOrchestrator) Rewind(index int) error {
 		return o.sess.UpdateSessionMetadata()
 	}
 	return nil
+}
+
+// NextChildID atomically reserves and mints the next child ID under o.mu. The
+// counter is shared across agent types (e.g., `researcher-subagent-0`, then
+// `coder-subagent-1`), matching the legacy `len(children)` numbering scheme.
+func (o *BaseOrchestrator) NextChildID(agentType string) (string, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	id := fmt.Sprintf("%s-subagent-%d", agentType, o.childSeq)
+	if err := o.sess.UpdateSubagentSeq(o.childSeq + 1); err != nil {
+		return "", fmt.Errorf("failed to reserve child ID: %w", err)
+	}
+	o.childSeq++
+	return id, nil
 }
 
 func (o *BaseOrchestrator) AddChild(child common.Orchestrator) {
