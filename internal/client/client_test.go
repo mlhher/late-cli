@@ -39,6 +39,84 @@ func TestSupportsVisionOverride(t *testing.T) {
 	}
 }
 
+func TestClient_Headers(t *testing.T) {
+	t.Run("generic endpoint sends User-Agent without OpenRouter headers", func(t *testing.T) {
+		var receivedHeaders http.Header
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			receivedHeaders = r.Header.Clone()
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+		}))
+		defer server.Close()
+
+		c := NewClient(Config{BaseURL: server.URL})
+		_, err := c.ChatCompletion(context.Background(), defaultRequest())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		expectedUA := "late-cli/dev (+https://github.com/mlhher/late-cli)"
+		if got := receivedHeaders.Get("User-Agent"); got != expectedUA {
+			t.Errorf("User-Agent = %q, want %q", got, expectedUA)
+		}
+		if got := receivedHeaders.Get("HTTP-Referer"); got != "" {
+			t.Errorf("HTTP-Referer should not be set for generic endpoint, got %q", got)
+		}
+		if got := receivedHeaders.Get("X-OpenRouter-Title"); got != "" {
+			t.Errorf("X-OpenRouter-Title should not be set for generic endpoint, got %q", got)
+		}
+		if got := receivedHeaders.Get("X-OpenRouter-Categories"); got != "" {
+			t.Errorf("X-OpenRouter-Categories should not be set for generic endpoint, got %q", got)
+		}
+	})
+
+	t.Run("openrouter endpoint sends attribution headers and uses AppVersion", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+		}))
+		defer server.Close()
+
+		c := NewClient(Config{
+			BaseURL:    "https://openrouter.ai/api/v1",
+			AppVersion: "1.2.3",
+		})
+		req, err := http.NewRequestWithContext(context.Background(), "POST", server.URL, nil)
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+		c.applyHeaders(req)
+
+		expectedUA := "late-cli/1.2.3 (+https://github.com/mlhher/late-cli)"
+		if got := req.Header.Get("User-Agent"); got != expectedUA {
+			t.Errorf("User-Agent = %q, want %q", got, expectedUA)
+		}
+		if got := req.Header.Get("HTTP-Referer"); got != "https://github.com/mlhher/late-cli" {
+			t.Errorf("HTTP-Referer = %q, want https://github.com/mlhher/late-cli", got)
+		}
+		if got := req.Header.Get("X-OpenRouter-Title"); got != "Late-CLI" {
+			t.Errorf("X-OpenRouter-Title = %q, want Late-CLI", got)
+		}
+		if got := req.Header.Get("X-OpenRouter-Categories"); got != "cli-agent" {
+			t.Errorf("X-OpenRouter-Categories = %q, want cli-agent", got)
+		}
+	})
+
+	t.Run("custom UserAgent override", func(t *testing.T) {
+		customUA := "custom-agent/1.0"
+		c := NewClient(Config{
+			BaseURL:   "http://localhost:8080",
+			UserAgent: customUA,
+		})
+		req, _ := http.NewRequestWithContext(context.Background(), "POST", "http://localhost:8080", nil)
+		c.applyHeaders(req)
+
+		if got := req.Header.Get("User-Agent"); got != customUA {
+			t.Errorf("User-Agent = %q, want %q", got, customUA)
+		}
+	})
+}
+
 // Sample SSE chunk JSON strings shared across stream tests.
 const (
 	sampleChunkHello = `{"id":"c1","choices":[{"delta":{"content":"Hello"}}]}`

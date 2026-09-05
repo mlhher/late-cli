@@ -242,6 +242,7 @@ func main() {
 		APIKey:       resolvedOpenAIConfig.APIKey,
 		Model:        resolvedOpenAIConfig.Model,
 		EnableImages: *enableImagesReq,
+		AppVersion:   common.Version,
 	}
 	if appConfig != nil {
 		if setting, ok := appConfig.GetModelForAgent("orchestrator"); ok {
@@ -265,6 +266,7 @@ func main() {
 			APIKey:       resolvedSubagentConfig.APIKey,
 			Model:        resolvedSubagentConfig.Model,
 			EnableImages: *enableImagesReq,
+			AppVersion:   common.Version,
 		})
 		subagentClient.DiscoverBackend(context.Background())
 	}
@@ -384,6 +386,7 @@ func main() {
 						APIKey:       setting.Key,
 						Model:        setting.Model,
 						EnableImages: *enableImagesReq,
+						AppVersion:   common.Version,
 					})
 					currentSubagentClient.DiscoverBackend(ctx)
 				}
@@ -451,6 +454,7 @@ func newModelClient(ctx context.Context, setting appconfig.ModelSetting, enableI
 		APIKey:       setting.Key,
 		Model:        setting.Model,
 		EnableImages: enableImages,
+		AppVersion:   common.Version,
 	})
 	c.DiscoverBackend(ctx)
 	return c

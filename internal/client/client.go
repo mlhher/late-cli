@@ -20,6 +20,8 @@ type Config struct {
 	Model        string
 	Timeout      time.Duration
 	EnableImages bool
+	AppVersion   string
+	UserAgent    string
 }
 
 type BackendType string
@@ -37,19 +39,41 @@ type Client struct {
 	backend        BackendType
 	ctxSize        int
 	supportsVision bool
+	userAgent      string
 }
 
 func NewClient(cfg Config) *Client {
+	ua := cfg.UserAgent
+	if ua == "" {
+		ver := cfg.AppVersion
+		if ver == "" {
+			ver = "dev"
+		}
+		ua = fmt.Sprintf("late-cli/%s (+https://github.com/mlhher/late-cli)", ver)
+	}
+
 	return &Client{
-		cfg:     cfg,
-		backend: BackendUnknown,
-		ctxSize: -1, // -1 means unknown or not applicable
+		cfg:       cfg,
+		backend:   BackendUnknown,
+		ctxSize:   -1, // -1 means unknown or not applicable
+		userAgent: ua,
 		httpClient: &http.Client{
 			Transport: &http.Transport{
 				DisableKeepAlives: true,
 			},
 			Timeout: 0, // Streaming needs no timeout here
 		},
+	}
+}
+
+func (c *Client) applyHeaders(req *http.Request) {
+	if c.userAgent != "" {
+		req.Header.Set("User-Agent", c.userAgent)
+	}
+	if strings.Contains(strings.ToLower(c.cfg.BaseURL), "openrouter.ai") {
+		req.Header.Set("HTTP-Referer", "https://github.com/mlhher/late-cli")
+		req.Header.Set("X-OpenRouter-Title", "Late-CLI")
+		req.Header.Set("X-OpenRouter-Categories", "cli-agent")
 	}
 }
 
@@ -92,6 +116,7 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 	if c.cfg.APIKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	}
+	c.applyHeaders(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -147,6 +172,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 		if c.cfg.APIKey != "" {
 			httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 		}
+		c.applyHeaders(httpReq)
 
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
@@ -219,6 +245,7 @@ func (c *Client) Completion(ctx context.Context, req CompletionRequest) (*Comple
 	if c.cfg.APIKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	}
+	c.applyHeaders(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -248,6 +275,7 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	c.applyHeaders(req)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
@@ -287,6 +315,7 @@ func (c *Client) RefreshContextSize(ctx context.Context) {
 		if c.cfg.APIKey != "" {
 			req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 		}
+		c.applyHeaders(req)
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
@@ -364,6 +393,7 @@ func (c *Client) DiscoverBackend(ctx context.Context) BackendType {
 		if c.cfg.APIKey != "" {
 			req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 		}
+		c.applyHeaders(req)
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
@@ -426,6 +456,7 @@ func (c *Client) probeModelsEndpoint(ctx context.Context, baseURL string) int {
 		if c.cfg.APIKey != "" {
 			req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 		}
+		c.applyHeaders(req)
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
