@@ -889,9 +889,12 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				var entries []RewindEntry
 				for idx, msg := range history {
 					if msg.Role == "user" {
-						content := msg.Content.UIString()
+						content := strings.TrimSpace(msg.Content.UIString())
 						if content == "" {
-							content = msg.Content.String()
+							content = strings.TrimSpace(msg.Content.String())
+						}
+						if content == "" && len(msg.AttachedFiles) == 0 {
+							continue
 						}
 						entries = append(entries, RewindEntry{
 							Index:   idx,

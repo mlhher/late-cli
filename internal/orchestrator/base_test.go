@@ -6,6 +6,8 @@ import (
 	"late/internal/client"
 	"late/internal/common"
 	"late/internal/session"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
@@ -257,3 +259,37 @@ func TestNextChildIDPersistsSequenceForResume(t *testing.T) {
 		t.Errorf("resumed NextChildID() = %q, want coder-subagent-5", resumedID)
 	}
 }
+
+func TestBaseOrchestrator_Execute_EmptyTextDoesNotAddMessage(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer ts.Close()
+
+	tmpDir := t.TempDir()
+	historyPath := filepath.Join(tmpDir, "session.json")
+	initial := []client.ChatMessage{
+		{Role: "user", Content: client.TextContent("initial goal")},
+	}
+	c := client.NewClient(client.Config{BaseURL: ts.URL})
+	sess := session.New(c, historyPath, initial, "", false)
+	o := NewBaseOrchestrator("test", sess, nil, 1)
+
+	_, _ = o.Execute("")
+
+	userMsgCount := 0
+	for _, msg := range o.History() {
+		if msg.Role == "user" {
+			userMsgCount++
+			if msg.Content.String() != "initial goal" {
+				t.Fatalf("unexpected user message in history: %#v", msg)
+			}
+		}
+	}
+	if userMsgCount != 1 {
+		t.Fatalf("expected exactly 1 user message, got %d", userMsgCount)
+	}
+}
+

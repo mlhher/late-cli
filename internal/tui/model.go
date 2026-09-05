@@ -35,13 +35,13 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 	styles := ti.Styles()
 	styles.Focused.Base = bgStyle
 	styles.Focused.Text = bgStyle
-	styles.Focused.Placeholder = bgStyle.Foreground(lipgloss.Color("#555D6E"))
+	styles.Focused.Placeholder = bgStyle.Foreground(mutedTextColor)
 	styles.Focused.CursorLine = bgStyle
 	styles.Focused.Prompt = bgStyle
 
 	styles.Blurred.Base = bgStyle
 	styles.Blurred.Text = bgStyle
-	styles.Blurred.Placeholder = bgStyle.Foreground(lipgloss.Color("#555D6E"))
+	styles.Blurred.Placeholder = bgStyle.Foreground(mutedTextColor)
 	styles.Blurred.CursorLine = bgStyle
 	styles.Blurred.Prompt = bgStyle
 	ti.SetStyles(styles)
@@ -98,9 +98,9 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 
 	// Apply styles for visibility
 	s := filepicker.DefaultStyles()
-	s.Selected = lipgloss.NewStyle().Foreground(secondaryColor).Bold(true)
-	s.File = lipgloss.NewStyle().Foreground(textColor)
-	s.Directory = lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+	s.Selected = filePickerSelectedStyle
+	s.File = filePickerFileStyle
+	s.Directory = filePickerDirectoryStyle
 	fp.Styles = s
 
 	m.FilePicker = fp

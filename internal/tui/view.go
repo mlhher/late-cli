@@ -111,7 +111,7 @@ func (m *Model) inputView() string {
 	if s.State == StateThinking || s.State == StateStreaming {
 		outerStyle = outerStyle.BorderForeground(activeBorder)
 	} else if s.State == StateConfirmTool {
-		outerStyle = outerStyle.BorderForeground(accentCoral)
+		outerStyle = outerStyle.BorderForeground(warnBorderColor)
 	}
 
 	return outerStyle.Render(paddedTextarea)
@@ -396,9 +396,9 @@ func (m *Model) statusBarView() string {
 	hasToast := m.ToastMessage != "" && time.Now().UnixMilli() < m.ToastExpireTime
 	if hasToast {
 		if m.ToastWarning {
-			status = lipgloss.NewStyle().Foreground(accentCoral).Bold(true).Render(m.ToastMessage)
+			status = statusWarningStyle.Render(m.ToastMessage)
 		} else {
-			status = lipgloss.NewStyle().Foreground(accentEmerald).Render(m.ToastMessage)
+			status = statusSuccessStyle.Render(m.ToastMessage)
 		}
 	} else if statusText != "" && statusText != "Working..." && statusText != "Ready" && statusText != "Closed" {
 		if s.State == StateConfirmTool {
@@ -428,7 +428,7 @@ func (m *Model) statusBarView() string {
 	// Right: Attachments, Context, Breadcrumbs, Help
 	var rightItems []string
 	if len(m.AttachedFiles) > 0 {
-		rightItems = append(rightItems, lipgloss.NewStyle().Foreground(secondaryColor).Render(fmt.Sprintf("%d files", len(m.AttachedFiles))))
+		rightItems = append(rightItems, statusAttachedStyle.Render(fmt.Sprintf("%d files", len(m.AttachedFiles))))
 	}
 
 	maxTokens := m.Focused.MaxTokens()
@@ -440,11 +440,11 @@ func (m *Model) statusBarView() string {
 	var pathParts []string
 	curr := m.Focused
 	for curr != nil {
-		pathParts = append([]string{curr.ID()}, pathParts...)
+		pathParts = append([]string{breadcrumbAgentStyle.Render(curr.ID())}, pathParts...)
 		curr = curr.Parent()
 	}
 	if len(pathParts) > 1 {
-		rightItems = append(rightItems, strings.Join(pathParts, " › "))
+		rightItems = append(rightItems, strings.Join(pathParts, breadcrumbSeparatorStyle.Render(" › ")))
 	}
 
 	rightItems = append(rightItems, lipgloss.NewStyle().Foreground(mutedTextColor).Render("ctrl+h help"))
@@ -636,18 +636,20 @@ Press **ctrl+h** or **esc** to return to chat.`
 		var rendered string
 		switch msg.Role {
 		case "user":
-			promptPrefix := promptSymbolStyle.Render("❯ ")
-			content := msg.Content.UIString()
-			userText := userMsgStyle.Width(msgWidth - 2).Render(content)
-			userBlock := promptPrefix + userText
-			if len(msg.AttachedFiles) > 0 {
-				var names []string
-				for _, f := range msg.AttachedFiles {
-					names = append(names, filepath.Base(f))
+			content := strings.TrimRight(msg.Content.UIString(), "\r\n")
+			if strings.TrimSpace(content) != "" || len(msg.AttachedFiles) > 0 {
+				promptPrefix := promptSymbolStyle.Render("❯ ")
+				userText := userMsgStyle.Width(msgWidth - 2).Render(content)
+				userBlock := promptPrefix + userText
+				if len(msg.AttachedFiles) > 0 {
+					var names []string
+					for _, f := range msg.AttachedFiles {
+						names = append(names, filepath.Base(f))
+					}
+					userBlock += "\n" + attachmentStyle.Render("  ↳ attached: "+strings.Join(names, ", "))
 				}
-				userBlock += "\n" + attachmentStyle.Render("  ↳ attached: "+strings.Join(names, ", "))
+				rendered = "\n" + userBlock + "\n"
 			}
-			rendered = "\n" + userBlock + "\n"
 		case "assistant":
 			var assistantParts []string
 			if msg.ReasoningContent != "" {
@@ -930,7 +932,7 @@ Press **ctrl+h** or **esc** to return to chat.`
 		currentLine += linesCount
 	} else if m.Err != nil {
 		prompt := fmt.Sprintf("Error: %v", m.Err)
-		r := thinkingStyle.Foreground(lipgloss.Color("#FF0000")).Render(prompt)
+		r := thinkingStyle.Foreground(errorBorderColor).Render(prompt)
 		blocks = append(blocks, r)
 		linesCount := strings.Count(r, "\n") + 1
 
@@ -1404,20 +1406,11 @@ func (m *Model) renderCommitLogView() {
 
 	// Build commit list
 	var lines []string
-	header := lipgloss.NewStyle().
-		Foreground(primaryColor).
-		Bold(true).
-		Background(appBgColor).
-		PaddingLeft(1).
-		Render("── Commit History ──────────────────────────────────")
+	header := viewHeaderStyle.Render("── Commit History ──────────────────────────────────")
 	lines = append(lines, header, "")
 
 	if len(m.CommitEntries) == 0 {
-		lines = append(lines, lipgloss.NewStyle().
-			Foreground(subtextColor).
-			Background(appBgColor).
-			PaddingLeft(2).
-			Render("No commits found."))
+		lines = append(lines, viewEmptyStyle.Render("No commits found."))
 	} else {
 		for i, entry := range m.CommitEntries {
 			prefix := "  "
@@ -1478,11 +1471,7 @@ func (m *Model) renderCommitLogView() {
 	}
 
 	// Footer hint
-	footer := lipgloss.NewStyle().
-		Foreground(mutedTextColor).
-		Background(appBgColor).
-		PaddingLeft(1).
-		Render(fmt.Sprintf("↑↓ navigate · Enter view · Esc back  (%d commits)", len(m.CommitEntries)))
+	footer := viewFooterStyle.Render(fmt.Sprintf("↑↓ navigate · Enter view · Esc back  (%d commits)", len(m.CommitEntries)))
 	lines = append(lines, "", footer)
 
 	m.Viewport.SetContent(strings.Join(lines, "\n"))
@@ -1499,20 +1488,11 @@ func (m *Model) renderRewindView() {
 	}
 
 	var lines []string
-	header := lipgloss.NewStyle().
-		Foreground(primaryColor).
-		Bold(true).
-		Background(appBgColor).
-		PaddingLeft(1).
-		Render("── Rewind Conversation (Time-Travel) ───────────────")
+	header := viewHeaderStyle.Render("── Rewind Conversation (Time-Travel) ───────────────")
 	lines = append(lines, header, "")
 
 	if len(m.RewindEntries) == 0 {
-		lines = append(lines, lipgloss.NewStyle().
-			Foreground(subtextColor).
-			Background(appBgColor).
-			PaddingLeft(2).
-			Render("No user messages found to rewind to."))
+		lines = append(lines, viewEmptyStyle.Render("No user messages found to rewind to."))
 	} else {
 		for i, entry := range m.RewindEntries {
 			prefix := "  ○ "
@@ -1558,11 +1538,7 @@ func (m *Model) renderRewindView() {
 	}
 
 	// Footer hint
-	footer := lipgloss.NewStyle().
-		Foreground(mutedTextColor).
-		Background(appBgColor).
-		PaddingLeft(1).
-		Render(fmt.Sprintf("↑↓ choose message · Enter rewind here · Esc cancel  (%d messages)", len(m.RewindEntries)))
+	footer := viewFooterStyle.Render(fmt.Sprintf("↑↓ choose message · Enter rewind here · Esc cancel  (%d messages)", len(m.RewindEntries)))
 	lines = append(lines, "", footer)
 
 	m.Viewport.SetContent(strings.Join(lines, "\n"))
@@ -1663,32 +1639,15 @@ func (m *Model) renderModelPickerView() {
 	}
 
 	var lines []string
-	header := lipgloss.NewStyle().
-		Foreground(primaryColor).
-		Bold(true).
-		Background(appBgColor).
-		PaddingLeft(1).
-		Render("── Configure Agent Models ──────────────────────────")
+	header := viewHeaderStyle.Render("── Configure Agent Models ──────────────────────────")
 	lines = append(lines, header, "")
 
 	if len(m.ModelPickerModels) <= 1 && (m.AppConfig == nil || len(m.AppConfig.Models) == 0) {
-		lines = append(lines, lipgloss.NewStyle().
-			Foreground(warningColor).
-			Background(appBgColor).
-			PaddingLeft(2).
-			Render("No models configured in ~/.config/late/config.json"))
-		lines = append(lines, "", lipgloss.NewStyle().
-			Foreground(subtextColor).
-			Background(appBgColor).
-			PaddingLeft(2).
-			Render("Please add a 'models' array to your config file first."))
+		lines = append(lines, viewEmptyStyle.Copy().Foreground(warnBorderColor).Render("No models configured in ~/.config/late/config.json"))
+		lines = append(lines, "", viewEmptyStyle.Render("Please add a 'models' array to your config file first."))
 	} else {
 		// Instructions
-		lines = append(lines, lipgloss.NewStyle().
-			Foreground(subtextColor).
-			Background(appBgColor).
-			PaddingLeft(2).
-			Render("Use ↑/↓ to choose an agent, and ←/→ to select a model."), "")
+		lines = append(lines, viewEmptyStyle.Render("Use ↑/↓ to choose an agent, and ←/→ to select a model."), "")
 
 		// Print agents and their models
 		for aIdx, agentName := range m.ModelPickerAgents {
@@ -1770,11 +1729,7 @@ func (m *Model) renderModelPickerView() {
 	lines = append(lines, "", "")
 
 	// Footer hints
-	footer := lipgloss.NewStyle().
-		Foreground(mutedTextColor).
-		Background(appBgColor).
-		PaddingLeft(2).
-		Render("[Enter] Save & Apply  ·  [Esc] Cancel  ·  [↑/↓] Select Agent  ·  [←/→] Choose Model")
+	footer := viewFooterStyle.Render("[Enter] Save & Apply  ·  [Esc] Cancel  ·  [↑/↓] Select Agent  ·  [←/→] Choose Model")
 	lines = append(lines, footer)
 
 	m.Viewport.SetContent(strings.Join(lines, "\n"))

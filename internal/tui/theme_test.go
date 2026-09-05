@@ -28,6 +28,19 @@ func TestLateThemeJSONValid(t *testing.T) {
 	if !ok || doc["background_color"] != "#0B0C0E" {
 		t.Errorf("expected document background_color to be #0B0C0E, got %v", doc["background_color"])
 	}
+	if !ok || doc["color"] != "#E6EDF3" {
+		t.Errorf("expected document color to be #E6EDF3 (textColor), got %v", doc["color"])
+	}
+
+	heading, ok := parsed["heading"].(map[string]interface{})
+	if !ok || heading["color"] != "#E5A85C" {
+		t.Errorf("expected heading color to be #E5A85C (primaryColor), got %v", heading["color"])
+	}
+
+	quote, ok := parsed["block_quote"].(map[string]interface{})
+	if !ok || quote["color"] != "#7D8590" {
+		t.Errorf("expected block_quote color to be #7D8590 (subtextColor), got %v", quote["color"])
+	}
 }
 
 func TestCodeBlockRendering(t *testing.T) {
@@ -497,6 +510,76 @@ func TestRewindCleanTimeline(t *testing.T) {
 		t.Errorf("expected no redundant 'Rewind target' chip in rewind view, got:\n%s", plainContent)
 	}
 }
+
+func TestUnifiedThemeAndStyles(t *testing.T) {
+	// 1. Centralized View Styles
+	if fg := viewHeaderStyle.GetForeground(); fg != primaryColor {
+		t.Errorf("expected viewHeaderStyle foreground to be %v, got %v", primaryColor, fg)
+	}
+	if fg := viewFooterStyle.GetForeground(); fg != mutedTextColor {
+		t.Errorf("expected viewFooterStyle foreground to be %v, got %v", mutedTextColor, fg)
+	}
+	if fg := viewEmptyStyle.GetForeground(); fg != subtextColor {
+		t.Errorf("expected viewEmptyStyle foreground to be %v, got %v", subtextColor, fg)
+	}
+
+	// 2. File Picker Styles
+	if fg := filePickerSelectedStyle.GetForeground(); fg != secondaryColor {
+		t.Errorf("expected filePickerSelectedStyle foreground to be %v, got %v", secondaryColor, fg)
+	}
+	if fg := filePickerFileStyle.GetForeground(); fg != textColor {
+		t.Errorf("expected filePickerFileStyle foreground to be %v, got %v", textColor, fg)
+	}
+	if fg := filePickerDirectoryStyle.GetForeground(); fg != primaryColor {
+		t.Errorf("expected filePickerDirectoryStyle foreground to be %v, got %v", primaryColor, fg)
+	}
+
+	// 3. Status Bar Breadcrumbs Styling
+	root := &focusTestOrchestrator{id: "parent-agent"}
+	child := &focusTestOrchestrator{id: "sub-agent", parent: root}
+	model := NewModel(child, nil, nil)
+	model.Width = 120
+	sbView := model.statusBarView()
+	// activeBorder in RGB is 45;50;62
+	if !strings.Contains(sbView, "45;50;62") {
+		t.Errorf("expected status bar to render breadcrumb separator with activeBorder (45;50;62), got:\n%s", sbView)
+	}
+}
+
+func TestUserMessageRendering_EmptyAndTrailingNewlines(t *testing.T) {
+	mock := &mockOrchestrator{
+		history: []client.ChatMessage{
+			{Role: "user", Content: client.TextContent("Goal: Test poem\n\n")},
+			{Role: "user", Content: client.TextContent("")},
+			{Role: "assistant", Content: client.TextContent("Here is the poem.")},
+		},
+	}
+	model := NewModel(mock, nil, nil)
+	model.Width = 100
+	model.Viewport.SetWidth(100)
+	model.Viewport.SetHeight(20)
+
+	model.updateViewport()
+	content := model.Viewport.GetContent()
+
+	// 1. Should render the goal
+	if !strings.Contains(content, "Goal: Test poem") {
+		t.Errorf("expected content to contain 'Goal: Test poem', got:\n%s", content)
+	}
+
+	// 2. Count prompt symbols '❯'
+	promptCount := strings.Count(content, "❯")
+	if promptCount != 1 {
+		t.Errorf("expected exactly 1 prompt indicator '❯', got %d in:\n%s", promptCount, content)
+	}
+
+	// 3. Should not have gigantic vertical gaps (no 3+ consecutive empty lines)
+	if strings.Contains(content, "\n\n\n\n") {
+		t.Errorf("expected no excessive blank lines in viewport, got:\n%s", content)
+	}
+}
+
+
 
 
 

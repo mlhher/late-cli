@@ -10,7 +10,6 @@ var (
 	primaryGlow    = lipgloss.Color("#F0B875") // Subtle highlight
 	secondaryColor = lipgloss.Color("#56B6C2") // Steel Ice Cyan
 	accentEmerald  = lipgloss.Color("#4ECCA3") // Muted Mint
-	accentPurple   = lipgloss.Color("#9D86E9") // Muted Violet
 	accentCoral    = lipgloss.Color("#E06C75") // Calm Coral
 	warningColor   = lipgloss.Color("#E06C75") // Warning Red (alias)
 	textColor      = lipgloss.Color("#E6EDF3") // Crisp Off-White
@@ -21,7 +20,6 @@ var (
 	appBgColor     = lipgloss.Color("#0B0C0E") // Deep Obsidian
 	userMsgBg      = appBgColor                // Clean seamless canvas
 	aiMsgBg        = appBgColor                // Clean seamless canvas
-	thoughtBgColor = lipgloss.Color("#0E1015") // Recessed Introspection
 	cardBgColor    = lipgloss.Color("#12141A") // Subtle Container (autocomplete popup)
 	chipBgColor    = lipgloss.Color("#1B1E28") // Elevated Pill / Badge Surface
 	borderColor    = lipgloss.Color("#1C1F26") // Hairline Divider
@@ -40,6 +38,28 @@ var (
 			Border(boxBorderStyle).
 			BorderForeground(modalBorderColor).
 			Background(appBgColor)
+
+	// Fullscreen View Styles (/log, /rewind, /model)
+	viewHeaderStyle = lipgloss.NewStyle().
+			Foreground(primaryColor).
+			Bold(true).
+			Background(appBgColor).
+			PaddingLeft(1)
+
+	viewEmptyStyle = lipgloss.NewStyle().
+			Foreground(subtextColor).
+			Background(appBgColor).
+			PaddingLeft(2)
+
+	viewFooterStyle = lipgloss.NewStyle().
+			Foreground(mutedTextColor).
+			Background(appBgColor).
+			PaddingLeft(1)
+
+	// File Picker Styles
+	filePickerSelectedStyle  = lipgloss.NewStyle().Foreground(secondaryColor).Bold(true)
+	filePickerFileStyle      = lipgloss.NewStyle().Foreground(textColor)
+	filePickerDirectoryStyle = lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
 
 	// Centralized Pill & Badge Styles (Elevated Neutral Surface)
 	chipStyle = lipgloss.NewStyle().
@@ -67,8 +87,7 @@ var (
 	baseStyle = lipgloss.NewStyle().Background(appBgColor)
 
 	// Layout Constants
-	UserMsgOverhead = 0
-	AIMsgOverhead   = 0
+	AIMsgOverhead = 0
 
 	// Styles
 	appStyle = baseStyle.Copy().
@@ -125,12 +144,6 @@ var (
 				Background(appBgColor).
 				MarginLeft(2)
 
-	// Tool execution
-	toolBadgeStyle = lipgloss.NewStyle().
-			Foreground(subtextColor).
-			Background(appBgColor).
-			MarginLeft(2)
-
 	// Status Bar
 	statusBarBaseStyle = lipgloss.NewStyle().
 				Background(appBgColor).
@@ -175,9 +188,6 @@ var (
 	statusAttachedStyle = lipgloss.NewStyle().
 				Foreground(secondaryColor).
 				Background(appBgColor)
-
-	statusTokenStyle = lipgloss.NewStyle().
-				Foreground(subtextColor)
 
 	// Breadcrumb styles
 	breadcrumbLateStyle = lipgloss.NewStyle().

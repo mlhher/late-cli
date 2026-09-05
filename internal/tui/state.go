@@ -40,9 +40,8 @@ const (
 	ViewModelPicker
 )
 
-// Fixed layout heights (crush-style)
+// Fixed layout heights
 const (
-	InputHeight     = 9
 	StatusBarHeight = 2
 	AppPadding      = 0
 )

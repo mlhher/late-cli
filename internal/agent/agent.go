@@ -11,6 +11,7 @@ import (
 	"late/internal/session"
 	"late/internal/tui"
 	"os"
+	"strings"
 )
 
 // NewSubagentOrchestrator creates a new BaseOrchestrator for a subagent.
@@ -112,9 +113,9 @@ func NewSubagentOrchestrator(
 	executor.RegisterTools(sess.Registry, subagentTools)
 
 	// 3. Construct Initial Context
-	initialMsg := fmt.Sprintf("Goal: %s\n\n", goal)
+	initialMsg := fmt.Sprintf("Goal: %s", goal)
 	if len(ctxFiles) > 0 {
-		initialMsg += "Context Files:\n"
+		initialMsg += "\n\nContext Files:\n"
 		for _, f := range ctxFiles {
 			content, err := os.ReadFile(f)
 			if err == nil {
@@ -122,6 +123,7 @@ func NewSubagentOrchestrator(
 			}
 		}
 	}
+	initialMsg = strings.TrimRight(initialMsg, "\r\n")
 
 	if err := sess.AddUserMessage(initialMsg); err != nil {
 		return nil, fmt.Errorf("failed to add initial message: %w", err)

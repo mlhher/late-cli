@@ -13,6 +13,7 @@ import (
 
 type mockOrchestrator struct {
 	submittedText string
+	history       []client.ChatMessage
 }
 
 func (m *mockOrchestrator) ID() string { return "mock" }
@@ -26,7 +27,7 @@ func (m *mockOrchestrator) Rewind(index int) error                   { return ni
 func (m *mockOrchestrator) Cancel()                                  {}
 func (m *mockOrchestrator) IsStopRequested() bool                    { return false }
 func (m *mockOrchestrator) Events() <-chan common.Event              { return nil }
-func (m *mockOrchestrator) History() []client.ChatMessage            { return nil }
+func (m *mockOrchestrator) History() []client.ChatMessage            { return m.history }
 func (m *mockOrchestrator) Context() context.Context                 { return context.Background() }
 func (m *mockOrchestrator) Middlewares() []common.ToolMiddleware     { return nil }
 func (m *mockOrchestrator) Registry() *common.ToolRegistry           { return nil }
