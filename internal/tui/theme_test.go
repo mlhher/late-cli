@@ -579,6 +579,59 @@ func TestUserMessageRendering_EmptyAndTrailingNewlines(t *testing.T) {
 	}
 }
 
+func TestVTEBackgroundRendering(t *testing.T) {
+	// 1. Viewport canvas style must have explicit appBgColor
+	model := NewModel(&mockOrchestrator{}, nil, nil)
+	if bg := model.Viewport.Style.GetBackground(); bg != appBgColor {
+		t.Errorf("expected Viewport.Style background to be %v (appBgColor), got %v", appBgColor, bg)
+	}
+
+	model.Width = 100
+	model.Height = 30
+	model.Viewport.SetWidth(100)
+	model.Viewport.SetHeight(25)
+
+	// 2. Status bar rendering must carry appBgColor on spacers and padding
+	sb := model.statusBarView()
+	// appBgColor #0B0C0E in 24-bit ANSI is 48;2;11;12;14
+	if !strings.Contains(sb, "48;2;11;12;14") {
+		t.Errorf("expected status bar to contain explicit 24-bit appBgColor escape sequences for VTE, got:\n%s", sb)
+	}
+
+	// 3. Commit log view must be padded with appBgColor
+	model.Mode = ViewCommitLog
+	model.CommitEntries = []git.CommitEntry{
+		{Hash: "1234567", Author: "tester", Date: "just now", Message: "feat: test commit", IsHEAD: true},
+	}
+	model.renderCommitLogView()
+	logContent := model.Viewport.GetContent()
+	if !strings.Contains(logContent, "48;2;11;12;14") {
+		t.Errorf("expected /log view content to be padded with appBgColor, got:\n%s", logContent)
+	}
+
+	// 4. Rewind view must be padded with appBgColor
+	model.Mode = ViewRewind
+	model.RewindEntries = []RewindEntry{
+		{Index: 0, Content: "test prompt for rewind"},
+	}
+	model.renderRewindView()
+	rewindContent := model.Viewport.GetContent()
+	if !strings.Contains(rewindContent, "48;2;11;12;14") {
+		t.Errorf("expected /rewind view content to be padded with appBgColor, got:\n%s", rewindContent)
+	}
+
+	// 5. Model picker view must be padded with appBgColor
+	model.Mode = ViewModelPicker
+	model.ModelPickerAgents = []string{"orchestrator"}
+	model.ModelPickerModels = []string{"default"}
+	model.ModelPickerAgentSelections = map[string]int{"orchestrator": 0}
+	model.renderModelPickerView()
+	pickerContent := model.Viewport.GetContent()
+	if !strings.Contains(pickerContent, "48;2;11;12;14") {
+		t.Errorf("expected /model view content to be padded with appBgColor, got:\n%s", pickerContent)
+	}
+}
+
 
 
 

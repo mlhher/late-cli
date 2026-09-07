@@ -50,6 +50,9 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 	// This prevents the "50% width" issue if the default 60 is too small for a large terminal
 	vp := viewport.New(viewport.WithWidth(0), viewport.WithHeight(0))
 	vp.MouseWheelDelta = 6 // Lines per wheel tick; default 3 feels slow on chat history
+	// VTE-based terminals: set explicit background on the viewport so its
+	// internal padding cells and empty lines don't become transparent after ANSI resets.
+	vp.Style = lipgloss.NewStyle().Background(appBgColor)
 	// Initial welcome is set to empty; updateViewport in view.go renders
 	// the rich welcome when history is empty using renderWelcomeMessage().
 	vp.SetContent("")
