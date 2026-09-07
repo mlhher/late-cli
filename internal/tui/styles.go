@@ -153,11 +153,6 @@ var (
 				BorderBackground(appBgColor).
 				Foreground(textColor)
 
-	// statusBgStyle wraps strings and spacers in the status bar background color.
-	// VTE-based terminals (Ptyxis, GNOME Console) don't inherit container background
-	// across ANSI resets (\e[0m). Every cell needs its own explicit background.
-	statusBgStyle = lipgloss.NewStyle().Background(appBgColor)
-
 	statusDivider = lipgloss.NewStyle().
 			Foreground(activeBorder).
 			Background(appBgColor).
@@ -207,8 +202,3 @@ var (
 				Foreground(textColor).
 				Background(appBgColor)
 )
-
-// statusBg wraps a string in the canvas background color for VTE terminals.
-func statusBg(s string) string {
-	return statusBgStyle.Render(s)
-}

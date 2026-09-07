@@ -62,7 +62,7 @@ func (m Model) View() tea.View {
 		hLfRt := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("←/→"), statusTextStyle.Render(" Choose Model "))
 		hEnter := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("Enter"), statusTextStyle.Render(" Save "))
 		hEsc := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("Esc"), statusTextStyle.Render(" Cancel "))
-		pickerHints := lipgloss.JoinHorizontal(lipgloss.Left, hUpDn, statusBg("  "), hLfRt, statusBg("  "), hEnter, statusBg("  "), hEsc)
+		pickerHints := lipgloss.JoinHorizontal(lipgloss.Left, hUpDn, "  ", hLfRt, "  ", hEnter, "  ", hEsc)
 
 		iStr = lipgloss.NewStyle().
 			Border(lipgloss.NormalBorder(), true, false, false, false).
@@ -87,11 +87,43 @@ func (m Model) View() tea.View {
 	}
 	content = lipgloss.JoinVertical(lipgloss.Left, content, iStr, sStr)
 
-	v := tea.NewView(content)
+	v := tea.NewView(sanitizeVTE(content, m.Width))
 	v.AltScreen = true
 	v.BackgroundColor = appBgColor
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
+}
+
+const appBgAnsi = "\x1b[48;2;11;12;14m"
+
+// sanitizeVTE ensures all character cells and line-end paddings across the
+// visible screen strictly maintain appBgColor in VTE-based terminals.
+func sanitizeVTE(s string, screenWidth int) string {
+	if s == "" || screenWidth <= 0 {
+		return s
+	}
+
+	// 1. Re-assert appBgColor immediately after any ANSI reset (\e[m, \e[0m, \e[49m).
+	// In VTE, \e[m resets background to the terminal emulator's profile color.
+	// Re-asserting appBgAnsi guarantees that any subsequent space, separator,
+	// or padding character will be painted with Late's #0B0C0E background.
+	s = strings.ReplaceAll(s, "\x1b[m", "\x1b[m"+appBgAnsi)
+	s = strings.ReplaceAll(s, "\x1b[0m", "\x1b[0m"+appBgAnsi)
+	s = strings.ReplaceAll(s, "\x1b[49m", appBgAnsi)
+
+	// 2. Pad every line to screenWidth with background-painted cells.
+	// When every cell from column 0 to screenWidth has explicit background,
+	// Bubble Tea v2's ultraviolet engine never treats trailing cells as EmptyCell,
+	// preventing it from issuing unstyled \x1b[K (EraseLineRight) into VTE.
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		w := lipgloss.Width(line)
+		if w < screenWidth {
+			line = line + appBgAnsi + strings.Repeat(" ", screenWidth-w)
+		}
+		lines[i] = appBgAnsi + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *Model) inputView() string {
@@ -325,8 +357,8 @@ func (m *Model) statusBarView() string {
 	}
 
 	if m.Mode == ViewModelPicker {
-		leftSection := lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true).Render("models")
-		status := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Render("configure agent models")
+		leftSection := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("models")
+		status := lipgloss.NewStyle().Foreground(subtextColor).Render("configure agent models")
 		hasToast := m.ToastMessage != "" && time.Now().UnixMilli() < m.ToastExpireTime
 		if hasToast {
 			if m.ToastWarning {
@@ -336,7 +368,7 @@ func (m *Model) statusBarView() string {
 			}
 		}
 
-		rightSection := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Render("enter save · esc cancel")
+		rightSection := lipgloss.NewStyle().Foreground(subtextColor).Render("enter save · esc cancel")
 
 		usableW := w - 2
 		leftWidth := lipgloss.Width(leftSection)
@@ -347,12 +379,11 @@ func (m *Model) statusBarView() string {
 		if spaceWidth < 0 {
 			spaceWidth = 0
 		}
-		space := statusBg(strings.Repeat(" ", spaceWidth))
+		space := strings.Repeat(" ", spaceWidth)
 
-		parts := []string{leftSection, statusBg("  "), status, space, rightSection}
+		parts := []string{leftSection, "  ", status, space, rightSection}
 		content := lipgloss.JoinHorizontal(lipgloss.Left, parts...)
-		paddedContent := statusBg(" ") + content + statusBg(" ")
-		return statusBarBaseStyle.Width(w).Render(paddedContent)
+		return statusBarBaseStyle.Width(w).Render(" " + content + " ")
 	}
 
 	s := m.GetAgentState(m.Focused.ID())
@@ -378,14 +409,14 @@ func (m *Model) statusBarView() string {
 	// Branch or CWD (whisper-muted, unobtrusive context)
 	if m.ShowCWD {
 		if m.GitBranch != "" {
-			branchPart := lipgloss.NewStyle().Foreground(mutedTextColor).Background(appBgColor).Render(m.GitBranch)
+			branchPart := lipgloss.NewStyle().Foreground(mutedTextColor).Render(m.GitBranch)
 			leftItems = append(leftItems, branchPart)
 		} else if m.CWD != "" {
 			display := filepath.Base(m.CWD)
 			if display == "/" || display == "." {
 				display = m.CWD
 			}
-			repoPart := lipgloss.NewStyle().Foreground(mutedTextColor).Background(appBgColor).Render(display)
+			repoPart := lipgloss.NewStyle().Foreground(mutedTextColor).Render(display)
 			leftItems = append(leftItems, repoPart)
 		}
 	}
@@ -405,7 +436,7 @@ func (m *Model) statusBarView() string {
 		if s.State == StateConfirmTool {
 			status = statusWarningStyle.Render(statusText)
 		} else {
-			status = lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Italic(true).Render(statusText)
+			status = lipgloss.NewStyle().Foreground(subtextColor).Italic(true).Render(statusText)
 		}
 	}
 
@@ -420,7 +451,7 @@ func (m *Model) statusBarView() string {
 	if otherWaiting {
 		warn := statusWarningStyle.Render("subagent confirm required")
 		if status != "" {
-			status += statusBg(" · ") + warn
+			status += " · " + warn
 		} else {
 			status = warn
 		}
@@ -448,7 +479,7 @@ func (m *Model) statusBarView() string {
 		rightItems = append(rightItems, strings.Join(pathParts, breadcrumbSeparatorStyle.Render(" › ")))
 	}
 
-	rightItems = append(rightItems, lipgloss.NewStyle().Foreground(mutedTextColor).Background(appBgColor).Render("ctrl+h help"))
+	rightItems = append(rightItems, lipgloss.NewStyle().Foreground(mutedTextColor).Render("ctrl+h help"))
 	rightSection := strings.Join(rightItems, statusDivider)
 
 	// Layout spacing
@@ -477,18 +508,17 @@ func (m *Model) statusBarView() string {
 		spaceWidth = 0
 	}
 
-	space := statusBg(strings.Repeat(" ", spaceWidth))
+	space := strings.Repeat(" ", spaceWidth)
 
 	var parts []string
 	parts = append(parts, leftSection)
 	if status != "" {
-		parts = append(parts, statusBg("  "), status)
+		parts = append(parts, "  ", status)
 	}
 	parts = append(parts, space, rightSection)
 
 	content := lipgloss.JoinHorizontal(lipgloss.Left, parts...)
-	paddedContent := statusBg(" ") + content + statusBg(" ")
-	return statusBarBaseStyle.Width(w).Render(paddedContent)
+	return statusBarBaseStyle.Width(w).Render(" " + content + " ")
 }
 
 func (m *Model) updateViewport() {
@@ -580,12 +610,8 @@ Press **ctrl+h** or **esc** to return to chat.`
 		boxed := modalBoxStyle.
 			Width(outerWidth).
 			Render(rendered)
-		padded := lipgloss.NewStyle().
-			Width(m.Viewport.Width()).
-			Background(appBgColor).
-			Render(boxed)
 
-		m.Viewport.SetContent(padded)
+		m.Viewport.SetContent(boxed)
 		return
 	}
 
@@ -644,7 +670,7 @@ Press **ctrl+h** or **esc** to return to chat.`
 		case "user":
 			content := strings.TrimRight(msg.Content.UIString(), "\r\n")
 			if strings.TrimSpace(content) != "" || len(msg.AttachedFiles) > 0 {
-				promptPrefix := promptSymbolStyle.Copy().Background(appBgColor).Render("❯ ")
+				promptPrefix := promptSymbolStyle.Render("❯ ")
 				userText := userMsgStyle.Width(msgWidth - 2).Render(content)
 				userBlock := promptPrefix + userText
 				if len(msg.AttachedFiles) > 0 {
@@ -652,14 +678,14 @@ Press **ctrl+h** or **esc** to return to chat.`
 					for _, f := range msg.AttachedFiles {
 						names = append(names, filepath.Base(f))
 					}
-					userBlock += "\n" + attachmentStyle.Copy().Background(appBgColor).Width(msgWidth).Render("  ↳ attached: "+strings.Join(names, ", "))
+					userBlock += "\n" + attachmentStyle.Render("  ↳ attached: "+strings.Join(names, ", "))
 				}
 				rendered = "\n" + userBlock + "\n"
 			}
 		case "assistant":
 			var assistantParts []string
 			if msg.ReasoningContent != "" {
-				thoughtHeader := thoughtHeaderStyle.Width(msgWidth).Render("· thinking")
+				thoughtHeader := thoughtHeaderStyle.Render("· thinking")
 				thoughtBody := thinkingStyle.Width(msgWidth - 4).Render(msg.ReasoningContent)
 				assistantParts = append(assistantParts, thoughtHeader, thoughtBody)
 			}
@@ -669,7 +695,7 @@ Press **ctrl+h** or **esc** to return to chat.`
 					innerWidth = 1
 				}
 				md := m.renderMarkdownBlock(msg.Content.String(), innerWidth)
-				assistantParts = append(assistantParts, aiMsgStyle.Width(msgWidth).Render(md))
+				assistantParts = append(assistantParts, md)
 			}
 			for _, tc := range msg.ToolCalls {
 				// Try to use CallString() for meaningful display
@@ -767,7 +793,7 @@ Press **ctrl+h** or **esc** to return to chat.`
 		var activeParts []string
 
 		if s.StreamingState.ReasoningContent != "" {
-			thoughtHeader := thoughtHeaderStyle.Width(msgWidth).Render("· thinking")
+			thoughtHeader := thoughtHeaderStyle.Render("· thinking")
 			reasoning := streamingTextWindow(s.StreamingState.ReasoningContent, msgWidth, m.Viewport.Height()*3)
 			thoughtBody := thinkingStyle.Width(msgWidth - 4).Render(reasoning)
 			activeParts = append(activeParts, thoughtHeader, thoughtBody)
@@ -1045,7 +1071,7 @@ func (m *Model) renderFullStreamingResponse(s *AppState, msgWidth int) string {
 	var activeParts []string
 
 	if s.StreamingState.ReasoningContent != "" {
-		thoughtHeader := thoughtHeaderStyle.Width(msgWidth).Render("· thinking")
+		thoughtHeader := thoughtHeaderStyle.Render("· thinking")
 		reasoningWidth := max(msgWidth-4, 1)
 		reasoning := ansi.Wordwrap(s.StreamingState.ReasoningContent, reasoningWidth, "")
 		activeParts = append(activeParts, thoughtHeader, thinkingStyle.Width(reasoningWidth).Render(reasoning))
@@ -1406,11 +1432,7 @@ func (m *Model) renderCommitLogView() {
 		boxed := modalBoxStyle.
 			Width(outerWidth).
 			Render(rendered)
-		padded := lipgloss.NewStyle().
-			Width(m.Viewport.Width()).
-			Background(appBgColor).
-			Render(boxed)
-		m.Viewport.SetContent(padded)
+		m.Viewport.SetContent(boxed)
 		return
 	}
 
@@ -1484,11 +1506,7 @@ func (m *Model) renderCommitLogView() {
 	footer := viewFooterStyle.Render(fmt.Sprintf("↑↓ navigate · Enter view · Esc back  (%d commits)", len(m.CommitEntries)))
 	lines = append(lines, "", footer)
 
-	paddedContent := lipgloss.NewStyle().
-		Width(m.Viewport.Width()).
-		Background(appBgColor).
-		Render(strings.Join(lines, "\n"))
-	m.Viewport.SetContent(paddedContent)
+	m.Viewport.SetContent(strings.Join(lines, "\n"))
 }
 
 // renderRewindView renders the user message history for rewinding.
@@ -1555,11 +1573,7 @@ func (m *Model) renderRewindView() {
 	footer := viewFooterStyle.Render(fmt.Sprintf("↑↓ choose message · Enter rewind here · Esc cancel  (%d messages)", len(m.RewindEntries)))
 	lines = append(lines, "", footer)
 
-	paddedContent := lipgloss.NewStyle().
-		Width(m.Viewport.Width()).
-		Background(appBgColor).
-		Render(strings.Join(lines, "\n"))
-	m.Viewport.SetContent(paddedContent)
+	m.Viewport.SetContent(strings.Join(lines, "\n"))
 }
 
 // overlayCentered places the dialog string centered over the background string,
@@ -1750,9 +1764,5 @@ func (m *Model) renderModelPickerView() {
 	footer := viewFooterStyle.Render("[Enter] Save & Apply  ·  [Esc] Cancel  ·  [↑/↓] Select Agent  ·  [←/→] Choose Model")
 	lines = append(lines, footer)
 
-	paddedContent := lipgloss.NewStyle().
-		Width(m.Viewport.Width()).
-		Background(appBgColor).
-		Render(strings.Join(lines, "\n"))
-	m.Viewport.SetContent(paddedContent)
+	m.Viewport.SetContent(strings.Join(lines, "\n"))
 }

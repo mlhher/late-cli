@@ -353,3 +353,34 @@ func TestSameLengthHistoryMutationInvalidatesRenderedCache(t *testing.T) {
 		t.Fatal("same-length history mutation retained the old rendered content")
 	}
 }
+
+func BenchmarkSanitizeVTE(b *testing.B) {
+	lines := make([]string, 50)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("\x1b[38;2;255;255;255mLine %02d: Some text with \x1b[0m reset and \x1b[1mbold\x1b[m text", i)
+	}
+	input := strings.Join(lines, "\n")
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_ = sanitizeVTE(input, 120)
+	}
+}
+
+func BenchmarkModelView(b *testing.B) {
+	model, _ := newViewportBenchmarkModel(benchmarkHistory(50))
+	model.Width = 120
+	model.Height = 40
+	model.Viewport.SetWidth(120)
+	model.Viewport.SetHeight(35)
+	model.updateViewport()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_ = model.View()
+	}
+}
+

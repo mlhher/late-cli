@@ -579,57 +579,91 @@ func TestUserMessageRendering_EmptyAndTrailingNewlines(t *testing.T) {
 	}
 }
 
-func TestVTEBackgroundRendering(t *testing.T) {
-	// 1. Viewport canvas style must have explicit appBgColor
-	model := NewModel(&mockOrchestrator{}, nil, nil)
-	if bg := model.Viewport.Style.GetBackground(); bg != appBgColor {
-		t.Errorf("expected Viewport.Style background to be %v (appBgColor), got %v", appBgColor, bg)
+func validateNoVTELeaks(t *testing.T, name, content string) {
+	lines := strings.Split(content, "\n")
+	for lineIdx, line := range lines {
+		bgSet := false
+		i := 0
+		bytes := []byte(line)
+		for i < len(bytes) {
+			if bytes[i] == 0x1b && i+1 < len(bytes) && bytes[i+1] == '[' {
+				end := i + 2
+				for end < len(bytes) && bytes[end] != 'm' {
+					end++
+				}
+				if end < len(bytes) {
+					seq := string(bytes[i : end+1])
+					if seq == "\x1b[m" || seq == "\x1b[0m" || seq == "\x1b[49m" {
+						bgSet = false
+					} else if strings.Contains(seq, "48;2;") || strings.Contains(seq, "48;5;") {
+						bgSet = true
+					}
+					i = end + 1
+					continue
+				}
+			}
+			if !bgSet && bytes[i] == ' ' {
+				t.Errorf("[%s] line %d col %d: unstyled space with default background in VTE: %q", name, lineIdx, i, line)
+				return
+			}
+			i++
+		}
 	}
+}
 
+func TestHolisticVTELeaks(t *testing.T) {
+	model := NewModel(&mockOrchestrator{}, nil, nil)
 	model.Width = 100
 	model.Height = 30
 	model.Viewport.SetWidth(100)
 	model.Viewport.SetHeight(25)
 
-	// 2. Status bar rendering must carry appBgColor on spacers and padding
-	sb := model.statusBarView()
-	// appBgColor #0B0C0E in 24-bit ANSI is 48;2;11;12;14
-	if !strings.Contains(sb, "48;2;11;12;14") {
-		t.Errorf("expected status bar to contain explicit 24-bit appBgColor escape sequences for VTE, got:\n%s", sb)
-	}
+	// 1. Welcome Screen
+	model.updateViewport()
+	vWelcome := model.View()
+	validateNoVTELeaks(t, "Welcome Screen", vWelcome.Content)
 
-	// 3. Commit log view must be padded with appBgColor
+	// 2. Commit Log View (/log)
 	model.Mode = ViewCommitLog
 	model.CommitEntries = []git.CommitEntry{
-		{Hash: "1234567", Author: "tester", Date: "just now", Message: "feat: test commit", IsHEAD: true},
+		{Hash: "18aad01", Author: "ml", Date: "vor 14 Minuten", Message: "fix: vte rendering", IsHEAD: true},
+		{Hash: "e19acc7", Author: "ml", Date: "vor 2 Tagen", Message: "fix: harmonize theme"},
 	}
 	model.renderCommitLogView()
-	logContent := model.Viewport.GetContent()
-	if !strings.Contains(logContent, "48;2;11;12;14") {
-		t.Errorf("expected /log view content to be padded with appBgColor, got:\n%s", logContent)
-	}
+	vLog := model.View()
+	validateNoVTELeaks(t, "Commit Log View", vLog.Content)
 
-	// 4. Rewind view must be padded with appBgColor
+	// 3. Model Picker View (/model)
+	model.Mode = ViewModelPicker
+	model.ModelPickerAgents = []string{"orchestrator", "coder"}
+	model.ModelPickerModels = []string{"default", "deepseek-v4-flash"}
+	model.ModelPickerAgentSelections = map[string]int{"orchestrator": 0, "coder": 1}
+	model.renderModelPickerView()
+	vModel := model.View()
+	validateNoVTELeaks(t, "Model Picker View", vModel.Content)
+
+	// 4. Rewind View (/rewind)
 	model.Mode = ViewRewind
 	model.RewindEntries = []RewindEntry{
-		{Index: 0, Content: "test prompt for rewind"},
+		{Index: 0, Content: "First prompt"},
+		{Index: 1, Content: "Second prompt"},
 	}
 	model.renderRewindView()
-	rewindContent := model.Viewport.GetContent()
-	if !strings.Contains(rewindContent, "48;2;11;12;14") {
-		t.Errorf("expected /rewind view content to be padded with appBgColor, got:\n%s", rewindContent)
-	}
+	vRewind := model.View()
+	validateNoVTELeaks(t, "Rewind View", vRewind.Content)
 
-	// 5. Model picker view must be padded with appBgColor
-	model.Mode = ViewModelPicker
-	model.ModelPickerAgents = []string{"orchestrator"}
-	model.ModelPickerModels = []string{"default"}
-	model.ModelPickerAgentSelections = map[string]int{"orchestrator": 0}
-	model.renderModelPickerView()
-	pickerContent := model.Viewport.GetContent()
-	if !strings.Contains(pickerContent, "48;2;11;12;14") {
-		t.Errorf("expected /model view content to be padded with appBgColor, got:\n%s", pickerContent)
+	// 5. Chat History
+	model.Mode = ViewChat
+	agent := &mockOrchestrator{
+		history: []client.ChatMessage{
+			{Role: "user", Content: client.TextContent("Hello Late!")},
+			{Role: "assistant", Content: client.TextContent("Hello! How can I help you today?")},
+		},
 	}
+	model.Focused = agent
+	model.updateViewport()
+	vChat := model.View()
+	validateNoVTELeaks(t, "Chat View", vChat.Content)
 }
 
 
