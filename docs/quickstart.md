@@ -12,6 +12,7 @@ This guide gets you productive in Late in under 5 minutes.
 - [Configuration](#configuration)
 - [MCP Integration](#mcp-integration)
 - [Agent Skills](#agent-skills)
+- [Plugins](#plugins)
 - [File Exclusions](#file-exclusions)
 - [Common Flags](#common-flags)
 - [Sessions](#sessions)
@@ -87,6 +88,7 @@ Type `/` into the input box to bring up a command picker. You can navigate throu
 | `/compose` | Open your system's default external editor (`$EDITOR`) to draft long or complex instructions. |
 | `/model` | Select the model used by the orchestrator and each subagent type. |
 | `/log` | Open the Git commit log viewer. |
+| `/themes` | Open the theme picker or switch themes (`/themes [name]`). |
 | `/help` | Show default keybindings. |
 | `/quit` | Exit Late. |
 
@@ -224,6 +226,64 @@ Late supports the Model Context Protocol. Add your MCP servers to one of the fol
 
 There is no further setup required. Just add your skills to the directories and they will be discovered automatically. Late also supports automatic skill reference discovery.
 
+## Plugins
+
+Plugins bundle any combination of **skills**, **slash commands**, **MCP servers**, **hooks**, **themes**, and **inline tools** into one installable unit. They are discovered automatically from:
+
+* **Global (Linux):** `~/.config/late/plugins/`
+* **Global (macOS):** `~/Library/Application Support/late/plugins/`
+* **Global (Windows):** `%APPDATA%\late\plugins\`
+* **Project:** `.late/plugins/` (overrides global plugins with the same name)
+
+### Install
+
+```bash
+# From npm
+late plugin install @late/git-helper
+
+# From a Git repo
+late plugin install https://github.com/you/late-plugin-git.git
+# shorthand: github:you/late-plugin-git
+
+# From a local path (development)
+late plugin install ./my-plugin
+
+# Project-local (per-repo)
+late plugin install --project ./my-plugin
+
+# From the marketplace (bare name → registry lookup → npm/git fallback)
+late plugin install git-helper
+```
+
+If the marketplace is unreachable, install falls back to treating the bare name as an npm package. Override the registry with `LATE_PLUGIN_REGISTRY=https://registry.example.com/v1`.
+
+### Manage
+
+```bash
+late plugin list                # show installed + their source/enabled state
+late plugin enable  <name>      # activate without removing
+late plugin disable <name>      # deactivate without removing
+late plugin remove  <name>      # uninstall
+
+# Re-fetch every npm/git plugin in place (atomic git swap, npm @latest)
+late plugin update [<name>]
+```
+
+### What a plugin can ship
+
+A `package.json` with a `"late"` field declares its surfaces:
+
+| Surface     | Example field                       | Appears as                |
+| ----------- | ----------------------------------- | ------------------------- |
+| Skills      | `"skills": ["skills/"]`             | Auto-loaded instructions  |
+| MCP servers | `"mcp": { "servers": {...} }`       | Available tools           |
+| Commands    | `"commands": ["/weather"]`          | `/weather` in the chat    |
+| Themes      | `"themes": ["themes/dark.json"]`    | Switchable from `/themes` |
+| Hooks       | `"hooks": { "onMessageSend": [...] }` | Middleware on tool/LLM    |
+| Tools       | `"tools": [{ "name": "...", ... }]` | Custom in-agent tools     |
+
+For the full manifest schema (including the older `"commands"` string array, env-var expansion in MCP configs, hook veto/mutate semantics, and a copy-pasteable reference plugin), see [`docs/plugin-sdk.md`](./plugin-sdk.md) and [`docs/plugin-example.md`](./plugin-example.md).
+
 ## File Exclusions
 
 Late's native search tool respects your project's `.gitignore` automatically, saving LLM context by excluding vendor and build directories. 
@@ -238,6 +298,7 @@ You can also create an `.llmignore` file alongside your `.gitignore` to specific
 | `--version` | Show version information |
 | `--continue` | Resume the previous session |
 | `--prompt "..."` | Start the agent immediately with the given prompt |
+| `--theme "<id>"` | Apply a plugin theme on launch (e.g. `<plugin>:<name>`); also reads `$LATE_THEME` |
 | `--gemma-thinking` | Inject thinking tokens for Gemma 4 models |
 | `--subagent-max-turns <n>` | Set max turns per subagent (default: 500) |
 | `--append-system-prompt "..."` | Append text to the system prompt (e.g. further instructions) |

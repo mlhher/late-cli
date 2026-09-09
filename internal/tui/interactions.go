@@ -52,6 +52,34 @@ type PromptRequestMsg struct {
 	ErrCh          chan error
 }
 
+// ToolRequiresConfirmation reports whether a tool call requires interactive user confirmation.
+func ToolRequiresConfirmation(ctx context.Context, reg *common.ToolRegistry, tc client.ToolCall) bool {
+	// Check for unsupervised execution flag in context
+	if skip, ok := ctx.Value(common.SkipConfirmationKey).(bool); ok && skip {
+		// On Windows, never bypass shell command confirmation.
+		if !(runtime.GOOS == "windows" && tc.Function.Name == "bash") {
+			return false
+		}
+	}
+
+	// Check if the tool requires confirmation
+	if reg != nil {
+		if t := reg.Get(tc.Function.Name); t != nil {
+			// Check project-allowed tools (local or global)
+			if allowed, _ := tool.LoadAllAllowedTools(); allowed[tc.Function.Name] {
+				return false
+			}
+
+			// Skip confirmation if the tool doesn't require it based on its own logic
+			if !t.RequiresConfirmation(json.RawMessage(tc.Function.Arguments)) {
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
 // TUIConfirmMiddleware implements tool confirmation using the TUI.
 func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.ToolMiddleware {
 	return func(next common.ToolRunner) common.ToolRunner {
@@ -60,30 +88,22 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 				return next(ctx, tc)
 			}
 
-			// Check for unsupervised execution flag in context
-			if skip, ok := ctx.Value(common.SkipConfirmationKey).(bool); ok && skip {
-				// On Windows, never bypass shell command confirmation.
-				if !(runtime.GOOS == "windows" && tc.Function.Name == "bash") {
-					approvedCtx := context.WithValue(ctx, common.ToolApprovalKey, true)
-					return next(approvedCtx, tc)
+			if !ToolRequiresConfirmation(ctx, reg, tc) {
+				// Mark approved context if unsupervised or explicitly whitelisted
+				if skip, ok := ctx.Value(common.SkipConfirmationKey).(bool); ok && skip {
+					if !(runtime.GOOS == "windows" && tc.Function.Name == "bash") {
+						ctx = context.WithValue(ctx, common.ToolApprovalKey, true)
+					}
+				} else if reg != nil {
+					if allowed, _ := tool.LoadAllAllowedTools(); allowed[tc.Function.Name] {
+						ctx = context.WithValue(ctx, common.ToolApprovalKey, true)
+					}
 				}
+				return next(ctx, tc)
 			}
-
-			// Check if the tool requires confirmation
+			// For ShellTool, check if the command is blocked (e.g., cd commands)
 			if reg != nil {
 				if t := reg.Get(tc.Function.Name); t != nil {
-					// Check project-allowed tools (local or global)
-					if allowed, _ := tool.LoadAllAllowedTools(); allowed[tc.Function.Name] {
-						approvedCtx := context.WithValue(ctx, common.ToolApprovalKey, true)
-						return next(approvedCtx, tc)
-					}
-
-					// Skip confirmation if the tool doesn't require it based on its own logic
-					if !t.RequiresConfirmation(json.RawMessage(tc.Function.Arguments)) {
-						return next(ctx, tc)
-					}
-
-					// For ShellTool, check if the command is blocked (e.g., cd commands)
 					if bashTool, ok := t.(*tool.ShellTool); ok {
 						var params struct {
 							Command string `json:"command"`

@@ -153,3 +153,54 @@ func TestBareNameDoesNotMatchNamespacedKey(t *testing.T) {
 		t.Errorf("legacy bare-name entry %q should not match namespaced key %q", "list_files", adapter.Name())
 	}
 }
+
+func TestAssignToolNames_DeterministicOrderingAndCollisionSuffix(t *testing.T) {
+	c := NewClient()
+
+	// Server 1
+	a1 := &ToolAdapter{
+		mcpTool:    &sdkmcp.Tool{Name: "run"},
+		serverName: "server.a",
+	}
+	c.assignToolNames("server.a", []*ToolAdapter{a1})
+	c.tools[a1.Name()] = a1
+
+	// Server 2 whose sanitized name collides with server 1 ("server_a__run")
+	a2 := &ToolAdapter{
+		mcpTool:    &sdkmcp.Tool{Name: "run"},
+		serverName: "server_a",
+	}
+	c.assignToolNames("server_a", []*ToolAdapter{a2})
+
+	if a1.Name() != "server_a__run" {
+		t.Errorf("expected first tool to keep base name, got %q", a1.Name())
+	}
+	if a2.Name() == a1.Name() {
+		t.Errorf("colliding tool must be disambiguated")
+	}
+	if !strings.HasPrefix(a2.Name(), "server_a__run-") {
+		t.Errorf("expected hash suffix on colliding tool, got %q", a2.Name())
+	}
+
+	// Must be endpoint-safe [A-Za-z0-9_-]
+	for _, r := range a2.Name() {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-') {
+			t.Errorf("tool name contains invalid character %q: %q", r, a2.Name())
+		}
+	}
+}
+
+func TestGetTools_Sorted(t *testing.T) {
+	c := NewClient()
+	c.tools["z_tool"] = &ToolAdapter{name: "z_tool"}
+	c.tools["a_tool"] = &ToolAdapter{name: "a_tool"}
+	c.tools["m_tool"] = &ToolAdapter{name: "m_tool"}
+
+	tools := c.GetTools()
+	if len(tools) != 3 {
+		t.Fatalf("expected 3 tools, got %d", len(tools))
+	}
+	if tools[0].Name() != "a_tool" || tools[1].Name() != "m_tool" || tools[2].Name() != "z_tool" {
+		t.Errorf("GetTools() not sorted alphabetically: %v, %v, %v", tools[0].Name(), tools[1].Name(), tools[2].Name())
+	}
+}

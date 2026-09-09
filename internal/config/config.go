@@ -68,6 +68,7 @@ type Config struct {
 
 	SkillsDir string `json:"skills_dir,omitempty"`
 
+	Theme       string            `json:"theme,omitempty"`
 	Models      []ModelSetting    `json:"models,omitempty"`
 	AgentModels map[string]string `json:"agent_models,omitempty"`
 }

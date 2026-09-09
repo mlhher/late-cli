@@ -1,0 +1,15 @@
+{
+  "name": "demo",
+  "glamour": {
+    "document": {
+      "margin": 2
+    },
+    "heading": {
+      "color": "#33ccff",
+      "bold": true
+    },
+    "code_block": {
+      "color": "#aaffaa"
+    }
+  }
+}

@@ -139,3 +139,41 @@ func TestTUIConfirmMiddleware_ConfirmedExecutionMarksApproval(t *testing.T) {
 		t.Fatalf("Expected confirmation to be requested")
 	}
 }
+
+func TestToolRequiresConfirmation(t *testing.T) {
+	reg := common.NewToolRegistry()
+	bashTool := &tool.ShellTool{}
+	readFileTool := &tool.ReadFileTool{}
+	reg.Register(bashTool)
+	reg.Register(readFileTool)
+
+	// Bash with dangerous command -> requires confirmation
+	tcBashDanger := client.ToolCall{
+		Function: client.FunctionCall{
+			Name:      "bash",
+			Arguments: `{"command": "rm -rf /"}`,
+		},
+	}
+	if !ToolRequiresConfirmation(context.Background(), reg, tcBashDanger) {
+		t.Errorf("expected bash danger command to require confirmation")
+	}
+
+	// ReadFile -> does not require confirmation
+	tcReadFile := client.ToolCall{
+		Function: client.FunctionCall{
+			Name:      "read_file",
+			Arguments: `{"path": "foo.txt"}`,
+		},
+	}
+	if ToolRequiresConfirmation(context.Background(), reg, tcReadFile) {
+		t.Errorf("expected read_file to not require confirmation")
+	}
+
+	// Unsupervised mode -> does not require confirmation (on non-Windows)
+	if runtime.GOOS != "windows" {
+		unsupervisedCtx := context.WithValue(context.Background(), common.SkipConfirmationKey, true)
+		if ToolRequiresConfirmation(unsupervisedCtx, reg, tcBashDanger) {
+			t.Errorf("expected unsupervised mode to skip confirmation")
+		}
+	}
+}
