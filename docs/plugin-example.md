@@ -356,6 +356,10 @@ Runs before every tool invocation. Can mutate arguments or veto execution.
 # Return valid JSON to mutate arguments.
 # Return empty to pass through unchanged.
 payload=$(cat)
+# Extract tool name from payload (no-op demonstration; avoid echoing to stderr to prevent TUI leaks)
+tool_name=$(echo "$payload" | sed -n 's/.*"tool"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+: "$tool_name"
+
 case "$payload" in
   *"\"block_me\":true"*|*"\"block_me\": true"*)
     echo "blocked"
@@ -378,6 +382,10 @@ Runs after successful tool execution. Can mutate the result seen by the LLM or v
 # Return valid JSON to replace the result.
 # Return empty to pass through unchanged.
 payload=$(cat)
+# Extract tool name from payload (no-op demonstration; avoid echoing to stderr to prevent TUI leaks)
+tool_name=$(echo "$payload" | sed -n 's/.*"tool"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+: "$tool_name"
+
 case "$payload" in
   *block_result*)
     echo "blocked"
