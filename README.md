@@ -6,8 +6,8 @@
 
 <p align="center">
   <b>Getting real world work done on consumer hardware.</b><br><br>
-  A minimal, zero-config AI coding agent.<br>
-  Enforced ephemeral subagents retain model intelligence while keeping context small.<br>
+  A zero-config AI coding agent built on empirical research.<br>
+  Enforced ephemeral subagents prevent context degradation by design.<br>
   From tiny local models up to any frontier model.<br>
 </p>
 
@@ -31,6 +31,8 @@
 > *"Late-CLI is mindblowing... I'm shocked that the token usage is so minimal, I keep expecting a big bill from DeepSeek's API."* — GitHub Discussions
 >
 > *"The same model feels smarter with Late."* — Reddit
+>
+> *"You solved local AI coding for me."* — Reddit
 >
 > **Built with Late:** Late is primarily developed inside Late itself.
 
@@ -59,13 +61,17 @@ late
 
 ## The Architectural Bottleneck
 
-**The Problem:** Standard coding agents try to do everything inside a single, shared context window. Every codebase analysis, compile error, lint failure, and even file writes and reads piles up in the KV cache. As the context fills with garbage, the model's intelligence actively degrades. You blame the model, but it's an architecture failure.
+**The Problem:** Standard coding agents try to do everything inside a single, shared context window. Every codebase analysis, compile error, lint failure, and file read piles up in the KV cache. As the context fills with garbage, the model's intelligence actively degrades. You blame the model, but it's an architecture failure.
+
+> **The 40% Collapse:** Long-context LLMs suffer up to a **~45% collapse in reasoning accuracy** once context utilization crosses 40–50%, even when all tokens are relevant ([Wang et al., 2026: Intelligence Degradation in Long-Context LLMs](https://arxiv.org/abs/2601.15300)).
 
 **The Late Solution:** Late splits the brain. It enforces a strict boundary between planning and execution and actively compartmentalizes agents' identities and objectives.
 
 <img src="assets/workflow.jpg" alt="Late Architecture: Main Orchestrator routing to ephemeral subagents with automatic context destruction">
 
-The orchestrator’s context grows only from what actually matters: your exact instructions and the definitive results. Everything the subagent did to get there is wiped from memory. **The same model feels smarter in Late because it reasons purely from signal, never noise.**
+The orchestrator’s context grows only from what actually matters: your exact instructions and the definitive results. Everything the subagent did to get there is wiped from memory.
+
+**The same model feels smarter in Late because it reasons purely from signal, never noise.**
 
 ## The Feature Matrix
 

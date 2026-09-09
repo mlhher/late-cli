@@ -13,13 +13,15 @@ import (
 
 // SessionMeta represents metadata about a saved session
 type SessionMeta struct {
-	ID             string    `json:"id"`
-	Title          string    `json:"title"` // Short title derived from first user message
-	CreatedAt      time.Time `json:"created_at"`
-	LastUpdated    time.Time `json:"last_updated"`
-	HistoryPath    string    `json:"history_path"`     // Full path to history file
-	LastUserPrompt string    `json:"last_user_prompt"` // Last 100 chars of last user message
-	MessageCount   int       `json:"message_count"`
+	ID                    string    `json:"id"`
+	Title                 string    `json:"title"` // Short title derived from first user message
+	CreatedAt             time.Time `json:"created_at"`
+	LastUpdated           time.Time `json:"last_updated"`
+	HistoryPath           string    `json:"history_path"`     // Full path to history file
+	LastUserPrompt        string    `json:"last_user_prompt"` // Last 100 chars of last user message
+	MessageCount          int       `json:"message_count"`
+	SubagentSeq           int       `json:"subagent_seq"`
+	SaveSubagentHistories *bool     `json:"save_subagent_histories,omitempty"`
 }
 
 // SessionDir returns the directory where session metadata and histories are stored
@@ -169,4 +171,3 @@ func GetLatestSession() (*SessionMeta, error) {
 	// ListSessions returns sessions sorted by LastUpdated ascending (oldest first)
 	return &metas[len(metas)-1], nil
 }
-

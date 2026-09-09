@@ -528,6 +528,77 @@ func TestResolveSubagentSettings(t *testing.T) {
 	}
 }
 
+func TestResolveSaveSubagentHistories(t *testing.T) {
+	enabled := true
+	disabled := false
+	tests := []struct {
+		name            string
+		cfg             *Config
+		cliExplicit     bool
+		cliValue        bool
+		savedPreference *bool
+		want            bool
+	}{
+		{
+			name:            "explicit flag on wins over config off",
+			cfg:             &Config{SaveSubagentHistories: false},
+			cliExplicit:     true,
+			cliValue:        true,
+			savedPreference: &disabled,
+			want:            true,
+		},
+		{
+			name:            "explicit flag off wins over config on",
+			cfg:             &Config{SaveSubagentHistories: true},
+			cliExplicit:     true,
+			cliValue:        false,
+			savedPreference: &enabled,
+			want:            false,
+		},
+		{
+			name:            "saved preference wins over config",
+			cfg:             &Config{SaveSubagentHistories: true},
+			savedPreference: &disabled,
+			want:            false,
+		},
+		{
+			name:            "saved enabled preference wins over config",
+			cfg:             &Config{SaveSubagentHistories: false},
+			savedPreference: &enabled,
+			want:            true,
+		},
+		{
+			name:        "no flag uses config on",
+			cfg:         &Config{SaveSubagentHistories: true},
+			cliExplicit: false,
+			cliValue:    false,
+			want:        true,
+		},
+		{
+			name:        "no flag uses config off",
+			cfg:         &Config{SaveSubagentHistories: false},
+			cliExplicit: false,
+			cliValue:    false,
+			want:        false,
+		},
+		{
+			name:        "no flag and nil config defaults to off",
+			cfg:         nil,
+			cliExplicit: false,
+			cliValue:    false,
+			want:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ResolveSaveSubagentHistories(tt.cfg, tt.cliExplicit, tt.cliValue, tt.savedPreference); got != tt.want {
+				t.Fatalf("ResolveSaveSubagentHistories() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConfig_GetModelForAgent(t *testing.T) {
 	cfg := &Config{
 		Models: []ModelSetting{
