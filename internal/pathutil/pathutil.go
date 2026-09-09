@@ -56,3 +56,15 @@ func LateSkillsDir() (string, error) {
 func LateProjectSkillsDir() string {
 	return filepath.Join(".late", "skills")
 }
+
+func LatePluginsDir() (string, error) {
+	lateConfigDir, err := LateConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(lateConfigDir, "plugins"), nil
+}
+
+func LateProjectPluginsDir() string {
+	return filepath.Join(".late", "plugins")
+}

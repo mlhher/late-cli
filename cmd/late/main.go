@@ -14,19 +14,64 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"late/internal/assets"
 	"late/internal/client"
 	appconfig "late/internal/config"
 	"late/internal/mcp"
+	"late/internal/pathutil"
+	"late/internal/plugin"
 	"late/internal/session"
 	"late/internal/tool"
 	"late/internal/tui"
 
+	"encoding/json"
+
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
 )
+
+// pluginInlineTool adapts a plugin.InlineTool (defined in internal/plugin/tools.go)
+// into a common.Tool so the CLI's session registry can dispatch invocations to
+// plugin-declared runners. It exists because upstream repurposed
+// tool.ScriptTool for skill dispatch only; for arbitrary plugin-defined tools,
+// we wrap them here.
+//
+// The wrapper synthesizes a client.ToolCall from the executor's (args
+// json.RawMessage) payload by stitching in the registered name — args is
+// strictly the JSON parameters (e.g. {"path": "/foo"}) the model emitted;
+// the function name is provided by the registry at dispatch time, so we
+// surface the wrapped name rather than re-parse it from args.
+type pluginInlineTool struct {
+	name        string
+	description string
+	parameters  json.RawMessage
+	runner      func(ctx context.Context, call client.ToolCall) (string, error)
+}
+
+func (p pluginInlineTool) Name() string                { return p.name }
+func (p pluginInlineTool) Description() string         { return p.description }
+func (p pluginInlineTool) Parameters() json.RawMessage { return p.parameters }
+
+// RequiresConfirmation always returns true: an inline tool runs an
+// arbitrary plugin script, so it must go through the normal user
+// confirmation flow like skill scripts (tool.ScriptTool) and MCP tools
+// (tool adapter). The plugin docs promise exactly this — plugin-example.md:
+// "user confirmation still prompts the user".
+func (p pluginInlineTool) RequiresConfirmation(args json.RawMessage) bool {
+	return true
+}
+func (p pluginInlineTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	return p.runner(ctx, client.ToolCall{
+		Type:     "function",
+		Function: client.FunctionCall{Name: p.name, Arguments: string(args)},
+	})
+}
+func (p pluginInlineTool) CallString(args json.RawMessage) string {
+	return fmt.Sprintf("Calling plugin tool %q...", p.name)
+}
 
 func main() {
 	// Parse flags
@@ -47,17 +92,26 @@ func main() {
 	enableImagesReq := flag.Bool("enable-images", false, "Force enable support for image attachments for unsupported servers.")
 	continueReq := flag.Bool("continue", false, "Load and start the latest session")
 	showCWDReq := flag.Bool("show-cwd", true, "Show current working directory in status bar")
+	themeReq := flag.String("theme", "", "Plugin theme id ('<plugin>:<name>'); falls back to $LATE_THEME")
 	promptReq := flag.String("prompt", "", "Start the agent immediately with the given prompt")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of late:\n")
 		fmt.Fprintf(os.Stderr, "  late [flags]\n")
 		fmt.Fprintf(os.Stderr, "  late session <command> [args]\n")
+		fmt.Fprintf(os.Stderr, "  late plugin <command> [args]\n")
 		fmt.Fprintf(os.Stderr, "  late worktree <command> [args]\n\n")
 		fmt.Fprintf(os.Stderr, "Commands:\n")
 		fmt.Fprintf(os.Stderr, "  session list [-v]      List all saved sessions (use -v for verbose/detailed view)\n")
 		fmt.Fprintf(os.Stderr, "  session load <id>      Load a session by ID\n")
 		fmt.Fprintf(os.Stderr, "  session delete <id>    Delete a session by ID\n")
+		fmt.Fprintf(os.Stderr, "  plugin list, ls                      List installed plugins\n")
+		fmt.Fprintf(os.Stderr, "  plugin install [--project] <src>     Install a plugin from npm/git/local\n")
+		fmt.Fprintf(os.Stderr, "  plugin remove [--project] <name>     Remove a plugin\n")
+		fmt.Fprintf(os.Stderr, "  plugin link [--project] <path>       Link a local plugin directory\n")
+		fmt.Fprintf(os.Stderr, "  plugin update [<name>]               Update all or a specific plugin\n")
+		fmt.Fprintf(os.Stderr, "  plugin enable <name>                 Enable a plugin\n")
+		fmt.Fprintf(os.Stderr, "  plugin disable <name>                Disable a plugin\n")
 		fmt.Fprintf(os.Stderr, "  worktree list          List all worktrees\n")
 		fmt.Fprintf(os.Stderr, "  worktree create <path> [branch]  Create a new worktree\n")
 		fmt.Fprintf(os.Stderr, "  worktree remove <path>           Remove a worktree\n")
@@ -108,6 +162,29 @@ func main() {
 		shouldExit := handleWorktreeCommand(flag.Args()[1:])
 		if shouldExit {
 			return
+		}
+	}
+
+	// Plugin command handler — dispatches before TUI startup
+	var pluginManager *plugin.PluginManager
+	cwd, _ := os.Getwd()
+	projectPluginsDir := filepath.Join(cwd, common.LateProjectPluginsDir())
+	if flag.NArg() > 0 && flag.Arg(0) == "plugin" {
+		pluginsDir, err := common.LatePluginsDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to get plugins directory: %v\n", err)
+		} else {
+			pm := plugin.NewPluginManager(pluginsDir)
+			if _, err := os.Stat(projectPluginsDir); err == nil {
+				pm.SetProjectDir(projectPluginsDir)
+			}
+			if err := pm.Discover(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to discover plugins: %v\n", err)
+			}
+			pluginManager = pm
+			if plugin.HandlePluginCommand(pm, flag.Args()[1:]) {
+				return
+			}
 		}
 	}
 
@@ -209,6 +286,64 @@ func main() {
 		}
 	}
 
+	// Plugin discovery and surface registration
+	var (
+		skillsDir string
+		skillsErr error
+	)
+	if pluginManager == nil {
+		pluginsDir, err := common.LatePluginsDir()
+		if err == nil {
+			pm := plugin.NewPluginManager(pluginsDir)
+			// Set project-local dir if it exists
+			if _, statErr := os.Stat(projectPluginsDir); statErr == nil {
+				pm.SetProjectDir(projectPluginsDir)
+			}
+			if err := pm.Discover(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to discover plugins: %v\n", err)
+			} else {
+				// Keep the manager even with zero plugins so plugin command
+				// dispatch and hooks remain safely available.
+				pluginManager = pm
+				// Reconcile skill links even when this project has no plugins.
+				skillsDir, skillsErr = pathutil.LateSkillsDir()
+				if skillsErr == nil {
+					if err := pm.RegisterPluginSkills(skillsDir); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to register plugin skills: %v\n", err)
+					}
+				}
+				if pm.Count() > 0 {
+					fmt.Printf("Loading %d plugin(s)...\n", pm.Count())
+
+					// Connect plugin MCP servers
+					pluginMCP := pm.BuildMCPConfigMap()
+					if len(pluginMCP) > 0 && config == nil {
+						config = &mcp.MCPConfig{McpServers: make(map[string]mcp.MCPServer)}
+					}
+					if len(pluginMCP) > 0 && config != nil {
+						fmt.Println("Connecting to plugin MCP servers...")
+						for name, srv := range pluginMCP {
+							config.McpServers[name] = mcp.MCPServer{
+								Command:       srv.Command,
+								Args:          srv.Args,
+								Env:           srv.Env,
+								URL:           srv.URL,
+								TransportType: srv.TransportType,
+								Disabled:      srv.Disabled,
+								Dir:           srv.Dir,
+							}
+						}
+						// Servers already connected from the user config are
+						// skipped, so this only connects the plugin servers.
+						if err := mcpClient.ConnectFromConfig(context.Background(), config); err != nil {
+							fmt.Fprintf(os.Stderr, "Warning: Failed to connect to plugin MCP servers: %v\n", err)
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Load App configuration
 	appConfig, err := appconfig.LoadConfig()
 	if err != nil {
@@ -294,20 +429,83 @@ func main() {
 	executor.RegisterTools(sess.Registry, mainTools)
 
 	// Register MCP tools into the session registry.
-	// MCP tool names are namespaced as "{server}__{tool}" (e.g. "graph-rag__list_files").
-	// For backwards compatibility with configs that disable tools by bare name
-	// (e.g. "list_files": false), we check the namespaced name first, then fall
-	// back to the bare name so existing configs keep working without modification.
+	// MCP tool names are now namespaced as "{server}__{tool}" (sanitized —
+	// e.g. "graph-rag__list_files"). For backwards compatibility with
+	// configs that disable tools by bare name (e.g. "list_files": false),
+	// we check the namespaced name first, then fall back to the bare name
+	// so existing configs keep working without modification.
+	//
+	// pluginToolNames records every plugin-provided tool registered here so
+	// toolSync tracks the initial tool set.
+	var pluginToolNames []string
+	// usedToolNames records every name registered below (MCP first, then
+	// inline) so inline tools are deduped against MCP names too — without
+	// this, a plugin's inline tool can silently overwrite an MCP-backed
+	// tool that sanitizes to the same namespaced name.
+	usedToolNames := make(map[string]bool)
 	for _, t := range mcpClient.GetTools() {
 		if !mcpToolEnabled(t, enabledTools) {
 			continue
 		}
 		sess.Registry.Register(t)
+		pluginToolNames = append(pluginToolNames, t.Name())
+		usedToolNames[t.Name()] = true
+	}
+
+	// Register inline plugin tools (declared in the manifest's `late.tools`
+	// field). Each inline tool is run as a local script via runHook and
+	// hooks into the same ToolMiddleware chain as MCP-backed tools so
+	// onToolCall hooks, confirmations, and tool-result reporting all work
+	// uniformly for plugin-declared tools.
+	if pluginManager != nil {
+		for _, t := range pluginManager.GetInlineTools(usedToolNames) {
+			if !toolEnabled(enabledTools, t.Name) {
+				continue
+			}
+			sess.Registry.Register(pluginInlineTool{
+				name:        t.Name,
+				description: t.Description,
+				parameters:  t.Parameters,
+				runner:      t.Runner,
+			})
+			pluginToolNames = append(pluginToolNames, t.Name)
+		}
+	}
+
+	// Resolve theme: --theme flag > $LATE_THEME > config.json > bundled base.
+	themeID := *themeReq
+	if themeID == "" {
+		themeID = os.Getenv("LATE_THEME")
+	}
+	if themeID == "" && appConfig != nil && appConfig.Theme != "" {
+		themeID = appConfig.Theme
+	}
+	themeBytes := tui.LateTheme
+	if themeID != "" && themeID != "default" && pluginManager != nil {
+		if info, err := pluginManager.GetTheme(themeID); err == nil && info != nil {
+			if merged, mErr := tui.ResolveRenderTheme(info.ID, info.Glamour); mErr == nil {
+				themeBytes = merged
+				themeID = info.ID
+				fmt.Fprintf(os.Stderr, "Applied plugin theme: %s\n", info.ID)
+			} else {
+				themeID = "default"
+				themeBytes = tui.LateTheme
+			}
+		} else {
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Theme lookup failed for %q: %v\n", themeID, err)
+			}
+			themeID = "default"
+			themeBytes = tui.LateTheme
+		}
+	} else {
+		themeID = "default"
+		themeBytes = tui.LateTheme
 	}
 
 	// Initialize common renderer
 	renderer, _ := glamour.NewTermRenderer(
-		glamour.WithStylesFromJSONBytes(tui.LateTheme),
+		glamour.WithStylesFromJSONBytes(themeBytes),
 		glamour.WithWordWrap(80),
 		glamour.WithPreservedNewLines(),
 	)
@@ -317,6 +515,10 @@ func main() {
 	rootAgent := orchestrator.NewBaseOrchestrator("main", sess, nil, 0)
 
 	model := tui.NewModel(rootAgent, renderer, appConfig)
+	model.SetActiveThemeStyles(themeBytes)
+	if themeID != "" {
+		model.SelectedTheme = themeID
+	}
 	model.ApplyOrchestratorModel = func(setting appconfig.ModelSetting) tea.Cmd {
 		return func() tea.Msg {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -347,9 +549,66 @@ func main() {
 		model.ModelName = resolvedOpenAIConfig.Model
 		model.SubagentInfo = resolvedSubagentConfig.Model
 	}
+
+	// Register plugin command handler + message hook into the TUI.
+	if pluginManager != nil {
+		if pluginManager.HasMessageSendHooks() {
+			model.MessageHook = func(text string) string {
+				return pluginManager.HookedMessage(context.Background(), text)
+			}
+		}
+		model.CommandHandler = pluginManager.HandleCommand
+	}
+
+	// Register plugin slash commands + theme catalog so plugin commands fire
+	// when the user presses Enter.
+	if pluginManager != nil && pluginManager.Count() > 0 {
+		model.SetPluginCommands(pluginManager.PluginCommands())
+
+		// Map plugin.ThemeInfo to tui.ThemeEntry so the /themes picker and
+		// inline `/themes <name>` can resolve plugin themes at runtime.
+		// Always include DefaultThemeEntry first so users can revert.
+		pluginThemes := pluginManager.AllThemes()
+		if len(pluginThemes) > 0 {
+			entries := make([]tui.ThemeEntry, 0, len(pluginThemes)+1)
+			entries = append(entries, tui.DefaultThemeEntry)
+			for _, info := range pluginThemes {
+				entries = append(entries, tui.ThemeEntry{
+					ID:         info.ID,
+					PluginName: info.PluginName,
+					ThemeName:  info.ThemeName,
+					Glamour:    info.Glamour,
+				})
+			}
+			model.SetThemes(entries)
+		}
+	}
+
+	// Fire OnSessionStart hooks for every enabled plugin in parallel. This
+	// runs once, before the orchestrator is dispatched, so plugin scripts
+	// can warm caches, register tools, or print startup announcements.
+	if pluginManager != nil {
+		pluginManager.CallOnSessionStartHooks()
+	}
+
+	// Detect if subagents use a different model/backend
+	if resolvedSubagentConfig.BaseURL != resolvedOpenAIConfig.BaseURL ||
+		resolvedSubagentConfig.APIKey != resolvedOpenAIConfig.APIKey ||
+		resolvedSubagentConfig.Model != resolvedOpenAIConfig.Model {
+		model.SubagentInfo = resolvedSubagentConfig.Model
+	}
 	model.ShowCWD = *showCWDReq
 
 	p := tea.NewProgram(model)
+
+	// toolSync serializes plugin/MCP tool-registry refreshes triggered by
+	// MCP servers' own tools/list_changed notifications (wired via
+	// mcpClient.OnToolsChanged below). It recomputes the full current tool/
+	// command/theme set and diffs it against the last set sent to the TUI.
+	toolSync := &pluginToolSync{prev: append([]string(nil), pluginToolNames...)}
+	mcpClient.OnToolsChanged = func() {
+		toolSync.refresh(p, mcpClient, pluginManager, enabledTools)
+	}
 
 	// Wire TUI integration
 	go func() {
@@ -363,10 +622,8 @@ func main() {
 		}
 		rootAgent.SetContext(ctx)
 
-		// Set middlewares (e.g. TUI confirmation)
-		rootAgent.SetMiddlewares([]common.ToolMiddleware{
-			tui.TUIConfirmMiddleware(p, sess.Registry),
-		})
+		// Set middlewares (see buildMiddlewares for ordering rationale).
+		rootAgent.SetMiddlewares(buildMiddlewares(pluginManager, p, sess.Registry))
 
 		// Start forwarding events from the root agent to the TUI
 		ForwardOrchestratorEvents(p, rootAgent)
@@ -435,19 +692,6 @@ func deriveEffectiveSessionID(historyPath string) string {
 	}
 	return id
 }
-
-func mcpToolEnabled(t tool.Tool, enabledTools map[string]bool) bool {
-	if enabled, exists := enabledTools[t.Name()]; exists {
-		return enabled
-	}
-	if named, ok := t.(interface{ BareName() string }); ok {
-		if enabled, exists := enabledTools[named.BareName()]; exists {
-			return enabled
-		}
-	}
-	return true
-}
-
 func newModelClient(ctx context.Context, setting appconfig.ModelSetting, enableImages bool) *client.Client {
 	c := client.NewClient(client.Config{
 		BaseURL:      setting.URL,
@@ -458,6 +702,139 @@ func newModelClient(ctx context.Context, setting appconfig.ModelSetting, enableI
 	})
 	c.DiscoverBackend(ctx)
 	return c
+}
+
+// buildMiddlewares assembles the tool-call middleware chain for rootAgent.
+// Middlewares are applied innermost-last, so the plugin onToolCall hooks
+// run FIRST (outermost), then the TUI confirmation, then the onToolResult
+// hooks. Confirmation must see the arguments AFTER plugins mutated them —
+// otherwise a plugin could change the arguments after the user approved
+// the call.
+func buildMiddlewares(pluginManager *plugin.PluginManager, p *tea.Program, registry *common.ToolRegistry) []common.ToolMiddleware {
+	mws := []common.ToolMiddleware{}
+	if pluginManager != nil {
+		mws = append(mws, pluginManager.BuildHookMiddlewares(func(ctx context.Context, tc client.ToolCall) bool {
+			return tui.ToolRequiresConfirmation(ctx, registry, tc)
+		})...)
+	}
+	mws = append(mws, tui.TUIConfirmMiddleware(p, registry))
+	if pluginManager != nil {
+		mws = append(mws, pluginManager.BuildToolResultMiddlewares()...)
+	}
+	return mws
+}
+
+// pluginToolSync serializes tool/command/theme refreshes sent to the TUI.
+// An MCP server's own tools/list_changed notification (wired via
+// mcp.Client.OnToolsChanged) can trigger it to recompute the current set.
+// Without the mutex, concurrent refreshes could interleave and send a
+// diff computed against a stale `prev`.
+type pluginToolSync struct {
+	mu   sync.Mutex
+	prev []string
+}
+
+// refresh recomputes the full current tool set (MCP + inline, with
+// cross-source name collisions resolved the same way as the initial
+// registration in main()), plus the current plugin commands/themes, and
+// sends one PluginChangeMsg diffed against the last set this synced. The
+// full command/theme set is always included — never a partial message —
+// so a tools-only trigger (an MCP tool list change) can't blank out
+// plugin commands/themes in the TUI.
+func (s *pluginToolSync) refresh(p *tea.Program, mcpClient *mcp.Client, pluginManager *plugin.PluginManager, enabledTools map[string]bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	used := make(map[string]bool)
+	var added []common.Tool
+	for _, t := range mcpClient.GetTools() {
+		if !mcpToolEnabled(t, enabledTools) {
+			continue
+		}
+		added = append(added, t)
+		used[t.Name()] = true
+	}
+
+	var cmds []string
+	var entries []tui.ThemeEntry
+	if pluginManager != nil {
+		for _, t := range pluginManager.GetInlineTools(used) {
+			if !toolEnabled(enabledTools, t.Name) {
+				continue
+			}
+			added = append(added, pluginInlineTool{
+				name:        t.Name,
+				description: t.Description,
+				parameters:  t.Parameters,
+				runner:      t.Runner,
+			})
+		}
+
+		cmds = pluginManager.PluginCommands()
+		pluginThemes := pluginManager.AllThemes()
+		if len(pluginThemes) > 0 {
+			entries = make([]tui.ThemeEntry, 0, len(pluginThemes)+1)
+			entries = append(entries, tui.DefaultThemeEntry)
+			for _, info := range pluginThemes {
+				entries = append(entries, tui.ThemeEntry{
+					ID:         info.ID,
+					PluginName: info.PluginName,
+					ThemeName:  info.ThemeName,
+					Glamour:    info.Glamour,
+				})
+			}
+		}
+	}
+
+	p.Send(tui.PluginChangeMsg{
+		Commands:     cmds,
+		Themes:       entries,
+		RemovedTools: s.prev,
+		AddedTools:   added,
+	})
+	s.prev = s.prev[:0]
+	for _, t := range added {
+		s.prev = append(s.prev, t.Name())
+	}
+}
+
+// mcpToolEnabled preserves raw-name settings even when the exposed MCP
+// name has been sanitized, truncated, or deduplicated.
+func mcpToolEnabled(t tool.Tool, enabledTools map[string]bool) bool {
+	if enabled, ok := enabledTools[t.Name()]; ok {
+		return enabled
+	}
+	if named, ok := t.(interface{ BareName() string }); ok {
+		if enabled, exists := enabledTools[named.BareName()]; exists {
+			return enabled
+		}
+	}
+	return toolEnabled(enabledTools, t.Name())
+}
+
+// toolEnabled checks exact names before legacy aliases. Unknown tools
+// default to enabled.
+func toolEnabled(enabledTools map[string]bool, name string) bool {
+	if v, ok := enabledTools[name]; ok {
+		return v
+	}
+	if idx := strings.Index(name, "__"); idx >= 0 {
+		legacy := name[:idx] + ":" + name[idx+2:]
+		if v, ok := enabledTools[legacy]; ok {
+			return v
+		}
+	}
+	if v, ok := enabledTools[common.BareToolName(name)]; ok {
+		return v
+	}
+	// Old config keys may contain punctuation removed from exposed names.
+	// A disabled matching alias wins when multiple raw keys sanitize alike.
+	for raw, enabled := range enabledTools {
+		if !enabled && common.SanitizeToolName(raw) == common.BareToolName(name) {
+			return false
+		}
+	}
+	return true
 }
 
 type sessionCommandResult struct {

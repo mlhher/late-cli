@@ -1,0 +1,66 @@
+{
+  "name": "example-plugin",
+  "version": "1.0.0",
+  "description": "Comprehensive plugin consuming all available Late plugin APIs",
+  "late": {
+    "skills": [
+      "skills"
+    ],
+    "commands": [
+      "/bare-cmd",
+      {
+        "name": "/echo-cmd",
+        "handler": "scripts/command.sh"
+      }
+    ],
+    "tools": [
+      {
+        "name": "greet",
+        "description": "Returns a greeting for the given name",
+        "script": "scripts/tool.sh",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Name to greet"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      }
+    ],
+    "themes": [
+      "themes/demo.json"
+    ],
+    "mcp": {
+      "servers": {
+        "mcp-demo": {
+          "command": "python3",
+          "args": [
+            "./scripts/mcp_server.py"
+          ],
+          "env": {
+            "MCP_ENV_TEST": "active"
+          }
+        }
+      }
+    },
+    "hooks": {
+      "onSessionStart": [
+        "scripts/session_start.sh"
+      ],
+      "onMessageSend": [
+        "scripts/message_send.sh"
+      ],
+      "onToolCall": [
+        "scripts/tool_call.sh"
+      ],
+      "onToolResult": [
+        "scripts/tool_result.sh"
+      ]
+    }
+  }
+}
