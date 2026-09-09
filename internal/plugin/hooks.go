@@ -73,11 +73,13 @@ func (b *boundedWriter) Bytes() []byte  { return b.buf.Bytes() }
 func (b *boundedWriter) String() string { return b.buf.String() }
 
 // ToolCallHookPayload is written to the script's stdin when an OnToolCall
-// hook fires. Plugins can inspect tool name + raw arguments JSON.
+// hook fires. Plugins can inspect tool name, raw arguments JSON, and whether
+// the call requires interactive user approval.
 type ToolCallHookPayload struct {
-	Tool      string          `json:"tool"`
-	Arguments json.RawMessage `json:"arguments"`
-	Timestamp string          `json:"timestamp"`
+	Tool             string          `json:"tool"`
+	Arguments        json.RawMessage `json:"arguments"`
+	Timestamp        string          `json:"timestamp"`
+	RequiresApproval bool            `json:"requires_approval"`
 }
 
 // resolveHookPath resolves a hook script's relative path inside the plugin's
@@ -257,6 +259,9 @@ func (pm *PluginManager) fanout(ctx context.Context, eventType string, stdinFor 
 	wg.Wait()
 }
 
+// ApprovalChecker reports whether a tool call requires user confirmation/approval.
+type ApprovalChecker func(ctx context.Context, call client.ToolCall) bool
+
 // BuildHookMiddlewares returns one common.ToolMiddleware per enabled plugin
 // that declares OnToolCall hooks. Each middleware runs its plugin's scripts
 // sequentially (so veto / argument mutation is deterministic across a
@@ -265,16 +270,23 @@ func (pm *PluginManager) fanout(ctx context.Context, eventType string, stdinFor 
 // string "blocked", in which case the middleware aborts the chain with an
 // error.
 //
+// An optional ApprovalChecker can be provided to populate the "requires_approval"
+// boolean in the hook payload before each script executes.
+//
 // hook contract (per script, in declaration order):
 //   - empty / non-JSON stdout → pass-through (call unchanged, next() runs)
 //   - JSON-valued stdout → REPLACES call.Function.Arguments (and next() runs)
 //   - literal stdout "blocked" → call is vetoed, next() is SKIPPED, error
 //     returned. The veto wins even if earlier scripts mutated arguments;
 //     this is the recommended way to write "block dangerous commands" hooks.
-func (pm *PluginManager) BuildHookMiddlewares() []common.ToolMiddleware {
+func (pm *PluginManager) BuildHookMiddlewares(checkers ...ApprovalChecker) []common.ToolMiddleware {
 	hooks := pm.snapshotHooks("tool-call")
 	if len(hooks) == 0 {
 		return nil
+	}
+	var checker ApprovalChecker
+	if len(checkers) > 0 {
+		checker = checkers[0]
 	}
 
 	mws := make([]common.ToolMiddleware, 0, len(hooks))
@@ -283,10 +295,15 @@ func (pm *PluginManager) BuildHookMiddlewares() []common.ToolMiddleware {
 		mw := func(next common.ToolRunner) common.ToolRunner {
 			return func(ctx context.Context, call client.ToolCall) (string, error) {
 				for _, script := range h.scripts {
+					requiresApproval := false
+					if checker != nil {
+						requiresApproval = checker(ctx, call)
+					}
 					payload, _ := json.Marshal(ToolCallHookPayload{
-						Tool:      call.Function.Name,
-						Arguments: json.RawMessage(call.Function.Arguments),
-						Timestamp: time.Now().UTC().Format(time.RFC3339),
+						Tool:             call.Function.Name,
+						Arguments:        json.RawMessage(call.Function.Arguments),
+						Timestamp:        time.Now().UTC().Format(time.RFC3339),
+						RequiresApproval: requiresApproval,
 					})
 					out, err := runHook(ctx, h.pluginDir, script, payload)
 					if err != nil {

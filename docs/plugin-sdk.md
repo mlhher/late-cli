@@ -228,7 +228,7 @@ Hooks are scripts that run at specific lifecycle events. Each hook type accepts 
 
 | Hook | When it fires | Script receives |
 | --- | --- | --- |
-| `onToolCall` | Before a tool is executed | `{ "tool", "arguments", "timestamp" }` JSON via stdin |
+| `onToolCall` | Before a tool is executed | `{ "tool", "arguments", "timestamp", "requires_approval" }` JSON via stdin |
 | `onToolResult` | After a tool executes successfully | `{ "tool", "result" }` JSON via stdin |
 | `onSessionStart` | Once, when Late starts | An empty JSON object `{}` via stdin |
 | `onMessageSend` | When a user sends a message | The message content via stdin |
@@ -555,7 +555,7 @@ The tool is registered under the namespaced name `<plugin>__<tool>` (e.g. `weath
 | Hook            | Trigger                                                       | Input (stdin)                                          |
 | --------------- | ------------------------------------------------------------- | ------------------------------------------------------ |
 | `onSessionStart` | Once, when Late starts.                                      | an empty JSON object `{}`                                |
-| `onToolCall`     | Before every tool runs. May mutate or veto (return `"blocked"`). | `{ "tool": "...", "arguments": {...}, "timestamp": "..." }` |
+| `onToolCall`     | Before every tool runs. May mutate or veto (return `"blocked"`). | `{ "tool": "...", "arguments": {...}, "timestamp": "...", "requires_approval": true/false }` |
 | `onToolResult`   | After every successful tool execution. JSON stdout **mutates** the result the LLM sees; `"blocked"` vetoes it (see [Tool-result mutation](#tool-result-mutation) below). | `{ "tool": "...", "result": "..." }`                    |
 | `onMessageSend`  | Sequential transform of outgoing user messages.              | the current message text                                 |
 

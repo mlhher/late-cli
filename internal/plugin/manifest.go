@@ -147,7 +147,8 @@ type MCPServerConfig struct {
 // LateHooksManifest defines hook scripts a plugin provides.
 //
 // Hook contract:
-//   - onToolCall receives the ToolCall as JSON on stdin. The hook may:
+//   - onToolCall receives {"tool": "...", "arguments": {...}, "timestamp": "...", "requires_approval": bool}
+//     as JSON on stdin. The hook may:
 //     1. Return JSON (any valid JSON object/string) to mutate the call's
 //        "arguments" field before next() runs (Gate via mutate).
 //     2. Return exactly the string "blocked" to veto the tool execution.

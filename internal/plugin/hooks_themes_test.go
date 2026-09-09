@@ -359,6 +359,74 @@ func TestBuildHookMiddlewares_PerPlugin(t *testing.T) {
 	}
 }
 
+// TestBuildHookMiddlewares_RequiresApproval verifies that BuildHookMiddlewares
+// correctly passes the requires_approval flag to the OnToolCall script payload.
+func TestBuildHookMiddlewares_RequiresApproval(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+	pluginDir := t.TempDir()
+	capture := filepath.Join(pluginDir, "captured.json")
+	script := filepath.Join(pluginDir, "hook.sh")
+	writeExecutableShell(t, script, "cat > "+capture)
+
+	mf := &LateManifest{Hooks: &LateHooksManifest{OnToolCall: []string{"hook.sh"}}}
+	p := writeTestPlugin(t, pluginDir, "checker-plugin", mf)
+	p.Path = pluginDir
+	pm.Add(p)
+
+	checker := func(ctx context.Context, call client.ToolCall) bool {
+		return call.Function.Name == "dangerous_tool"
+	}
+
+	mws := pm.BuildHookMiddlewares(checker)
+	if len(mws) != 1 {
+		t.Fatalf("expected 1 middleware, got %d", len(mws))
+	}
+
+	next := common.ToolRunner(func(ctx context.Context, call client.ToolCall) (string, error) {
+		return "ok", nil
+	})
+	runner := mws[0](next)
+
+	// Test 1: Dangerous tool -> requires_approval should be true
+	_, err := runner(context.Background(), client.ToolCall{
+		Function: client.FunctionCall{Name: "dangerous_tool", Arguments: `{"action":"delete"}`},
+	})
+	if err != nil {
+		t.Fatalf("unexpected runner error: %v", err)
+	}
+
+	data, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatalf("reading capture: %v", err)
+	}
+	var payload ToolCallHookPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshaling payload: %v (raw: %s)", err, string(data))
+	}
+	if !payload.RequiresApproval {
+		t.Errorf("expected RequiresApproval=true for dangerous_tool, got false; raw json: %s", string(data))
+	}
+
+	// Test 2: Safe tool -> requires_approval should be false
+	_, err = runner(context.Background(), client.ToolCall{
+		Function: client.FunctionCall{Name: "safe_tool", Arguments: `{"action":"read"}`},
+	})
+	if err != nil {
+		t.Fatalf("unexpected runner error: %v", err)
+	}
+
+	data, err = os.ReadFile(capture)
+	if err != nil {
+		t.Fatalf("reading capture: %v", err)
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshaling payload: %v (raw: %s)", err, string(data))
+	}
+	if payload.RequiresApproval {
+		t.Errorf("expected RequiresApproval=false for safe_tool, got true; raw json: %s", string(data))
+	}
+}
+
 // 8. BuildHookMiddlewares: empty when no plugins have OnToolCall
 func TestBuildHookMiddlewares_EmptyWhenNoHooks(t *testing.T) {
 	pm := NewPluginManager(t.TempDir())

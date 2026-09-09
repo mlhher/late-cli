@@ -709,7 +709,9 @@ func newModelClient(ctx context.Context, setting appconfig.ModelSetting, enableI
 func buildMiddlewares(pluginManager *plugin.PluginManager, p *tea.Program, registry *common.ToolRegistry) []common.ToolMiddleware {
 	mws := []common.ToolMiddleware{}
 	if pluginManager != nil {
-		mws = append(mws, pluginManager.BuildHookMiddlewares()...)
+		mws = append(mws, pluginManager.BuildHookMiddlewares(func(ctx context.Context, tc client.ToolCall) bool {
+			return tui.ToolRequiresConfirmation(ctx, registry, tc)
+		})...)
 	}
 	mws = append(mws, tui.TUIConfirmMiddleware(p, registry))
 	if pluginManager != nil {
