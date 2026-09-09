@@ -12,13 +12,19 @@ import (
 )
 
 type mockOrchestrator struct {
-	submittedText string
+	submittedText   string
+	submittedImages []string
+	submitCount     int
+	submitErr       error
+	supportsVision  bool
 }
 
 func (m *mockOrchestrator) ID() string { return "mock" }
 func (m *mockOrchestrator) Submit(text string, images []string) error {
 	m.submittedText = text
-	return nil
+	m.submittedImages = append([]string(nil), images...)
+	m.submitCount++
+	return m.submitErr
 }
 func (m *mockOrchestrator) Execute(text string) (string, error)      { return "", nil }
 func (m *mockOrchestrator) Reset() error                             { return nil }
@@ -37,7 +43,7 @@ func (m *mockOrchestrator) Parent() common.Orchestrator              { return ni
 func (m *mockOrchestrator) SetMaxTurns(int)                          {}
 func (m *mockOrchestrator) RefreshContextSize(context.Context)       {}
 func (m *mockOrchestrator) MaxTokens() int                           { return 100 }
-func (m *mockOrchestrator) SupportsVision() bool                     { return false }
+func (m *mockOrchestrator) SupportsVision() bool                     { return m.supportsVision }
 func (m *mockOrchestrator) QueuedMessages() []string                 { return nil }
 
 type mockKey struct {

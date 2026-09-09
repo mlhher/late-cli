@@ -18,6 +18,9 @@ type Tool interface {
 }
 
 // ToolRegistry stores available tools.
+//
+// It is safe for concurrent use: tool registration and lookups can occur
+// concurrently while orchestrator goroutines execute tool calls.
 type ToolRegistry struct {
 	mu    sync.RWMutex
 	tools map[string]Tool
@@ -33,6 +36,14 @@ func (r *ToolRegistry) Register(t Tool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.tools[t.Name()] = t
+}
+
+// Unregister removes a tool from the registry by name. Used when a plugin
+// is removed or disabled at runtime so its tools stop being advertised.
+func (r *ToolRegistry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.tools, name)
 }
 
 func (r *ToolRegistry) Get(name string) Tool {
