@@ -153,7 +153,11 @@ func RegisterTools(reg *tool.Registry, enabledTools map[string]bool) {
 	if err == nil && len(skills) > 0 {
 		skillMap := make(map[string]*skill.Skill)
 		for _, s := range skills {
-			skillMap[s.Metadata.Name] = s
+			name := s.ID
+			if name == "" {
+				name = s.Metadata.Name
+			}
+			skillMap[name] = s
 		}
 		reg.Register(tool.ActivateSkillTool{
 			Skills: skillMap,
