@@ -27,8 +27,13 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 	ti.MaxHeight = 4
 	ti.SetHeight(1)
 	ti.ShowLineNumbers = false
-	ti.Prompt = ""    // Remove the line prompt characters
-	ti.SetValue("> ") // Set initial "fake" prompt to force background render logic on first line
+	// A real prompt gutter reserves space on every wrapped and explicit line.
+	ti.SetPromptFunc(2, func(info textarea.PromptInfo) string {
+		if info.LineNumber == 0 {
+			return "❯ "
+		}
+		return "  "
+	})
 	ti.KeyMap.InsertNewline.SetEnabled(false)
 
 	// Set opaque background for textarea content
@@ -38,13 +43,13 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 	styles.Focused.Text = bgStyle
 	styles.Focused.Placeholder = bgStyle.Foreground(mutedTextColor)
 	styles.Focused.CursorLine = bgStyle
-	styles.Focused.Prompt = bgStyle
+	styles.Focused.Prompt = bgStyle.Foreground(primaryColor)
 
 	styles.Blurred.Base = bgStyle
 	styles.Blurred.Text = bgStyle
 	styles.Blurred.Placeholder = bgStyle.Foreground(mutedTextColor)
 	styles.Blurred.CursorLine = bgStyle
-	styles.Blurred.Prompt = bgStyle
+	styles.Blurred.Prompt = bgStyle.Foreground(primaryColor)
 	ti.SetStyles(styles)
 
 	// Initialize with 0, so that the first WindowSizeMsg sets correct dimensions

@@ -128,7 +128,7 @@ func TestStartPromptMsgSubmitsPrompt(t *testing.T) {
 	if orch.submittedText != "fix the tests" {
 		t.Fatalf("expected startup prompt to be submitted, got %q", orch.submittedText)
 	}
-	if model.Input.Value() != "> " {
+	if model.Input.Value() != "" {
 		t.Fatalf("expected input to be cleared after submission, got %q", model.Input.Value())
 	}
 }
@@ -138,7 +138,7 @@ func TestPasteBinaryIgnored(t *testing.T) {
 	model := NewModel(orch, nil, nil)
 
 	// Set initial state
-	model.Input.SetValue("> hello")
+	model.Input.SetValue("hello")
 	model.lastInputLen = len(model.Input.Value())
 
 	// 1. Simulate PasteMsg of binary content

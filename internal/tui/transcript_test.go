@@ -132,7 +132,7 @@ func TestThinkingAnimationUsesGutterWithoutRerenderingHistory(t *testing.T) {
 		t.Fatal("missing animated thinking row")
 	}
 	view := ansi.Strip(m.transcriptView())
-	if !strings.Contains(view, "│") || !strings.Contains(view, "· thinking...") {
+	if !strings.Contains(view, "│") || !strings.Contains(view, "thinking...") {
 		t.Fatalf("missing thinking gutter: %s", view)
 	}
 	rows := s.Transcript.rows
@@ -145,8 +145,8 @@ func TestThinkingAnimationUsesGutterWithoutRerenderingHistory(t *testing.T) {
 	if worker != nil || &rows[0] != &s.Transcript.rows[0] {
 		t.Fatal("animation rerendered transcript")
 	}
-	first := m.renderAnimatedTagAt("· thinking...", thoughtHeaderStyle, 80, true, time.UnixMilli(100))
-	second := m.renderAnimatedTagAt("· thinking...", thoughtHeaderStyle, 80, true, time.UnixMilli(350))
+	first := m.renderAnimatedTagAt("thinking...", thoughtHeaderStyle, 80, true, time.UnixMilli(100))
+	second := m.renderAnimatedTagAt("thinking...", thoughtHeaderStyle, 80, true, time.UnixMilli(350))
 	if first == second {
 		t.Fatal("thinking animation is static")
 	}
@@ -166,7 +166,7 @@ func TestTranscriptRejectsStaleWorkerAfterNew(t *testing.T) {
 	m := NewModel(orch, nil, nil)
 	m.SetSize(100, 40)
 	stale := m.renderTranscriptCmd()().(transcriptRenderedMsg)
-	m.Input.SetValue("> /new")
+	m.Input.SetValue("/new")
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(Model)
 	orch.history = nil // The shared mock Reset is a no-op.
@@ -200,7 +200,14 @@ func TestThinkingToReasoningKeepsLayout(t *testing.T) {
 			renderTestTranscript(m)
 			before := strings.Split(ansi.Strip(m.transcriptView()), "\n")
 			find := func(rows []string, marker string) (int, int) {
+				seenThinking := false
 				for y, row := range rows {
+					if strings.Contains(row, "thinking") {
+						seenThinking = true
+					}
+					if marker == "│" && !seenThinking {
+						continue
+					}
 					if x := strings.Index(row, marker); x >= 0 {
 						return y, ansi.StringWidth(row[:x])
 					}
@@ -208,7 +215,7 @@ func TestThinkingToReasoningKeepsLayout(t *testing.T) {
 				t.Fatalf("missing %q in %q", marker, rows)
 				return -1, -1
 			}
-			headerY, headerX := find(before, "· thinking")
+			headerY, headerX := find(before, "thinking")
 			gutterY, gutterX := find(before, "│")
 			if gutterY != headerY+1 {
 				t.Fatal("placeholder must reserve a reasoning row below its header")
@@ -230,7 +237,7 @@ func TestThinkingToReasoningKeepsLayout(t *testing.T) {
 			*m = updated.(Model)
 			renderTestTranscript(m)
 			after := strings.Split(ansi.Strip(m.transcriptView()), "\n")
-			if y, x := find(after, "· thinking"); y != headerY || x != headerX {
+			if y, x := find(after, "thinking"); y != headerY || x != headerX {
 				t.Fatalf("header moved from (%d,%d) to (%d,%d)", headerX, headerY, x, y)
 			}
 			if y, x := find(after, "│"); y != gutterY || x != gutterX {
@@ -243,5 +250,141 @@ func TestThinkingToReasoningKeepsLayout(t *testing.T) {
 				t.Fatal("placeholder survived first reasoning token")
 			}
 		})
+	}
+}
+
+func TestAnswerSpacingAndAlignment(t *testing.T) {
+	for _, width := range []int{40, 100} {
+		t.Run(fmt.Sprint(width), func(t *testing.T) {
+			m, s := newViewportBenchmarkModel(nil)
+			m.SetSize(width, 40)
+			s.State = StateStreaming
+			s.StreamingState = common.ContentEvent{ReasoningContent: "REASONING", Content: "ANSWER " + strings.Repeat("wrapped text ", 20)}
+			rows := strings.Split(ansi.Strip(testTranscriptContent(m)), "\n")
+			reason, answer := -1, -1
+			for i, row := range rows {
+				if strings.Contains(row, "REASONING") {
+					reason = i
+				}
+				if strings.Contains(row, "ANSWER") {
+					answer = i
+				}
+			}
+			if reason < 0 || answer != reason+2 {
+				t.Fatalf("expected one blank line, reasoning=%d answer=%d", reason, answer)
+			}
+			if ansi.StringWidth(rows[reason][:strings.Index(rows[reason], "REASONING")]) != ansi.StringWidth(rows[answer][:strings.Index(rows[answer], "ANSWER")]) {
+				t.Fatalf("answer and reasoning text are misaligned: %q / %q", rows[reason], rows[answer])
+			}
+			for _, row := range rows[answer:] {
+				if !strings.HasPrefix(row, "    ") || !strings.HasSuffix(row, "    ") || ansi.StringWidth(row) != width {
+					t.Fatalf("incorrect answer padding: %q", row)
+				}
+			}
+		})
+	}
+}
+
+func TestSharedActivityAnimationForThinkingAndTools(t *testing.T) {
+	m, s := newViewportBenchmarkModel(nil)
+	s.State = StateStreaming
+	s.StreamingState = common.ContentEvent{ReasoningContent: "Inspecting", ToolCalls: []client.ToolCall{
+		{Function: client.FunctionCall{Name: "read_file", Arguments: `{"path":"main.go"}`}},
+		{Function: client.FunctionCall{Name: "bash", Arguments: `{"command":"go test"}`}},
+	}}
+	renderTestTranscript(m)
+	if len(s.Transcript.activities) != 2 {
+		t.Fatalf("expected two tool animations, got %d", len(s.Transcript.activities))
+	}
+	rows := s.Transcript.rows
+	for line, label := range s.Transcript.activities {
+		first := m.renderActivityAt(label, 100, time.UnixMilli(100))
+		second := m.renderActivityAt(label, 100, time.UnixMilli(350))
+		if first == second {
+			t.Fatalf("static activity %q", label)
+		}
+		a, b := ansi.Strip(first), ansi.Strip(second)
+		ar, br := []rune(a), []rune(b)
+		if ar[2] == br[2] {
+			t.Fatal("dot spinner did not advance")
+		}
+		if string(ar[3:]) != string(br[3:]) {
+			t.Fatal("activity label moved")
+		}
+
+		if !strings.Contains(ansi.Strip(rows[line]), strings.TrimSpace(label)) {
+			t.Fatal("animation is attached to the wrong row")
+		}
+		glowA := m.renderAnimatedTagAt(label, thoughtHeaderStyle, 80, true, time.UnixMilli(100))
+		glowB := m.renderAnimatedTagAt(label, thoughtHeaderStyle, 80, true, time.UnixMilli(350))
+		if glowA == glowB {
+			t.Fatal("short activity label has no glow")
+		}
+	}
+	updated, _ := m.Update(spinner.TickMsg{})
+	*m = updated.(Model)
+	_, worker := m.transcriptFrame()
+	if worker != nil || &rows[0] != &s.Transcript.rows[0] {
+		t.Fatal("activity tick rerendered transcript")
+	}
+	s.State = StateIdle
+	s.StreamingState = common.ContentEvent{Completed: true}
+	renderTestTranscript(m)
+	if len(s.Transcript.activities) != 0 {
+		t.Fatal("completed activities still animate")
+	}
+	for _, width := range []int{8, 20, 40} {
+		row := m.renderActivityAt("read: a very long path with 漢字 and more text", width, time.UnixMilli(100))
+		if strings.Contains(row, "\n") || ansi.StringWidth(row) > width {
+			t.Fatalf("activity exceeds width %d", width)
+		}
+	}
+}
+
+func TestReasoningAnimationStopsWhenAnswerStarts(t *testing.T) {
+	m, s := newViewportBenchmarkModel(nil)
+	s.State = StateStreaming
+	s.StreamingState = common.ContentEvent{ReasoningContent: "Inspecting code"}
+	renderTestTranscript(m)
+	if len(s.Transcript.activities) != 1 {
+		t.Fatal("reasoning is not animated")
+	}
+	s.StreamingState.Content = "Here is the answer"
+	renderTestTranscript(m)
+	if len(s.Transcript.activities) != 0 {
+		t.Fatal("reasoning still animates while writing answer")
+	}
+}
+
+func TestThinkingSpinnerReplacesCircleUntilFinished(t *testing.T) {
+	m, s := newViewportBenchmarkModel(nil)
+	s.State = StateThinking
+	for _, reasoning := range []string{"", "Inspecting code"} {
+		s.StreamingState = common.ContentEvent{ReasoningContent: reasoning}
+		renderTestTranscript(m)
+		view := ansi.Strip(m.transcriptView())
+		if strings.Contains(view, "· thinking") {
+			t.Fatal("active thinking shows both spinner and circle")
+		}
+		found := false
+		for _, frame := range spinner.Dot.Frames {
+			if strings.Contains(view, strings.TrimSpace(frame)+" thinking...") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("missing thinking spinner: %q", view)
+		}
+	}
+	s.StreamingState.Content = "Answer"
+	renderTestTranscript(m)
+	view := ansi.Strip(m.transcriptView())
+	if !strings.Contains(view, "· thinking") {
+		t.Fatal("finished reasoning did not restore circle")
+	}
+	for _, frame := range spinner.Dot.Frames {
+		if strings.Contains(view, strings.TrimSpace(frame)) {
+			t.Fatal("finished reasoning retained spinner")
+		}
 	}
 }

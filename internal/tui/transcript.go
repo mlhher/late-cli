@@ -22,6 +22,7 @@ const transcriptFrameInterval = time.Second / FrameRate
 type transcriptFrameMsg struct{}
 
 type transcriptState struct {
+	activities   map[int]string
 	thinkingLine int
 	thinking     bool
 	welcome      bool
@@ -38,6 +39,7 @@ type transcriptState struct {
 }
 
 type transcriptRenderedMsg struct {
+	activities   map[int]string
 	thinkingLine int
 	thinking     bool
 	partial      bool
@@ -51,12 +53,18 @@ type transcriptRenderedMsg struct {
 	cache        map[string][]string
 }
 
+type transcriptLabel struct {
+	rendered string
+	activity string
+}
+
 type transcriptEntry struct {
+	active    bool
 	index     int
 	role      string
 	content   string
 	reasoning string
-	labels    []string
+	labels    []transcriptLabel
 }
 
 // Invalidate content independently of viewport position. Rendering is started
@@ -103,6 +111,7 @@ func (m *Model) transcriptView() string {
 	}
 	t.offset = min(max(0, t.offset), max(0, len(t.rows)-h))
 	end := min(len(t.rows), t.offset+h)
+	now := time.Now()
 	var b strings.Builder
 	for i := 0; i < h; i++ {
 		if i > 0 {
@@ -110,9 +119,8 @@ func (m *Model) transcriptView() string {
 		}
 		if t.offset+i < end {
 			row := t.rows[t.offset+i]
-			if t.thinking && t.offset+i == t.thinkingLine {
-				row = m.renderAnimatedTag("· thinking...", thoughtHeaderStyle, max(1, m.Viewport.Width()-thoughtHeaderStyle.GetHorizontalFrameSize()), true)
-				row = ansi.Truncate(row, max(1, m.Viewport.Width()), "")
+			if activity, ok := t.activities[t.offset+i]; ok {
+				row = m.renderActivityAt(activity, m.Viewport.Width(), now)
 			}
 			b.WriteString(row)
 		}
@@ -202,6 +210,7 @@ func (m *Model) applyTranscript(result transcriptRenderedMsg) {
 	t.welcome = result.welcome
 	t.rows, t.blocks, t.cache = result.rows, result.blocks, result.cache
 	t.thinking, t.thinkingLine = result.thinking, result.thinkingLine
+	t.activities = result.activities
 	t.width, t.theme = result.width, result.theme
 	t.offset = min(t.offset, max(0, len(t.rows)-m.Viewport.Height()))
 	s.RenderBlocks = result.blocks
@@ -237,8 +246,8 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 	}
 	theme := string(styles)
 	entries := make([]transcriptEntry, 0, len(m.Focused.History())+3)
-	toolLabels := func(calls []client.ToolCall, active bool) []string {
-		labels := make([]string, 0, len(calls))
+	toolLabels := func(calls []client.ToolCall, active bool) []transcriptLabel {
+		labels := make([]transcriptLabel, 0, len(calls))
 		for _, tc := range calls {
 			label := tc.Function.Name
 			if registry := m.Focused.Registry(); registry != nil {
@@ -246,10 +255,12 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 					label = tool.CallString([]byte(tc.Function.Arguments))
 				}
 			}
+			item := transcriptLabel{rendered: m.renderToolBadge(tc.Function.Name, label, false, width)}
 			if active {
-				label += " · running"
+				item.activity = toolBadgeText(tc.Function.Name, label) + " · running"
+				item.rendered = m.renderActivityAt(item.activity, width, time.Unix(0, 0))
 			}
-			labels = append(labels, m.renderToolBadge(tc.Function.Name, label, false, width))
+			labels = append(labels, item)
 		}
 		return labels
 	}
@@ -271,16 +282,16 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 			for j, f := range msg.AttachedFiles {
 				names[j] = filepath.Base(f)
 			}
-			entry.labels = append(entry.labels, attachmentStyle.Render("  ↳ attached: "+strings.Join(names, ", ")))
+			entry.labels = append(entry.labels, transcriptLabel{rendered: attachmentStyle.Render("  ↳ attached: " + strings.Join(names, ", "))})
 		}
 		entries = append(entries, entry)
 	}
 	if (s.State == StateStreaming || s.State == StateThinking) && !s.StreamingState.Completed {
 		active := s.StreamingState
 		if active.Content != "" || active.ReasoningContent != "" || len(active.ToolCalls) > 0 {
-			entries = append(entries, transcriptEntry{index: len(history), role: "assistant", content: active.Content, reasoning: active.ReasoningContent, labels: toolLabels(active.ToolCalls, true)})
+			entries = append(entries, transcriptEntry{active: true, index: len(history), role: "assistant", content: active.Content, reasoning: active.ReasoningContent, labels: toolLabels(active.ToolCalls, true)})
 		} else {
-			entries = append(entries, transcriptEntry{index: len(history), role: "thinking", content: "· thinking..."})
+			entries = append(entries, transcriptEntry{index: len(history), role: "thinking", content: "thinking..."})
 		}
 	}
 	if s.State == StateConfirmTool && s.PendingConfirm != nil {
@@ -309,12 +320,14 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 	// Capture styles by value. No worker accesses the live model or a shared
 	// Glamour renderer; only immutable strings and cached rows cross threads.
 	userStyle, thoughtStyle, headerStyle := userMsgStyle, thinkingStyle, thoughtHeaderStyle
-	promptStyle, queueStyle := promptSymbolStyle, queuedMsgStyle
+	queueStyle := queuedMsgStyle
 	noticeStyle := aiMsgStyle.MarginLeft(1).Border(boxBorderStyle).BorderForeground(warningColor)
 	errorStyle := noticeStyle.BorderForeground(errorBorderColor)
 	bg := appBgColor
+	activityHeader := m.renderActivityAt("thinking...", width, time.Unix(0, 0))
+	answerStyle := aiMsgStyle.Padding(0, 4).Width(width)
 	return func() tea.Msg {
-		renderer, err := glamour.NewTermRenderer(glamour.WithStylesFromJSONBytes([]byte(theme)), glamour.WithWordWrap(max(1, width-AIMsgOverhead)), glamour.WithPreservedNewLines())
+		renderer, err := glamour.NewTermRenderer(glamour.WithStylesFromJSONBytes([]byte(theme)), glamour.WithWordWrap(max(1, width-8)), glamour.WithPreservedNewLines())
 		markdown := func(source string) string {
 			if err != nil {
 				return source
@@ -325,9 +338,9 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 			}
 			return out
 		}
-		result := transcriptRenderedMsg{partial: partial, welcome: welcome, id: id, generation: generation, width: width, theme: theme, cache: make(map[string][]string, len(entries))}
+		result := transcriptRenderedMsg{activities: make(map[int]string), partial: partial, welcome: welcome, id: id, generation: generation, width: width, theme: theme, cache: make(map[string][]string, len(entries))}
 		for _, entry := range entries {
-			key := fmt.Sprintf("%d:%s:%d:%s:%d:%s:%v", len(entry.role), entry.role, len(entry.content), entry.content, len(entry.reasoning), entry.reasoning, entry.labels)
+			key := fmt.Sprintf("%t:%d:%s:%d:%s:%d:%s:%v", entry.active, len(entry.role), entry.role, len(entry.content), entry.content, len(entry.reasoning), entry.reasoning, entry.labels)
 			rows, ok := oldCache[key]
 			if !ok {
 				parts := make([]string, 0, 4)
@@ -335,20 +348,31 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 				case "user":
 					text := strings.TrimRight(entry.content, "\r\n")
 					if strings.TrimSpace(text) != "" || len(entry.labels) > 0 {
-						block := promptStyle.Render("❯ ") + userStyle.Width(max(1, width-2)).Render(text)
+						block := text
 						if len(entry.labels) > 0 {
-							block += "\n" + strings.Join(entry.labels, "\n")
+							for _, label := range entry.labels {
+								block += "\n" + label.rendered
+							}
 						}
-						parts = append(parts, "\n"+block+"\n")
+						parts = append(parts, "\n"+userStyle.Width(max(1, width-userStyle.GetHorizontalMargins())).Render(block)+"\n")
 					}
 				case "assistant":
 					if entry.reasoning != "" {
-						parts = append(parts, headerStyle.Render("· thinking"), thoughtStyle.Width(max(1, width-thoughtStyle.GetHorizontalFrameSize())).Render(entry.reasoning))
+						header := headerStyle.Render("· thinking")
+						if entry.active && entry.content == "" && len(entry.labels) == 0 {
+							header = activityHeader
+						}
+						parts = append(parts, header, thoughtStyle.Width(max(1, width-thoughtStyle.GetHorizontalFrameSize())).Render(entry.reasoning))
 					}
 					if entry.content != "" {
-						parts = append(parts, strings.TrimRight(markdown(entry.content), "\r\n"))
+						if entry.reasoning != "" {
+							parts = append(parts, "")
+						}
+						parts = append(parts, answerStyle.Render(strings.Trim(markdown(entry.content), "\r\n")))
 					}
-					parts = append(parts, entry.labels...)
+					for _, label := range entry.labels {
+						parts = append(parts, label.rendered)
+					}
 				case "notice", "error":
 					style := noticeStyle
 					if entry.role == "error" {
@@ -356,12 +380,12 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 					}
 					parts = append(parts, style.Width(max(1, width-style.GetHorizontalFrameSize())).Render(markdown(entry.content)))
 				case "queued":
-					parts = append(parts, queueStyle.Width(width).Render(entry.content))
+					parts = append(parts, queueStyle.Width(max(1, width-queueStyle.GetHorizontalMargins())).Render(entry.content))
 				case "raw":
 					parts = append(parts, entry.content)
 				case "thinking":
 					// Reserve the same header and gutter rows used by streamed reasoning.
-					parts = append(parts, headerStyle.Render(entry.content), thoughtStyle.Width(max(1, width-thoughtStyle.GetHorizontalFrameSize())).Render(""))
+					parts = append(parts, activityHeader, thoughtStyle.Width(max(1, width-thoughtStyle.GetHorizontalFrameSize())).Render(""))
 				}
 				if len(parts) == 0 {
 					continue
@@ -384,6 +408,15 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 			if entry.role == "thinking" {
 				result.thinking = true
 				result.thinkingLine = start
+				result.activities[start] = "thinking..."
+			}
+			if entry.active && entry.reasoning != "" && entry.content == "" && len(entry.labels) == 0 {
+				result.activities[start] = "thinking..."
+			}
+			for j, label := range entry.labels {
+				if label.activity != "" {
+					result.activities[start+len(rows)-len(entry.labels)+j] = label.activity
+				}
 			}
 			result.rows = append(result.rows, rows...)
 			result.blocks = append(result.blocks, RenderBlock{MessageIndex: entry.index, Content: entry.content, StartLine: start, EndLine: len(result.rows) - 1})

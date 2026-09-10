@@ -11,8 +11,10 @@ import (
 
 	"late/internal/common"
 
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func (m Model) View() tea.View {
@@ -132,7 +134,7 @@ func (m *Model) inputView() string {
 		(m.RunningPluginActionVisibleAfter.IsZero() || !time.Now().Before(m.RunningPluginActionVisibleAfter))
 	if showPluginAction {
 		dots := []string{".", "..", "..."}[(time.Now().UnixMilli()/350)%3]
-		ghostText := fmt.Sprintf("> Running %s%s", m.RunningPluginAction, dots)
+		ghostText := fmt.Sprintf("❯ Running %s%s", m.RunningPluginAction, dots)
 		maxW := m.Width - 4
 		if maxW > 0 && len(ghostText) > maxW {
 			ghostText = ghostText[:maxW-3] + "..."
@@ -377,7 +379,11 @@ func (m *Model) renderIdleEqualizer() string {
 }
 
 func (m *Model) renderScannerTrack(symbol string, symbolColor color.Color) string {
-	t := float64(time.Now().UnixMilli()) / 120.0
+	return m.renderScannerTrackAt(symbol, symbolColor, time.Now())
+}
+
+func (m *Model) renderScannerTrackAt(symbol string, symbolColor color.Color, now time.Time) string {
+	t := float64(now.UnixMilli()) / 120.0
 	pos := int(math.Round(3.0 + 3.0*math.Sin(t)))
 
 	track := []rune("·······")
@@ -715,7 +721,7 @@ func (m *Model) renderAnimatedTagAt(text string, baseStyle lipgloss.Style, width
 	textWidth := lipgloss.Width(text)
 
 	isTruncated := textWidth > width
-	shouldAnimate := active && (isTruncated || text == "Thinking" || strings.HasSuffix(text, "..."))
+	shouldAnimate := active
 
 	if !shouldAnimate {
 		if isTruncated {
@@ -756,8 +762,10 @@ func (m *Model) renderAnimatedTagAt(text string, baseStyle lipgloss.Style, width
 
 	grad := lipgloss.Blend1D(100, fg, textColor)
 	var sb strings.Builder
-	for i, r := range text {
-		pos := float64(i)
+	column := 0
+	for _, r := range text {
+		pos := float64(column)
+		column += lipgloss.Width(string(r))
 		dist := math.Abs(pos - cycle)
 		if dist > totalLoop/2 {
 			dist = totalLoop - dist
@@ -779,7 +787,7 @@ func (m *Model) renderAnimatedTagAt(text string, baseStyle lipgloss.Style, width
 	return baseStyle.Copy().Width(width).Render(sb.String())
 }
 
-func (m *Model) renderToolBadge(toolName, callStr string, isStreaming bool, width int) string {
+func toolBadgeText(toolName, callStr string) string {
 	var icon string
 	lower := strings.ToLower(toolName + " " + callStr)
 	switch {
@@ -799,14 +807,18 @@ func (m *Model) renderToolBadge(toolName, callStr string, isStreaming bool, widt
 		icon = "call"
 	}
 
+	return fmt.Sprintf("%s: %s", icon, callStr)
+}
+
+func (m *Model) renderToolBadge(toolName, callStr string, isStreaming bool, width int) string {
+	label := toolBadgeText(toolName, callStr)
 	badgeStyle := tagStyle.Copy().Foreground(subtextColor)
 
 	if isStreaming {
-		text := fmt.Sprintf("  ↳ %s: %s · running", icon, callStr)
-		return m.renderAnimatedTag(text, badgeStyle, width, true)
+		return m.renderActivityAt(label+" · running", width, time.Now())
 	}
 
-	text := fmt.Sprintf("  ↳ %s: %s", icon, callStr)
+	text := "  ↳ " + label
 	if lipgloss.Width(text) > width {
 		text = m.truncateWithEllipsis(text, width)
 	}
@@ -1493,4 +1505,18 @@ func (m *Model) renderModelPickerView() {
 	lines = append(lines, footer)
 
 	m.Viewport.SetContent(strings.Join(lines, "\n"))
+}
+
+// renderActivityAt is the shared thinking/tool activity row. The marker and
+// text use the same clock; only this visible row is repainted on animation ticks.
+func (m *Model) renderActivityAt(text string, width int, now time.Time) string {
+	text = strings.Join(strings.Fields(text), " ")
+	frames := spinner.Dot
+	frame := int(now.UnixNano()/int64(frames.FPS)) % len(frames.Frames)
+	marker := lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Render(strings.TrimSpace(frames.Frames[frame]))
+	style := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Italic(true)
+	remaining := max(1, width-2-lipgloss.Width(marker)-1)
+	glow := m.renderAnimatedTagAt(text, style, remaining, true, now)
+	row := "  " + marker + " " + glow
+	return ansi.Truncate(row, max(1, width), "")
 }

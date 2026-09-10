@@ -148,7 +148,7 @@ func TestIsPluginCmd_MatchesWithArgs(t *testing.T) {
 func TestMessageHookLocksInputUntilSubmission(t *testing.T) {
 	orch := &mockOrchestrator{supportsVision: true}
 	m := NewModel(orch, nil, nil)
-	m.Input.SetValue("> hello")
+	m.Input.SetValue("hello")
 	m.AttachedFiles = []string{"image.png"}
 	m.MessageHook = strings.ToUpper
 
@@ -159,7 +159,7 @@ func TestMessageHookLocksInputUntilSubmission(t *testing.T) {
 	if m.RunningPluginAction != "message hooks" {
 		t.Fatalf("running action = %q, want message hooks", m.RunningPluginAction)
 	}
-	if got := m.Input.Value(); got != "> " {
+	if got := m.Input.Value(); got != "" {
 		t.Fatalf("input was not cleared while hooks run: %q", got)
 	}
 	if len(m.AttachedFiles) != 0 {
@@ -181,7 +181,7 @@ func TestMessageHookLocksInputUntilSubmission(t *testing.T) {
 	}
 	m, _ = m.updateInternal(tea.KeyPressMsg(tea.Key{Code: 'x', Text: "x"}))
 	m, _ = m.updateInternal(tea.PasteMsg{Content: "new draft"})
-	if got := m.Input.Value(); got != "> " {
+	if got := m.Input.Value(); got != "" {
 		t.Fatalf("input changed while hooks were running: %q", got)
 	}
 
@@ -205,7 +205,7 @@ func TestMessageHookRestoresDraftWhenSubmissionFails(t *testing.T) {
 	submitErr := errors.New("submission failed")
 	orch := &mockOrchestrator{supportsVision: true, submitErr: submitErr}
 	m := NewModel(orch, nil, nil)
-	m.Input.SetValue("> keep this draft")
+	m.Input.SetValue("keep this draft")
 	m.AttachedFiles = []string{"image.png"}
 	m.Pastes = map[string]string{"placeholder": "original paste"}
 	m.MessageHook = func(text string) string { return text + " transformed" }
@@ -222,7 +222,7 @@ func TestMessageHookRestoresDraftWhenSubmissionFails(t *testing.T) {
 	if m.RunningPluginAction != "" {
 		t.Fatalf("running action not cleared after failure: %q", m.RunningPluginAction)
 	}
-	if got := m.Input.Value(); got != "> keep this draft" {
+	if got := m.Input.Value(); got != "keep this draft" {
 		t.Fatalf("restored input = %q", got)
 	}
 	if len(m.AttachedFiles) != 1 || m.AttachedFiles[0] != "image.png" {
@@ -252,7 +252,7 @@ func TestSlashNew_ResetsViewportAndDismissesAutocomplete(t *testing.T) {
 	m.AutocompleteItems = []CommandDef{{Name: "/new", Description: "Start fresh conversation"}}
 
 	// Submit /new command
-	m.Input.SetValue("> /new")
+	m.Input.SetValue("/new")
 	updatedModel, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	um := updatedModel.(Model)
 

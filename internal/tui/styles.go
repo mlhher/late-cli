@@ -17,13 +17,13 @@ var (
 	mutedTextColor = lipgloss.Color("#484F58") // Whisper Slate (borders, dividers)
 
 	// Canvas & Surfaces
-	appBgColor     = lipgloss.Color("#0B0C0E") // Deep Obsidian
-	userMsgBg      = appBgColor                // Clean seamless canvas
-	aiMsgBg        = appBgColor                // Clean seamless canvas
-	cardBgColor    = lipgloss.Color("#12141A") // Subtle Container (autocomplete popup)
-	chipBgColor    = lipgloss.Color("#1B1E28") // Elevated Pill / Badge Surface
-	borderColor    = lipgloss.Color("#1C1F26") // Hairline Divider
-	activeBorder   = lipgloss.Color("#2D323E") // Focused / Active Border
+	appBgColor   = lipgloss.Color("#0B0C0E") // Deep Obsidian
+	userMsgBg    = appBgColor                // Clean seamless canvas
+	aiMsgBg      = appBgColor                // Clean seamless canvas
+	cardBgColor  = lipgloss.Color("#12141A") // Subtle Container (autocomplete popup)
+	chipBgColor  = lipgloss.Color("#1B1E28") // Elevated Pill / Badge Surface
+	borderColor  = lipgloss.Color("#1C1F26") // Hairline Divider
+	activeBorder = lipgloss.Color("#2D323E") // Focused / Active Border
 
 	// Centralized Border Styles & Colors
 	boxBorderStyle   = lipgloss.RoundedBorder()
@@ -70,10 +70,10 @@ var (
 	commitSelectedChipStyle = chipStyle.Foreground(primaryColor).Bold(true)
 	modelPickerChipStyle    = chipStyle.Foreground(subtextColor)
 	headBadgeStyle          = lipgloss.NewStyle().
-					Foreground(appBgColor).
-					Background(accentEmerald).
-					Bold(true).
-					Padding(0, 1)
+				Foreground(appBgColor).
+				Background(accentEmerald).
+				Bold(true).
+				Padding(0, 1)
 
 	telemetryChipStyle  = chipStyle
 	telemetryLabelStyle = lipgloss.NewStyle().
@@ -105,7 +105,14 @@ var (
 
 	userMsgStyle = lipgloss.NewStyle().
 			Foreground(textColor).
-			Background(appBgColor).
+			Background(cardBgColor).
+			Margin(0, 2).
+			MarginBackground(appBgColor).
+			BorderLeft(true).
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderForeground(primaryColor).
+			BorderBackground(cardBgColor).
+			Padding(0, 1).
 			Align(lipgloss.Left)
 
 	queuedMsgStyle = userMsgStyle.Copy().

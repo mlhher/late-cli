@@ -99,7 +99,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.scrollTranscript(0, 1)
 				return m.present(nil)
 			case "home", "end":
-				if strings.TrimPrefix(m.Input.Value(), "> ") == "" {
+				if m.Input.Value() == "" {
 					edge := 1
 					if event.String() == "home" {
 						edge = -1
@@ -135,7 +135,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 	if prompt, ok := msg.(StartPromptMsg); ok {
-		m.Input.SetValue("> " + string(prompt))
+		m.Input.SetValue(string(prompt))
 		m.Input.CursorEnd()
 		return m, func() tea.Msg {
 			return tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter})
@@ -221,7 +221,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 			m.Err = msg.err
 			return m, nil
 		}
-		m.Input.SetValue("> " + msg.content)
+		m.Input.SetValue(msg.content)
 		m.Input.CursorEnd()
 		return m, nil
 	}
@@ -275,7 +275,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 
 		// Reset input box.
 		m.Input.Reset()
-		m.Input.SetValue("> ")
+		m.Input.SetValue("")
 
 		// Toast UX for handler output.
 		if msg.err != nil {
@@ -302,7 +302,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 		if err := msg.target.Submit(msg.submitted, msg.attachedFiles); err != nil {
 			// Submission did not take ownership of the snapshotted draft, so
 			// restore it exactly as the user entered it and return its files.
-			m.Input.SetValue("> " + msg.draft)
+			m.Input.SetValue(msg.draft)
 			m.Input.CursorEnd()
 			m.AttachedFiles = append([]string(nil), msg.attachedFiles...)
 			m.Err = err
@@ -361,7 +361,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
 		switch keyMsg.String() {
 		case "y", "Y", "n", "N", "s", "S", "p", "P", "g", "G":
-			if escBefore || (stateBefore == StateConfirmTool && strings.TrimPrefix(m.Input.Value(), "> ") == "") {
+			if escBefore || (stateBefore == StateConfirmTool && m.Input.Value() == "") {
 				forwardToInput = false
 			}
 		case "up":
@@ -369,7 +369,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 				if m.ShowAutocomplete || wasAtExactStart {
 					forwardToInput = false
 				} else if wasAtTopRow {
-					m.Input.SetCursorColumn(2)
+					m.Input.SetCursorColumn(0)
 					forwardToInput = false
 				}
 			} else {
@@ -396,20 +396,6 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 	// Update Sub-models
 	if forwardToInput {
 		m.Input, tiCmd = m.Input.Update(msg)
-		// Prevent cursor from moving before the "> " prompt on the first line
-		if m.Input.Line() == 0 && m.Input.Column() < 2 {
-			m.Input.SetCursorColumn(2)
-		}
-
-		if !strings.HasPrefix(m.Input.Value(), "> ") {
-			val := m.Input.Value()
-			if strings.HasPrefix(val, ">") {
-				m.Input.SetValue("> " + strings.TrimPrefix(val, ">"))
-			} else {
-				m.Input.SetValue("> " + val)
-			}
-			m.Input.CursorEnd()
-		}
 	}
 
 	// Update autocomplete state whenever the input changes
@@ -761,7 +747,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 
 					// Place the selected user message into the input box
 					m.Input.Reset()
-					m.Input.SetValue("> " + entry.Content)
+					m.Input.SetValue(entry.Content)
 					m.Input.CursorEnd()
 
 					// Remove the selected user message and all subsequent messages from chat history
@@ -948,7 +934,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			m.AutocompleteItems = nil
 			m.AutocompleteIndex = 0
 
-			input := strings.TrimPrefix(m.Input.Value(), "> ")
+			input := m.Input.Value()
 			if strings.TrimSpace(input) == "" {
 				return m, nil
 			}
@@ -984,7 +970,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 					c := exec.Command(editor, tempFile.Name())
 
 					m.Input.Reset()
-					m.Input.SetValue("> ")
+					m.Input.SetValue("")
 					m.ShowAutocomplete = false
 					m.AutocompleteItems = nil
 					m.AutocompleteIndex = 0
@@ -1010,7 +996,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			if cmd == "/help" {
 				m.Input.Reset()
-				m.Input.SetValue("> ")
+				m.Input.SetValue("")
 				m.Mode = ViewHelp
 				focusedState.RenderedHistory = nil
 				m.updateLayout()
@@ -1018,7 +1004,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			if cmd == "/model" {
 				m.Input.Reset()
-				m.Input.SetValue("> ")
+				m.Input.SetValue("")
 				if m.hasActiveAgent() {
 					m.ToastMessage = "Models can be changed when all agents are idle"
 					m.ToastWarning = true
@@ -1070,7 +1056,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			if cmd == "/new" {
 				m.Input.Reset()
-				m.Input.SetValue("> ")
+				m.Input.SetValue("")
 				m.ShowAutocomplete = false
 				m.AutocompleteItems = nil
 				m.AutocompleteIndex = 0
@@ -1103,7 +1089,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			if cmd == "/log" {
 				m.Input.Reset()
-				m.Input.SetValue("> ")
+				m.Input.SetValue("")
 				entries, err := git.LogCommits(m.CWD, 30)
 				if err != nil {
 					m.Err = err
@@ -1118,7 +1104,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			if cmd == "/rewind" {
 				m.Input.Reset()
-				m.Input.SetValue("> ")
+				m.Input.SetValue("")
 				history := m.Focused.History()
 				var entries []RewindEntry
 				for idx, msg := range history {
@@ -1157,7 +1143,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			// bare name or by namespaced ID. The "name" branch lives below.
 			if cmd == "/themes" {
 				m.Input.Reset()
-				m.Input.SetValue("> ")
+				m.Input.SetValue("")
 				if len(m.ThemeEntries) == 0 {
 					m.ToastMessage = "no plugin themes installed"
 					m.ToastExpireTime = time.Now().UnixMilli() + 3000
@@ -1183,7 +1169,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				// User supplied a name; resolve and apply inline.
 				name := strings.TrimSpace(strings.TrimPrefix(cmd, "/themes "))
 				m.Input.Reset()
-				m.Input.SetValue("> ")
+				m.Input.SetValue("")
 				if name == "" {
 					m.Mode = ViewThemes
 					m.updateViewport()
@@ -1246,7 +1232,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 
 					// Clear input box and dismiss autocomplete
 					m.Input.Reset()
-					m.Input.SetValue("> ")
+					m.Input.SetValue("")
 					m.ShowAutocomplete = false
 					m.AutocompleteItems = nil
 
@@ -1295,7 +1281,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 
 		case "home":
-			if strings.TrimPrefix(m.Input.Value(), "> ") == "" {
+			if m.Input.Value() == "" {
 				m.Viewport.GotoTop()
 				m.updateViewport()
 				return m, nil
@@ -1303,7 +1289,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 
 		case "end":
-			if strings.TrimPrefix(m.Input.Value(), "> ") == "" {
+			if m.Input.Value() == "" {
 				m.Viewport.GotoBottom()
 				m.updateViewport()
 				return m, nil
@@ -1345,7 +1331,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 
 		case "y", "Y":
-			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil && strings.TrimPrefix(m.Input.Value(), "> ") == "" {
+			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil && m.Input.Value() == "" {
 				focusedState.PendingConfirm.ResultCh <- "y"
 				focusedState.PendingConfirm = nil
 				focusedState.State = StateThinking
@@ -1354,7 +1340,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 
 		case "n", "N":
-			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil && strings.TrimPrefix(m.Input.Value(), "> ") == "" {
+			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil && m.Input.Value() == "" {
 				focusedState.PendingConfirm.ResultCh <- "n"
 				focusedState.PendingConfirm = nil
 				focusedState.State = StateThinking
@@ -1363,7 +1349,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 
 		case "s", "S", "p", "P", "g", "G":
-			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil && strings.TrimPrefix(m.Input.Value(), "> ") == "" {
+			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil && m.Input.Value() == "" {
 				focusedState.PendingConfirm.ResultCh <- msg.String()
 				focusedState.PendingConfirm = nil
 				focusedState.State = StateThinking
@@ -1583,7 +1569,7 @@ func (m Model) submitMessage(input string) (Model, tea.Cmd) {
 	attachedFiles := append([]string(nil), m.AttachedFiles...)
 	hook := m.MessageHook
 	m.Input.Reset()
-	m.Input.SetValue("> ")
+	m.Input.SetValue("")
 	m.AttachedFiles = nil
 	m.ShowAutocomplete = false
 	m.AutocompleteItems = nil
@@ -1621,7 +1607,7 @@ func (m Model) finishSubmit(target common.Orchestrator, expandedInput string) Mo
 	m.HistoryWorking = ""
 
 	m.Input.Reset()
-	m.Input.SetValue("> ")
+	m.Input.SetValue("")
 	m.AttachedFiles = nil // Clear attachments after submit
 
 	// Only update state to thinking if it was idle, else let it stay in its current busy state
@@ -1673,7 +1659,7 @@ func (m *Model) updateLayout() {
 // updateAutocomplete checks if the input looks like a slash command and updates
 // the autocomplete dropdown items.
 func (m *Model) updateAutocomplete() {
-	input := strings.TrimPrefix(m.Input.Value(), "> ")
+	input := m.Input.Value()
 
 	// Only show autocomplete when input starts with "/" and has no space yet
 	if strings.HasPrefix(input, "/") && !strings.Contains(input, " ") {
@@ -1721,7 +1707,7 @@ func (m *Model) updateAutocomplete() {
 func (m Model) acceptAutocomplete() Model {
 	if m.AutocompleteIndex >= 0 && m.AutocompleteIndex < len(m.AutocompleteItems) {
 		selected := m.AutocompleteItems[m.AutocompleteIndex].Name
-		m.Input.SetValue("> " + selected + " ")
+		m.Input.SetValue(selected + " ")
 		m.Input.CursorEnd()
 	}
 	m.ShowAutocomplete = false
@@ -1739,7 +1725,7 @@ func (m Model) isAtExactInputStart() bool {
 	if info.RowOffset != 0 {
 		return false
 	}
-	return m.Input.Column() <= 2
+	return m.Input.Column() == 0
 }
 
 func (m Model) isAtExactInputEnd() bool {
@@ -1774,7 +1760,7 @@ func (m Model) isAtBottomRow() bool {
 // When first entering history browsing, the current input is saved as the "working"
 // buffer so it can be restored when the user navigates past the newest entry.
 func (m Model) navigateHistory(dir int) Model {
-	currentInput := strings.TrimPrefix(m.Input.Value(), "> ")
+	currentInput := m.Input.Value()
 	historyLen := len(m.InputHistory)
 
 	if historyLen == 0 {
@@ -1786,7 +1772,7 @@ func (m Model) navigateHistory(dir int) Model {
 		if dir < 0 {
 			// First press of ↑: go to the newest (last) entry
 			m.HistoryIndex = historyLen - 1
-			m.Input.SetValue("> " + m.InputHistory[m.HistoryIndex])
+			m.Input.SetValue(m.InputHistory[m.HistoryIndex])
 			m.Input.CursorEnd()
 			return m
 		}
@@ -1803,13 +1789,13 @@ func (m Model) navigateHistory(dir int) Model {
 	if newIndex >= historyLen {
 		// Past the newest entry: restore working buffer
 		m.HistoryIndex = -1
-		m.Input.SetValue("> " + m.HistoryWorking)
+		m.Input.SetValue(m.HistoryWorking)
 		m.Input.CursorEnd()
 		return m
 	}
 
 	m.HistoryIndex = newIndex
-	m.Input.SetValue("> " + m.InputHistory[newIndex])
+	m.Input.SetValue(m.InputHistory[newIndex])
 	m.Input.CursorEnd()
 	return m
 }

@@ -137,7 +137,7 @@ func TestRenderToolBadge(t *testing.T) {
 				t.Errorf("renderToolBadge (history) missing text %q in %q", tt.wantText, renderedHistory)
 			}
 
-			renderedStreaming := model.renderToolBadge(tt.toolName, tt.callStr, true, 80)
+			renderedStreaming := ansi.Strip(model.renderToolBadge(tt.toolName, tt.callStr, true, 80))
 			if !strings.Contains(renderedStreaming, tt.wantText) {
 				t.Errorf("renderToolBadge (streaming) missing text %q in %q", tt.wantText, renderedStreaming)
 			}
@@ -264,7 +264,7 @@ func TestChatPromptAndThinkingRendering(t *testing.T) {
 	state.StreamingState.ReasoningContent = "Analyzing code structure..."
 	model.Viewport.SetWidth(80)
 	state.State = StateThinking
-	streaming := testTranscriptContent(&model)
+	streaming := ansi.Strip(testTranscriptContent(&model))
 	if !strings.Contains(streaming, "thinking") || !strings.Contains(streaming, "Analyzing code structure...") {
 		t.Errorf("expected streaming response to contain thinking gutter, got:\n%s", streaming)
 	}
@@ -419,8 +419,8 @@ func TestChatContentAndTableFullWidth(t *testing.T) {
 	model.updateViewport()
 
 	userContent := testTranscriptContent(&model)
-	if !strings.Contains(ansi.Strip(userContent), "❯ "+userMsg) {
-		t.Errorf("expected prompt prefix and user message, got:\n%s", userContent)
+	if !strings.Contains(ansi.Strip(userContent), "│ "+userMsg) {
+		t.Errorf("expected gold prompt rail and user message, got:\n%s", userContent)
 	}
 
 	// Test resizing to 120 columns
@@ -570,9 +570,9 @@ func TestUserMessageRendering_EmptyAndTrailingNewlines(t *testing.T) {
 	}
 
 	// 2. Count prompt symbols '❯'
-	promptCount := strings.Count(content, "❯")
+	promptCount := strings.Count(content, "│")
 	if promptCount != 1 {
-		t.Errorf("expected exactly 1 prompt indicator '❯', got %d in:\n%s", promptCount, content)
+		t.Errorf("expected exactly 1 prompt rail '│', got %d in:\n%s", promptCount, content)
 	}
 
 	// 3. Should not have gigantic vertical gaps (no 3+ consecutive empty lines)
