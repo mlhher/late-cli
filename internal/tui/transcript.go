@@ -111,7 +111,7 @@ func (m *Model) transcriptView() string {
 		if t.offset+i < end {
 			row := t.rows[t.offset+i]
 			if t.thinking && t.offset+i == t.thinkingLine {
-				row = m.renderAnimatedTag("· thinking...", thinkingStyle, max(1, m.Viewport.Width()-thinkingStyle.GetHorizontalFrameSize()), true)
+				row = m.renderAnimatedTag("· thinking...", thoughtHeaderStyle, max(1, m.Viewport.Width()-thoughtHeaderStyle.GetHorizontalFrameSize()), true)
 				row = ansi.Truncate(row, max(1, m.Viewport.Width()), "")
 			}
 			b.WriteString(row)
@@ -279,7 +279,7 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 		active := s.StreamingState
 		if active.Content != "" || active.ReasoningContent != "" || len(active.ToolCalls) > 0 {
 			entries = append(entries, transcriptEntry{index: len(history), role: "assistant", content: active.Content, reasoning: active.ReasoningContent, labels: toolLabels(active.ToolCalls, true)})
-		} else if s.State == StateThinking {
+		} else {
 			entries = append(entries, transcriptEntry{index: len(history), role: "thinking", content: "· thinking..."})
 		}
 	}
@@ -343,7 +343,7 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 					}
 				case "assistant":
 					if entry.reasoning != "" {
-						parts = append(parts, headerStyle.Render("· thinking"), thoughtStyle.Width(max(1, width-4)).Render(entry.reasoning))
+						parts = append(parts, headerStyle.Render("· thinking"), thoughtStyle.Width(max(1, width-thoughtStyle.GetHorizontalFrameSize())).Render(entry.reasoning))
 					}
 					if entry.content != "" {
 						parts = append(parts, strings.TrimRight(markdown(entry.content), "\r\n"))
@@ -360,7 +360,8 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 				case "raw":
 					parts = append(parts, entry.content)
 				case "thinking":
-					parts = append(parts, thoughtStyle.Width(max(1, width-thoughtStyle.GetHorizontalFrameSize())).Render(entry.content))
+					// Reserve the same header and gutter rows used by streamed reasoning.
+					parts = append(parts, headerStyle.Render(entry.content), thoughtStyle.Width(max(1, width-thoughtStyle.GetHorizontalFrameSize())).Render(""))
 				}
 				if len(parts) == 0 {
 					continue

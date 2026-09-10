@@ -145,8 +145,8 @@ func TestThinkingAnimationUsesGutterWithoutRerenderingHistory(t *testing.T) {
 	if worker != nil || &rows[0] != &s.Transcript.rows[0] {
 		t.Fatal("animation rerendered transcript")
 	}
-	first := m.renderAnimatedTagAt("· thinking...", thinkingStyle, 80, true, time.UnixMilli(100))
-	second := m.renderAnimatedTagAt("· thinking...", thinkingStyle, 80, true, time.UnixMilli(350))
+	first := m.renderAnimatedTagAt("· thinking...", thoughtHeaderStyle, 80, true, time.UnixMilli(100))
+	second := m.renderAnimatedTagAt("· thinking...", thoughtHeaderStyle, 80, true, time.UnixMilli(350))
 	if first == second {
 		t.Fatal("thinking animation is static")
 	}
@@ -188,5 +188,60 @@ func BenchmarkTranscriptScroll(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		m.scrollTranscript(-1, 0)
 		_ = m.transcriptView()
+	}
+}
+
+func TestThinkingToReasoningKeepsLayout(t *testing.T) {
+	for _, width := range []int{40, 100} {
+		t.Run(fmt.Sprint(width), func(t *testing.T) {
+			m, s := newViewportBenchmarkModel(benchmarkHistory(2))
+			m.SetSize(width, 40)
+			s.State = StateThinking
+			renderTestTranscript(m)
+			before := strings.Split(ansi.Strip(m.transcriptView()), "\n")
+			find := func(rows []string, marker string) (int, int) {
+				for y, row := range rows {
+					if x := strings.Index(row, marker); x >= 0 {
+						return y, ansi.StringWidth(row[:x])
+					}
+				}
+				t.Fatalf("missing %q in %q", marker, rows)
+				return -1, -1
+			}
+			headerY, headerX := find(before, "· thinking")
+			gutterY, gutterX := find(before, "│")
+			if gutterY != headerY+1 {
+				t.Fatal("placeholder must reserve a reasoning row below its header")
+			}
+
+			// Providers may send usage or role metadata before their first text token.
+			updated, _ := m.Update(OrchestratorEventMsg{Event: common.ContentEvent{ID: m.Focused.ID()}})
+			*m = updated.(Model)
+			renderTestTranscript(m)
+			if !s.Transcript.thinking {
+				t.Fatal("empty streaming event removed placeholder")
+			}
+			empty := strings.Split(ansi.Strip(m.transcriptView()), "\n")
+			if y, x := find(empty, "│"); y != gutterY || x != gutterX {
+				t.Fatal("empty event shifted gutter")
+			}
+
+			updated, _ = m.Update(OrchestratorEventMsg{Event: common.ContentEvent{ID: m.Focused.ID(), ReasoningContent: "Inspecting the code"}})
+			*m = updated.(Model)
+			renderTestTranscript(m)
+			after := strings.Split(ansi.Strip(m.transcriptView()), "\n")
+			if y, x := find(after, "· thinking"); y != headerY || x != headerX {
+				t.Fatalf("header moved from (%d,%d) to (%d,%d)", headerX, headerY, x, y)
+			}
+			if y, x := find(after, "│"); y != gutterY || x != gutterX {
+				t.Fatalf("gutter moved from (%d,%d) to (%d,%d)", gutterX, gutterY, x, y)
+			}
+			if y, _ := find(after, "Inspecting the code"); y != gutterY {
+				t.Fatal("reasoning did not fill reserved gutter row")
+			}
+			if s.Transcript.thinking {
+				t.Fatal("placeholder survived first reasoning token")
+			}
+		})
 	}
 }
