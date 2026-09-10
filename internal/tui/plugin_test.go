@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"late/internal/client"
 	"strings"
 	"testing"
@@ -263,5 +264,61 @@ func TestSlashNew_ResetsViewportAndDismissesAutocomplete(t *testing.T) {
 	}
 	if um.Viewport.YOffset() != 0 {
 		t.Errorf("expected Viewport YOffset to be 0 (top of welcome screen), got %d", um.Viewport.YOffset())
+	}
+}
+
+func TestAutocompleteHeight_InvariantScreenHeight(t *testing.T) {
+	orch := &mockOrchestrator{}
+	m := NewModel(orch, nil, nil)
+	m.Width = 80
+	m.Height = 24
+	m.updateLayout()
+
+	// Initial view without autocomplete
+	baseView := m.View()
+	baseHeight := strings.Count(baseView.Content, "\n") + 1
+	if baseHeight != m.Height {
+		t.Fatalf("expected initial view height = %d, got %d", m.Height, baseHeight)
+	}
+
+	// Test with various numbers of autocomplete items (1 to 12)
+	for count := 1; count <= 12; count++ {
+		var items []CommandDef
+		for i := 0; i < count; i++ {
+			items = append(items, CommandDef{
+				Name:        fmt.Sprintf("/cmd%d", i),
+				Description: fmt.Sprintf("Command %d description", i),
+			})
+		}
+		m.ShowAutocomplete = true
+		m.AutocompleteItems = items
+		m.AutocompleteIndex = 0
+		m.updateLayout()
+
+		rendered := m.View()
+		gotHeight := strings.Count(rendered.Content, "\n") + 1
+		if gotHeight != m.Height {
+			t.Errorf("item count %d: expected view height = %d, got %d", count, m.Height, gotHeight)
+		}
+
+		// Test scrolling through items
+		for idx := 0; idx < count; idx++ {
+			m.AutocompleteIndex = idx
+			scrollRendered := m.View()
+			scrollH := strings.Count(scrollRendered.Content, "\n") + 1
+			if scrollH != m.Height {
+				t.Errorf("item count %d, index %d: expected view height = %d, got %d", count, idx, m.Height, scrollH)
+			}
+		}
+	}
+
+	// Close autocomplete and verify height remains identical
+	m.ShowAutocomplete = false
+	m.AutocompleteItems = nil
+	m.updateLayout()
+	closedView := m.View()
+	closedHeight := strings.Count(closedView.Content, "\n") + 1
+	if closedHeight != m.Height {
+		t.Errorf("expected closed view height = %d, got %d", m.Height, closedHeight)
 	}
 }

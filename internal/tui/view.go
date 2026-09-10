@@ -165,6 +165,18 @@ func (m *Model) inputView() string {
 	return outerStyle.Render(paddedTextarea)
 }
 
+const maxAutocompleteVisible = 6
+
+// autocompleteHeight calculates the exact vertical line count needed by autocompleteView.
+// Returns 0 when autocomplete is closed.
+func (m *Model) autocompleteHeight() int {
+	if !m.ShowAutocomplete || len(m.AutocompleteItems) == 0 {
+		return 0
+	}
+	visible := min(len(m.AutocompleteItems), maxAutocompleteVisible)
+	return visible + 1 // visible items + 1 line top border
+}
+
 // autocompleteView renders the slash-command autocomplete dropdown.
 // Returns empty string when no autocomplete is active.
 func (m *Model) autocompleteView() string {
@@ -177,8 +189,32 @@ func (m *Model) autocompleteView() string {
 		w = 80
 	}
 
+	totalItems := len(m.AutocompleteItems)
+	visibleCount := min(totalItems, maxAutocompleteVisible)
+
+	// Keep AutocompleteOffset smoothly in bounds of visible window
+	if totalItems <= maxAutocompleteVisible {
+		m.AutocompleteOffset = 0
+	} else {
+		if m.AutocompleteIndex < m.AutocompleteOffset {
+			m.AutocompleteOffset = m.AutocompleteIndex
+		} else if m.AutocompleteIndex >= m.AutocompleteOffset+maxAutocompleteVisible {
+			m.AutocompleteOffset = m.AutocompleteIndex - maxAutocompleteVisible + 1
+		}
+		if m.AutocompleteOffset+maxAutocompleteVisible > totalItems {
+			m.AutocompleteOffset = totalItems - maxAutocompleteVisible
+		}
+		if m.AutocompleteOffset < 0 {
+			m.AutocompleteOffset = 0
+		}
+	}
+
+	start := m.AutocompleteOffset
+	end := start + visibleCount
+
 	var lines []string
-	for i, item := range m.AutocompleteItems {
+	for i := start; i < end; i++ {
+		item := m.AutocompleteItems[i]
 		prefix := "  "
 		nameStyle := lipgloss.NewStyle().
 			Foreground(subtextColor).
@@ -208,13 +244,14 @@ func (m *Model) autocompleteView() string {
 		lines = append(lines, nameStr+descStr)
 	}
 
+	autoH := m.autocompleteHeight()
 	box := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder(), true, false, false, false).
 		BorderForeground(secondaryColor).
 		BorderBackground(cardBgColor).
 		Background(cardBgColor).
 		Width(w).
-		MaxHeight(len(lines) + 2).
+		Height(autoH).
 		Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 
 	return box

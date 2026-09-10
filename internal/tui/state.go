@@ -210,9 +210,10 @@ type Model struct {
 	RewindIndex   int
 
 	// Slash-command autocomplete
-	ShowAutocomplete  bool
-	AutocompleteItems []CommandDef
-	AutocompleteIndex int
+	ShowAutocomplete   bool
+	AutocompleteItems  []CommandDef
+	AutocompleteIndex  int
+	AutocompleteOffset int
 
 	// Plugin-provided slash commands (registered at startup from plugins)
 	PluginCommands []string // each entry should include leading slash, e.g. "/query"

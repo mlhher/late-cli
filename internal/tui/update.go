@@ -70,12 +70,12 @@ type StartPromptMsg string
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	oldHeight := m.Input.Height()
 	oldShowAuto := m.ShowAutocomplete
-	oldAutoLen := len(m.AutocompleteItems)
+	oldAutoH := m.autocompleteHeight()
 	oldMode := m.Mode
 
 	newModel, cmd := m.updateInternal(msg)
 
-	if newModel.Input.Height() != oldHeight || newModel.ShowAutocomplete != oldShowAuto || len(newModel.AutocompleteItems) != oldAutoLen || newModel.Mode != oldMode {
+	if newModel.Input.Height() != oldHeight || newModel.ShowAutocomplete != oldShowAuto || newModel.autocompleteHeight() != oldAutoH || newModel.Mode != oldMode {
 		newModel.updateLayout()
 	}
 	return newModel, cmd
@@ -1564,8 +1564,8 @@ func (m *Model) updateLayout() {
 	}
 
 	// Reserve space for autocomplete dropdown
-	if m.ShowAutocomplete && len(m.AutocompleteItems) > 0 {
-		autoH := min(len(m.AutocompleteItems), 6) + 2 // items + border
+	autoH := m.autocompleteHeight()
+	if autoH > 0 {
 		vHeight -= autoH
 	}
 
@@ -1620,6 +1620,7 @@ func (m *Model) updateAutocomplete() {
 			m.AutocompleteItems = matches
 			if m.AutocompleteIndex >= len(matches) {
 				m.AutocompleteIndex = 0
+				m.AutocompleteOffset = 0
 			}
 			return
 		}
@@ -1628,6 +1629,7 @@ func (m *Model) updateAutocomplete() {
 	m.ShowAutocomplete = false
 	m.AutocompleteItems = nil
 	m.AutocompleteIndex = 0
+	m.AutocompleteOffset = 0
 }
 
 // acceptAutocomplete replaces the current input with the selected command.
@@ -1640,6 +1642,7 @@ func (m Model) acceptAutocomplete() Model {
 	m.ShowAutocomplete = false
 	m.AutocompleteItems = nil
 	m.AutocompleteIndex = 0
+	m.AutocompleteOffset = 0
 	return m
 }
 
