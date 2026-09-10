@@ -7,7 +7,6 @@ import (
 	"image/color"
 	"math"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -19,16 +18,24 @@ import (
 )
 
 func (m Model) View() tea.View {
+	if m.screenReady {
+		return m.cachedScreen
+	}
+	return m.buildScreen()
+}
+
+func (m Model) buildScreen() tea.View {
 	if m.Width == 0 || m.Height == 0 {
 		return tea.NewView("")
 	}
 
 	// Force each component to its strict allocated height to prevent layout shifts
-	vStr := lipgloss.NewStyle().
-		Height(m.Viewport.Height()).
-		Width(m.Width).
-		Background(appBgColor).
-		Render(m.Viewport.View())
+	var vStr string
+	if m.Mode == ViewChat && !m.EscConfirmPending && !m.ShowFilePicker {
+		vStr = m.transcriptView()
+	} else {
+		vStr = m.Viewport.View()
+	}
 
 	iStr := m.inputView()
 
@@ -76,14 +83,11 @@ func (m Model) View() tea.View {
 	sStr := m.statusBarView()
 
 	// Insert autocomplete between viewport and input when active
-	content := lipgloss.JoinVertical(
-		lipgloss.Left,
-		vStr,
-	)
+	content := vStr
 	if aStr != "" {
-		content = lipgloss.JoinVertical(lipgloss.Left, content, aStr)
+		content += "\n" + aStr
 	}
-	content = lipgloss.JoinVertical(lipgloss.Left, content, iStr, sStr)
+	content += "\n" + iStr + "\n" + sStr
 
 	v := tea.NewView(content)
 	v.AltScreen = true
@@ -689,343 +693,7 @@ Press **ctrl+h** or **esc** to return to the chat.`
 		return
 	}
 
-	history := m.Focused.History()
-	msgWidth := m.Viewport.Width() - 2
-	if msgWidth < 1 {
-		msgWidth = 80
-	}
-
-	s := m.GetAgentState(m.Focused.ID())
-	s.LastRenderTime = time.Now().UnixMilli()
-	streaming := s.State == StateStreaming || s.State == StateThinking
-
-	if len(s.CachedHistoryHashes) != len(s.RenderedHistory) {
-		s.RenderedHistory = nil
-		s.CachedHistoryLines = nil
-		s.CachedHistoryBlocks = nil
-		s.CachedHistoryHashes = nil
-	}
-
-	// Length alone is not a sufficient cache key: rewrites and rollbacks can
-	// replace a history entry in place. Avoid this scan on hot streaming frames.
-	if !streaming && len(history) == len(s.RenderedHistory) && !historyHashesMatch(history, s.CachedHistoryHashes) {
-		s.RenderedHistory = nil
-		s.CachedHistoryLines = nil
-		s.CachedHistoryBlocks = nil
-		s.CachedHistoryHashes = nil
-	}
-
-	// If history was reset or messages were removed, clear the cache
-	historyCacheChanged := false
-	if len(history) < len(s.RenderedHistory) {
-		s.RenderedHistory = nil
-		s.CachedHistoryLines = nil
-		s.CachedHistoryBlocks = nil
-		s.CachedHistoryHashes = nil
-		historyCacheChanged = true
-	}
-
-	// If LazyHistory is enabled and we have never rendered this history before,
-	// only render the last few messages for the initial visible screen to ensure Frame 1 paints instantly.
-	if m.LazyHistory && len(s.RenderedHistory) == 0 && len(history) > 4 {
-		visibleCount := 4
-		startIdx := len(history) - visibleCount
-		s.RenderedHistory = make([]string, len(history))
-		s.CachedHistoryHashes = make([]uint64, len(history))
-		for i := 0; i < len(history); i++ {
-			s.CachedHistoryHashes[i] = chatMessageHash(history[i])
-			if i >= startIdx {
-				s.RenderedHistory[i] = m.renderHistoryMessage(history[i], msgWidth)
-			}
-		}
-		s.PendingLazyHistory = true
-		s.LazyHistoryStartIdx = startIdx
-		historyCacheChanged = true
-	} else {
-		// Render only new messages and add to cache
-		for i := len(s.RenderedHistory); i < len(history); i++ {
-			msg := history[i]
-			rendered := m.renderHistoryMessage(msg, msgWidth)
-			s.RenderedHistory = append(s.RenderedHistory, rendered)
-			s.CachedHistoryHashes = append(s.CachedHistoryHashes, chatMessageHash(msg))
-			historyCacheChanged = true
-		}
-	}
-
-	// Rebuild completed-history line and copy metadata only when history
-	// changes. Streaming frames must not walk the entire completed chat.
-	if historyCacheChanged {
-		m.rebuildHistoryCache(s, history)
-	}
-
-	focusChanged := m.LastFocusedID != m.Focused.ID()
-	if streaming && !focusChanged && !s.StreamingWindow && !m.Viewport.AtBottom() {
-		// The user is reading older history. Keep that viewport stable and
-		// avoid rebuilding the full chat for every token. Streaming state
-		// continues to accumulate and catches up when they return to bottom.
-		return
-	}
-
-	// During streaming, keep only a few screens of completed history in the
-	// viewport. bubbles/viewport scans every supplied line on SetContent, so
-	// giving it the full chat on every token makes frame cost grow forever.
-	var blocks []string
-	s.RenderBlocks = nil
-	currentLine := 0
-	windowStart := 0
-	if streaming && (s.StreamingWindow || m.Viewport.AtBottom()) {
-		windowSize := max(m.Viewport.Height()*2, 40)
-		windowStart = max(0, len(s.CachedHistoryLines)-windowSize)
-		s.StreamingWindow = true
-		s.StreamingWindowStart = windowStart
-	} else {
-		s.StreamingWindow = false
-		s.StreamingWindowStart = 0
-	}
-	historyLines := s.CachedHistoryLines[windowStart:]
-	if len(historyLines) > 0 {
-		blocks = append(blocks, strings.Join(historyLines, "\n"))
-		currentLine = len(historyLines)
-	}
-	for _, block := range s.CachedHistoryBlocks {
-		if block.EndLine < windowStart {
-			continue
-		}
-		block.StartLine = max(block.StartLine-windowStart, 0)
-		block.EndLine -= windowStart
-		s.RenderBlocks = append(s.RenderBlocks, block)
-	}
-
-	// Render streaming content if active
-	// Dedup check: Only render streaming if NOT in an interaction state (where history already has the tools)
-	if (s.State == StateStreaming || s.State == StateThinking) && s.State != StateConfirmTool {
-		var activeParts []string
-		if s.StreamingState.ReasoningContent != "" {
-			activeParts = append(activeParts, thoughtHeaderStyle.Width(msgWidth+1).Render("Thoughts:"))
-			reasoning := streamingTextWindow(s.StreamingState.ReasoningContent, msgWidth, m.Viewport.Height()*3)
-			activeParts = append(activeParts, thinkingStyle.Width(msgWidth-2).Render(reasoning))
-		}
-		if s.StreamingState.Content != "" {
-			innerWidth := m.Viewport.Width() - AIMsgOverhead
-			if innerWidth < 1 {
-				innerWidth = 1
-			}
-
-			// Incremental paragraph-chunked rendering:
-			// Chunks are glamour-rendered once, styled, and APPENDED to a
-			// cached string. The tail (current incomplete paragraph) skips
-			// glamour entirely for speed — just plain text with background.
-			var chunks []string
-			var tail string
-			if s.StreamingState.Content == s.LastStreamingContent {
-				// Optimization: use cached chunks if content hasn't changed
-				chunks = s.LastChunks
-				tail = s.LastTail
-			} else {
-				chunks, tail = splitMarkdownChunks(s.StreamingState.Content)
-				s.LastStreamingContent = s.StreamingState.Content
-				s.LastChunks = chunks
-				s.LastTail = tail
-			}
-
-			// Render + style NEW chunks and append to cache
-			for i := s.StreamingChunkCount; i < len(chunks); i++ {
-				rendered := m.renderMarkdownBlock(chunks[i], innerWidth)
-				styled := aiMsgStyle.Width(msgWidth + 1).Render(rendered)
-				if s.StreamingStyledCache != "" {
-					s.StreamingStyledCache += "\n"
-				}
-				s.StreamingStyledCache += styled
-				s.StreamingStyledCache = lastRenderedLines(
-					s.StreamingStyledCache,
-					max(m.Viewport.Height()*2, 40),
-				)
-			}
-			s.StreamingChunkCount = len(chunks)
-
-			// Render tail as plain text (no glamour — too expensive per frame)
-			var tailStyled string
-			if tail != "" {
-				// Trim leading newlines from tail to prevent "jumping" when a new paragraph starts
-				t := strings.TrimLeft(tail, "\n")
-				if t != "" {
-					t = streamingTextWindow(t, msgWidth, m.Viewport.Height()*2)
-					// Pulsing Caret for streaming effect
-					ms := float64(time.Now().UnixNano()) / 1e6
-					caretOpacity := (math.Sin(ms/150.0) + 1.0) / 2.0
-					caretGrad := lipgloss.Blend1D(100, appBgColor, primaryColor)
-					caretCol := caretGrad[int(caretOpacity*99)]
-					caret := lipgloss.NewStyle().Foreground(caretCol).Render("█")
-
-					tailStyled = aiMsgStyle.Copy().Foreground(textColor).Width(msgWidth + 1).Render(t + caret)
-				}
-			}
-
-			// Combine: simple string concat, NO lipgloss processing
-			var assembled string
-			if s.StreamingStyledCache != "" && tailStyled != "" {
-				assembled = s.StreamingStyledCache + "\n" + tailStyled
-			} else if s.StreamingStyledCache != "" {
-				assembled = s.StreamingStyledCache
-			} else {
-				assembled = tailStyled
-			}
-			if assembled != "" {
-				assembled = lastRenderedLines(assembled, max(m.Viewport.Height()*2, 40))
-				activeParts = append(activeParts, assembled)
-			}
-		}
-		for _, tc := range s.StreamingState.ToolCalls {
-			// Try to use CallString() for meaningful display (no trailing ... since CallString adds it)
-			callStr := tc.Function.Name
-			if registry := m.Focused.Registry(); registry != nil {
-				if tool := registry.Get(tc.Function.Name); tool != nil {
-					if args := json.RawMessage(tc.Function.Arguments); len(args) > 0 {
-						callStr = tool.CallString(args)
-					}
-				}
-			}
-			activeParts = append(activeParts, m.renderAnimatedTag(fmt.Sprintf("%s %s", m.Spinner.View(), callStr), tagStyle, msgWidth+1, true))
-		}
-		if len(activeParts) > 0 {
-			r := strings.Join(activeParts, "\n")
-			blocks = append(blocks, r)
-			linesCount := strings.Count(r, "\n") + 1
-
-			s.RenderBlocks = append(s.RenderBlocks, RenderBlock{
-				MessageIndex: -1,
-				Content:      s.StreamingState.Content,
-				StartLine:    currentLine,
-				EndLine:      currentLine + linesCount - 1,
-			})
-			currentLine += linesCount
-		} else if s.State == StateThinking {
-			r := m.renderAnimatedTag("Thinking", thinkingStyle, msgWidth-2, true)
-			blocks = append(blocks, r)
-			linesCount := strings.Count(r, "\n") + 1
-
-			s.RenderBlocks = append(s.RenderBlocks, RenderBlock{
-				MessageIndex: -1,
-				Content:      "Thinking...",
-				StartLine:    currentLine,
-				EndLine:      currentLine + linesCount - 1,
-			})
-			currentLine += linesCount
-		}
-	}
-
-	// Render Interactions
-	if s.State == StateConfirmTool && s.PendingConfirm != nil {
-		tc := s.PendingConfirm.ToolCall
-		displayName := tc.Function.Name
-		if runtime.GOOS == "windows" && displayName == "bash" {
-			displayName = "PowerShell"
-		}
-		prompt := fmt.Sprintf("The agent wants to execute a **%s** command.\n\n```json\n%s\n```\n\n> Press **[y]** Allow once | **[s]** Allow always (session) | **[p]** Allow always (project) | **[g]** Allow always (global) | **[n]** Deny", displayName, tc.Function.Arguments)
-		md, _ := m.Renderer.Render(prompt)
-		r := aiMsgStyle.Width(msgWidth + 1).Border(lipgloss.DoubleBorder()).BorderForeground(warningColor).Render(md)
-		blocks = append(blocks, r)
-		linesCount := strings.Count(r, "\n") + 1
-
-		s.RenderBlocks = append(s.RenderBlocks, RenderBlock{
-			MessageIndex: -1,
-			Content:      tc.Function.Arguments,
-			StartLine:    currentLine,
-			EndLine:      currentLine + linesCount - 1,
-		})
-		currentLine += linesCount
-	}
-
-	if s.State == StateContextWarning {
-		prompt := "⚠️ **Context Limit Warning**\n\nYou are approaching the maximum context size for this session (over 90% used). It is highly recommended to **start a new session** to ensure the agent maintains full context and accuracy.\n\n> Press **[Enter]** again to proceed anyway, or start a new session."
-		md, _ := m.Renderer.Render(prompt)
-		r := aiMsgStyle.Width(msgWidth + 1).Border(lipgloss.DoubleBorder()).BorderForeground(warningColor).Render(md)
-		blocks = append(blocks, r)
-		linesCount := strings.Count(r, "\n") + 1
-
-		s.RenderBlocks = append(s.RenderBlocks, RenderBlock{
-			MessageIndex: -1,
-			Content:      prompt,
-			StartLine:    currentLine,
-			EndLine:      currentLine + linesCount - 1,
-		})
-		currentLine += linesCount
-	}
-
-	if s.Error != nil {
-		errStr := s.Error.Error()
-		var prompt string
-		var r string
-		if strings.Contains(errStr, "exceeds the available context size") || strings.Contains(errStr, "context_length_exceeded") {
-			prompt = "🛑 **Context Limit Exceeded**\n\nThis session has hit the model's absolute context limit. The agent cannot proceed further in this session.\n\n**Action Required:** Please **start a new session** to continue your work."
-			md, _ := m.Renderer.Render(prompt)
-			r = aiMsgStyle.Width(msgWidth + 1).Border(lipgloss.DoubleBorder()).BorderForeground(lipgloss.Color("#FF0000")).Render(md)
-		} else {
-			prompt = fmt.Sprintf("Error: %v", s.Error)
-			r = thinkingStyle.Foreground(lipgloss.Color("#FF0000")).Render(prompt)
-		}
-		blocks = append(blocks, r)
-		linesCount := strings.Count(r, "\n") + 1
-
-		s.RenderBlocks = append(s.RenderBlocks, RenderBlock{
-			MessageIndex: -1,
-			Content:      prompt,
-			StartLine:    currentLine,
-			EndLine:      currentLine + linesCount - 1,
-		})
-		currentLine += linesCount
-	} else if m.Err != nil {
-		prompt := fmt.Sprintf("Error: %v", m.Err)
-		r := thinkingStyle.Foreground(lipgloss.Color("#FF0000")).Render(prompt)
-		blocks = append(blocks, r)
-		linesCount := strings.Count(r, "\n") + 1
-
-		s.RenderBlocks = append(s.RenderBlocks, RenderBlock{
-			MessageIndex: -1,
-			Content:      prompt,
-			StartLine:    currentLine,
-			EndLine:      currentLine + linesCount - 1,
-		})
-		currentLine += linesCount
-	}
-
-	// Render Queued Messages
-	for _, msg := range m.Focused.QueuedMessages() {
-		r := queuedMsgStyle.Width(msgWidth + 1).Render(msg)
-		blocks = append(blocks, r)
-		linesCount := strings.Count(r, "\n") + 1
-
-		s.RenderBlocks = append(s.RenderBlocks, RenderBlock{
-			MessageIndex: -1,
-			Content:      msg,
-			StartLine:    currentLine,
-			EndLine:      currentLine + linesCount - 1,
-		})
-		currentLine += linesCount
-	}
-
-	var fullContent string
-	if len(blocks) == 0 {
-		fullContent = m.renderWelcomeMessage()
-	} else {
-		fullContent = strings.Join(blocks, "\n")
-	}
-
-	if fullContent == s.LastTotalContent && m.LastFocusedID == m.Focused.ID() {
-		return
-	}
-	s.LastTotalContent = fullContent
-	m.LastFocusedID = m.Focused.ID()
-
-	atBottom := m.Viewport.AtBottom()
-	paddedContent := lipgloss.NewStyle().
-		Width(m.Viewport.Width()).
-		Background(appBgColor).
-		Render(fullContent)
-	m.Viewport.SetContent(paddedContent)
-	if atBottom {
-		m.Viewport.GotoBottom()
-	}
+	m.refreshTranscript()
 }
 
 // streamingTextWindow bounds styling work for an incomplete streaming block.
@@ -1472,7 +1140,7 @@ func (m *Model) renderThemeView() {
 			BorderForeground(secondaryColor).
 			BorderBackground(appBgColor).
 			Background(appBgColor).
-			Width(width - 2).
+			Width(width-2).
 			Padding(1, 2).
 			Render(lipgloss.JoinVertical(lipgloss.Left, header, subtitle, empty))
 		paddedContent := lipgloss.NewStyle().
@@ -1502,26 +1170,26 @@ func (m *Model) renderThemeView() {
 				Foreground(textColor).
 				Background(thoughtBgColor).
 				Bold(true).
-				Width(width - 8).
+				Width(width-8).
 				Padding(0, 1).
 				Render(label) + "\n" +
 				lipgloss.NewStyle().
 					Foreground(subtextColor).
 					Background(thoughtBgColor).
-					Width(width - 8).
+					Width(width-8).
 					Padding(0, 1).
 					Render(sub)
 		} else {
 			row = lipgloss.NewStyle().
 				Foreground(textColor).
 				Background(appBgColor).
-				Width(width - 8).
+				Width(width-8).
 				Padding(0, 1).
 				Render(label) + "\n" +
 				lipgloss.NewStyle().
 					Foreground(subtextColor).
 					Background(appBgColor).
-					Width(width - 8).
+					Width(width-8).
 					Padding(0, 1).
 					Render(sub)
 		}
@@ -1545,7 +1213,7 @@ func (m *Model) renderThemeView() {
 		BorderForeground(secondaryColor).
 		BorderBackground(appBgColor).
 		Background(appBgColor).
-		Width(width - 2).
+		Width(width-2).
 		Padding(1, 2).
 		Render(lipgloss.JoinVertical(lipgloss.Left,
 			header,

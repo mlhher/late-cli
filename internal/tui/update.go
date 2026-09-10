@@ -67,6 +67,58 @@ type messageHookResultMsg struct {
 type StartPromptMsg string
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch event := msg.(type) {
+	case transcriptFrameMsg:
+		return m.transcriptFrame()
+	case transcriptRenderedMsg:
+		m.applyTranscript(event)
+		return m.present(nil)
+	case OrchestratorEventMsg:
+		if _, ok := event.Event.(common.ContentEvent); ok {
+			updated, cmd := m.updateChat(msg)
+			return updated.present(cmd)
+		}
+	}
+	if m.Mode == ViewChat && !m.EscConfirmPending && !m.ShowFilePicker {
+		switch event := msg.(type) {
+		case tea.KeyReleaseMsg:
+			return m, nil
+		case tea.KeyPressMsg:
+			switch event.String() {
+			case "pgup":
+				m.scrollTranscript(-max(1, m.Viewport.Height()-2), 0)
+				return m.present(nil)
+			case "pgdown":
+				m.scrollTranscript(max(1, m.Viewport.Height()-2), 0)
+				return m.present(nil)
+			case "shift+home":
+				m.scrollTranscript(0, -1)
+				return m.present(nil)
+			case "shift+end":
+				m.scrollTranscript(0, 1)
+				return m.present(nil)
+			case "home", "end":
+				if strings.TrimPrefix(m.Input.Value(), "> ") == "" {
+					edge := 1
+					if event.String() == "home" {
+						edge = -1
+					}
+					m.scrollTranscript(0, edge)
+					return m.present(nil)
+				}
+			}
+		case tea.MouseWheelMsg:
+			if event.Mouse().Y >= 0 && event.Mouse().Y < m.Viewport.Height() {
+				switch event.Mouse().Button {
+				case tea.MouseWheelUp:
+					m.scrollTranscript(-2, 0)
+				case tea.MouseWheelDown:
+					m.scrollTranscript(2, 0)
+				}
+			}
+			return m.present(nil)
+		}
+	}
 	oldHeight := m.Input.Height()
 	oldShowAuto := m.ShowAutocomplete
 	oldAutoLen := len(m.AutocompleteItems)
@@ -77,7 +129,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if newModel.Input.Height() != oldHeight || newModel.ShowAutocomplete != oldShowAuto || len(newModel.AutocompleteItems) != oldAutoLen || newModel.Mode != oldMode {
 		newModel.updateLayout()
 	}
-	return newModel, cmd
+	return newModel.present(cmd)
 }
 
 func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
@@ -431,6 +483,9 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 						m.LastClickTime = 0 // prevent triple click from double-triggering
 						clickedLine := m.Viewport.YOffset() + mouseMsg.Y
 						s := m.GetAgentState(m.Focused.ID())
+						if m.Mode == ViewChat {
+							clickedLine = s.Transcript.offset + mouseMsg.Y
+						}
 						var foundBlock *RenderBlock
 						for _, block := range s.RenderBlocks {
 							if clickedLine >= block.StartLine && clickedLine <= block.EndLine {
@@ -468,12 +523,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 			}
 		}
 	case spinner.TickMsg:
-		// Streaming content contains time-based caret/glow styling too, so it
-		// needs animation frames even while no new tokens arrive.
-		s := m.GetAgentState(m.Focused.ID())
-		if s.State == StateThinking || s.State == StateStreaming {
-			m.updateViewport()
-		}
+		// Only the status animation changes; transcript rows remain cached.
 		forwardToViewport = false
 	default:
 		forwardToViewport = true
@@ -1371,7 +1421,6 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 
 	case OrchestratorEventMsg:
 		s := m.GetAgentState(msg.Event.OrchestratorID())
-		now := time.Now().UnixMilli()
 
 		switch event := msg.Event.(type) {
 		case common.ContentEvent:
@@ -1380,33 +1429,35 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				s.State = StateStreaming
 			}
 			s.Usage = event.Usage
-			// Update token count: use real usage if available, otherwise estimate
+			// Keep the previous count during deltas without provider usage.
+			// Local tokenization runs only after the message is saved to history.
 			if event.Usage.TotalTokens > 0 {
 				s.CumulativeTokenCount = event.Usage.TotalTokens
 				s.LastRealTokenCount = event.Usage.TotalTokens
 				s.CachedHistoryLen = len(m.Focused.History())
-			} else {
+			} else if event.Completed {
 				orch := m.FindOrchestrator(event.ID)
 				if orch == nil {
 					orch = m.Focused
 				}
 				history := orch.History()
-				if len(history) != s.CachedHistoryLen {
-					s.CachedHistoryTokens = common.CalculateHistoryTokens(history, orch.SystemPrompt(), orch.ToolDefinitions())
-					s.CachedHistoryLen = len(history)
-				}
-				s.CumulativeTokenCount = s.CachedHistoryTokens + common.EstimateEventTokens(event)
+				s.CachedHistoryTokens = common.CalculateHistoryTokens(history, orch.SystemPrompt(), orch.ToolDefinitions())
+				s.CachedHistoryLen = len(history)
+				s.CumulativeTokenCount = s.CachedHistoryTokens
 			}
 
-			// Throttle viewport updates to ~33 FPS during streaming
+			if event.Completed {
+				s.Transcript.generation++
+			}
+			s.Transcript.dirty = true
+			// Presentation is coalesced by the frame clock.
 			if event.ID == m.Focused.ID() {
-				if now-s.LastRenderTime > 30 {
-					m.updateViewport()
-				}
+				m.updateViewport()
 			}
 		case common.StatusEvent:
 			switch event.Status {
 			case "thinking":
+				s.Transcript.generation++
 				if s.State != StateConfirmTool {
 					s.State = StateThinking
 				}
@@ -1451,6 +1502,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			s.StatusText = "Subagent spawned"
 			m.updateViewport()
 		case common.StopRequestedEvent:
+			s.Transcript.generation++
 			s.PendingStop = false
 			s.State = StateIdle
 			s.StatusText = "Stopped"

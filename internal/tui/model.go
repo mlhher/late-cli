@@ -49,7 +49,7 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 	// Initialize with 0, so that the first WindowSizeMsg sets correct dimensions
 	// This prevents the "50% width" issue if the default 60 is too small for a large terminal
 	vp := viewport.New(viewport.WithWidth(0), viewport.WithHeight(0))
-	vp.MouseWheelDelta = 6 // Lines per wheel tick; default 3 feels slow on chat history
+	vp.MouseWheelDelta = 2
 	// VTE-based terminals: set explicit background on the viewport so its
 	// internal padding cells don't become transparent after ANSI resets.
 	vp.Style = lipgloss.NewStyle().Background(appBgColor)
@@ -264,11 +264,7 @@ func applyMessageHook(hook func(string) string, text string) string {
 }
 
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{textarea.Blink, m.Spinner.Tick}
-	if cmd := m.loadLazyHistoryCmd(); cmd != nil {
-		cmds = append(cmds, cmd)
-	}
-	return tea.Batch(cmds...)
+	return tea.Batch(textarea.Blink, m.Spinner.Tick, func() tea.Msg { return transcriptFrameMsg{} })
 }
 
 func (m Model) loadLazyHistoryCmd() tea.Cmd {

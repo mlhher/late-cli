@@ -96,6 +96,7 @@ type RewindEntry struct {
 
 // AppState tracks the interactive state of a single orchestrator.
 type AppState struct {
+	Transcript           transcriptState
 	State                ValidationState
 	StreamingState       common.ContentEvent
 	PendingConfirm       *ConfirmRequestMsg
@@ -137,6 +138,11 @@ type AppState struct {
 }
 
 type Model struct {
+	cachedScreen   tea.View
+	screenReady    bool
+	screenDirty    bool
+	framePending   bool
+	lastFrame      time.Time
 	Mode           ViewState
 	Input          textarea.Model
 	Viewport       viewport.Model

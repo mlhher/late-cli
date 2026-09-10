@@ -577,7 +577,7 @@ func main() {
 	model.LazyHistory = true
 
 	pOpts := []tea.ProgramOption{
-		tea.WithFPS(120),
+		tea.WithFPS(tui.FrameRate),
 	}
 	if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 && h > 0 {
 		model.SetSize(w, h)
