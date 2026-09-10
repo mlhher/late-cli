@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"late/internal/client"
 	"strings"
 	"testing"
 	"time"
@@ -228,5 +229,39 @@ func TestMessageHookRestoresDraftWhenSubmissionFails(t *testing.T) {
 	}
 	if got := m.Pastes["placeholder"]; got != "original paste" {
 		t.Fatalf("paste mapping was not preserved: %q", got)
+	}
+}
+
+func TestSlashNew_ResetsViewportAndDismissesAutocomplete(t *testing.T) {
+	orch := &mockOrchestrator{
+		history: []client.ChatMessage{
+			{Role: "user", Content: client.TextContent("hello")},
+			{Role: "assistant", Content: client.TextContent("world")},
+		},
+	}
+	m := NewModel(orch, nil, nil)
+	m.Width = 80
+	m.Height = 24
+	m.updateLayout()
+
+	// Simulate being scrolled down in chat history
+	m.Viewport.SetYOffset(10)
+	// Simulate autocomplete being open because user typed /new
+	m.ShowAutocomplete = true
+	m.AutocompleteItems = []CommandDef{{Name: "/new", Description: "Start fresh conversation"}}
+
+	// Submit /new command
+	m.Input.SetValue("> /new")
+	updatedModel, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	um := updatedModel.(Model)
+
+	if um.ShowAutocomplete {
+		t.Errorf("expected ShowAutocomplete to be false after /new")
+	}
+	if len(um.AutocompleteItems) != 0 {
+		t.Errorf("expected AutocompleteItems to be empty, got %d", len(um.AutocompleteItems))
+	}
+	if um.Viewport.YOffset() != 0 {
+		t.Errorf("expected Viewport YOffset to be 0 (top of welcome screen), got %d", um.Viewport.YOffset())
 	}
 }

@@ -894,6 +894,10 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			if m.ShowFilePicker || m.RunningPluginAction != "" {
 				return m, nil
 			}
+			m.ShowAutocomplete = false
+			m.AutocompleteItems = nil
+			m.AutocompleteIndex = 0
+
 			input := strings.TrimPrefix(m.Input.Value(), "> ")
 			if strings.TrimSpace(input) == "" {
 				return m, nil
@@ -1017,6 +1021,9 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			if cmd == "/new" {
 				m.Input.Reset()
 				m.Input.SetValue("> ")
+				m.ShowAutocomplete = false
+				m.AutocompleteItems = nil
+				m.AutocompleteIndex = 0
 				if err := m.Root.Reset(); err != nil {
 					m.Err = fmt.Errorf("failed to start new conversation: %w", err)
 					return m, nil
@@ -1031,7 +1038,8 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 					state.LastTotalContent = ""
 				}
 				m.LastFocusedID = ""
-				m.updateViewport()
+				m.Viewport.GotoTop()
+				m.updateLayout()
 				m.ToastMessage = "new conversation started"
 				m.ToastWarning = false
 				m.ToastExpireTime = time.Now().UnixMilli() + 3000

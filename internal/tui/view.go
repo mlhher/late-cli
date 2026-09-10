@@ -1041,8 +1041,10 @@ Press **ctrl+h** or **esc** to return to chat.`
 	}
 
 	var fullContent string
+	isWelcome := false
 	if len(blocks) == 0 {
 		fullContent = m.renderWelcomeMessage()
+		isWelcome = true
 	} else {
 		fullContent = strings.Join(blocks, "\n")
 	}
@@ -1055,7 +1057,9 @@ Press **ctrl+h** or **esc** to return to chat.`
 
 	atBottom := m.Viewport.AtBottom()
 	m.Viewport.SetContent(fullContent)
-	if atBottom {
+	if isWelcome {
+		m.Viewport.GotoTop()
+	} else if atBottom {
 		m.Viewport.GotoBottom()
 	}
 }
