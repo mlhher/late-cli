@@ -25,6 +25,13 @@ type MCPServer struct {
 	URL           string `json:"url"`
 	TransportType string `json:"transportType,omitempty"` // "stdio", "sse", or "streamable-http"
 	Disabled      bool   `json:"disabled,omitempty"`
+	// Dir is set by Late (not serialized from JSON) when a plugin
+	// supplies the server. When non-empty and the transport is stdio,
+	// the subprocess is launched with `cmd.Dir = Dir` so that any
+	// relative paths in Args resolve against the plugin's directory
+	// even when the user's CWD is elsewhere. Keep this field out of
+	// JSON tags so user-authored mcp_config.json files don't carry it.
+	Dir string `json:"-"`
 }
 
 // LoadMCPConfig loads the MCP configuration from the first available config file

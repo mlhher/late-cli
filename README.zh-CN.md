@@ -5,11 +5,10 @@
 </p>
 
 <p align="center">
-  <b>不要再让模型的推理能力继续退化。</b><br><br>
-  一个极简、零配置的 AI 编程智能体。<br>
-  强制使用短暂的子智能体来保留模型的智能，并保持上下文纯净。<br>
-  从微型的本地模型到 Sol, Fable, 以及 Kimi K3 均可支持。<br>
-  用任何 LLM 完成真正的工作。
+  <b>在消费级硬件上搞定实际生产工作。</b><br><br>
+  基于经验实证研究构建的零配置 AI 编程智能体。<br>
+  从设计层面通过强制使用即用即毁的子智能体，彻底避免上下文退化。<br>
+  从微型的本地模型到任意前沿模型均可支持。<br>
 </p>
 
 <p align="center">
@@ -19,14 +18,6 @@
   <a href="https://deepwiki.com/mlhher/late-cli"><img src="https://img.shields.io/badge/DeepWiki-docs-blue.svg?style=flat" alt="DeepWiki"></a>
 </p>
 
-> [在本地 LLM 工作流中超越 Claude Code 和 Codex](https://agentnativedev.medium.com/outperforming-claude-code-and-codex-for-local-llm-workflows-5de0e2b1add5) — Agent Native
->
-> *"Late-CLI 简直令人惊叹…… 我震惊于它的 Token 消耗竟如此之低，我总觉得自己会收到 DeepSeek 的天价账单。"* — GitHub Discussions
->
-> *"同样的模型，在 Late 里感觉更聪明了。"* — Reddit
->
-> **使用 Late 构建:** Late 的开发主要在 Late 自身内完成。
-
 <div align="center">
   <br/>
   <img src="assets/late-subagent-handoff.png" alt="Late Orchestrator planning a multi-phase implementation and spawning the first subagent">
@@ -34,6 +25,17 @@
   <i>Late 主控节点正在制定计划，并生成原子级子智能体进行精准编辑。</i>
   <br/><br/>
 </div>
+
+> [在本地 LLM 工作流中超越 Claude Code 和 Codex](https://agentnativedev.medium.com/outperforming-claude-code-and-codex-for-local-llm-workflows-5de0e2b1add5) — Agent Native
+>
+> *"Late-CLI 简直令人惊叹…… 我震惊于它的 Token 消耗竟如此之低，我总觉得自己会收到 DeepSeek 的天价账单。"* — GitHub Discussions
+>
+> *"同样的模型，在 Late 里感觉更聪明了。"* — Reddit
+>
+> *“你帮我解决了本地 AI 编程的问题。”* — Reddit
+>
+> **使用 Late 构建:** Late 的开发主要在 Late 自身内完成。
+
 
 ## 10 秒快速开始
 
@@ -59,21 +61,25 @@ late
 
 ## 架构瓶颈
 
-**问题所在：** 标准的编程智能体试图在单一共享的上下文窗口内完成所有操作。每一次代码库分析、编译错误、代码检查失败，甚至是文件的读写，都会在 KV 缓存中不断堆积。随着上下文充斥着垃圾信息，模型的推理能力会严重退化。你可能会责怪模型，但这实际上是架构的失败。
+**问题所在：** 标准的编程智能体试图在单一共享的上下文窗口内完成所有操作。每一次代码库分析、编译错误、代码检查失败，甚至是读取文件，都会在 KV 缓存中不断堆积。随着上下文充斥着垃圾信息，模型的推理能力会严重退化。你可能会责怪模型，但这实际上是架构的失败。
+
+> **40% 临界崩塌：** 研究表明，当上下文利用率超过 40–50% 时，长上下文大语言模型的**推理准确率会发生高达约 45% 的崩塌式下跌**，即便所有 token 均与任务高度相关也是如此（[Wang et al., 2026: Intelligence Degradation in Long-Context LLMs](https://arxiv.org/abs/2601.15300)）。
 
 **Late 的解决方案：** Late 将大脑一分为二。它在“规划”与“执行”之间强制划定严格界限，并主动对智能体的身份和目标进行隔离。
 
 <img src="assets/workflow.jpg" alt="Late Architecture: Main Orchestrator routing to ephemeral subagents with automatic context destruction">
 
-主控节点的上下文只会因为真正重要的信息而增长：也就是你明确的指令和确定的结果。子智能体为了完成任务所做的一切中间过程，都会从记忆中被彻底抹去。**同样的模型在 Late 中让人感觉更聪明，因为它纯粹基于“信号”而非“噪音”进行推理。**
+主控节点的上下文只会因为真正重要的信息而增长：也就是你明确的指令和确定的结果。子智能体为了完成任务所做的一切中间过程，都会从记忆中被彻底抹去。
+
+**同样的模型在 Late 中让人感觉更聪明，因为它纯粹基于“信号”而非“噪音”进行推理。**
 
 ## 特性矩阵
 
 |  | Late | 其他所有工具 (OpenCode, Pi, Claude Code, Codex) |
 | --- | --- | -- |
 | **工作流** | **自主编排** | 手动切换 / 盲目执行 |
-| **代码实现** | **严格执行的临时编程子智能体 (自动抹除)** | 充斥主上下文 |
-| **探索** | **严格执行的临时研究子智能体 (自动抹除)** | 充斥主上下文 |
+| **代码实现** | **严格执行的即用即毁编程子智能体 (自动抹除)** | 充斥主上下文 |
+| **探索** | **严格执行的即用即毁研究子智能体 (自动抹除)** | 充斥主上下文 |
 | **KV-Cache** | **严苛的 KV 缓存管理 (无重复的提示词处理)** | 暴力堆砌 |
 | **系统提示词** | **~1,000 tokens (始终处于规划状态)** | 300 - 10,000+ tokens (从无工作流到过度约束) |
 | **依赖** | **零依赖静态二进制文件** | Python / Node.js 等 |
@@ -90,13 +96,14 @@ Late 适配任何模型。
 **本地模型 (零配置):**
 无需配置。Late 默认指向运行在 `:8080` 端口的 `llama.cpp` (`llama-server` 的默认端口)。
 
-**云端模型 (DeepSeek, Claude, GPT, Kimi, GLM, OpenRouter 等):**
+**云端服务商 (DeepSeek, Claude, GPT, Kimi, GLM, OpenRouter):**
 
 ```bash
 export OPENAI_BASE_URL="你的-API-URL"
 export OPENAI_API_KEY="你的-API-密钥"
 export OPENAI_MODEL="模型名称"
 ```
+
 
 📖 **[阅读快速入门指南](./docs/quickstart.zh-CN.md)** 了解如何持久化保存这些设置，以及 MCP 设置、智能体技能 (Agent Skills)、Git 工作树、快捷键等更多高级功能。
 
@@ -112,7 +119,6 @@ export OPENAI_MODEL="模型名称"
 * **Git 工作树支持 (Git Worktree Support):** 支持跨分支运行独立并行的智能体实例，而不会出现上下文冲突。
 
 ## 常见问题 (FAQ)
-
 **为什么不用 OpenCode / Pi / Claude Code 等工具？**
 
 它们在单一的上下文窗口中运行所有内容。每一次文件读取、编译错误和重试都会导致模型退化。Late 强制使用短暂的子智能体。主控节点永远不会看到这些噪音。这使得模型可以在较小的上下文窗口中工作，同时还能更长久地保持其智能。
