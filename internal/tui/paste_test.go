@@ -114,8 +114,16 @@ func TestStartPromptMsgSubmitsPrompt(t *testing.T) {
 		t.Fatal("expected command to submit the startup prompt")
 	}
 
-	res, _ = model.Update(cmd())
-	model = res.(Model)
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, child := range batch {
+			res, _ = model.Update(child())
+			model = res.(Model)
+		}
+	} else {
+		res, _ = model.Update(msg)
+		model = res.(Model)
+	}
 
 	if orch.submittedText != "fix the tests" {
 		t.Fatalf("expected startup prompt to be submitted, got %q", orch.submittedText)

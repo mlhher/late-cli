@@ -95,6 +95,7 @@ type RewindEntry struct {
 
 // AppState tracks the interactive state of a single orchestrator.
 type AppState struct {
+	Transcript           transcriptState
 	State                ValidationState
 	StreamingState       common.ContentEvent
 	PendingConfirm       *ConfirmRequestMsg
@@ -135,6 +136,11 @@ type AppState struct {
 }
 
 type Model struct {
+	cachedScreen   tea.View
+	screenReady    bool
+	screenDirty    bool
+	framePending   bool
+	lastFrame      time.Time
 	Mode           ViewState
 	Input          textarea.Model
 	Viewport       viewport.Model
@@ -143,6 +149,7 @@ type Model struct {
 	Height         int
 	Renderer       *glamour.TermRenderer
 	InspectingTool bool
+	LazyHistory    bool // When true, startup renders only the visible tail of history and defers older messages
 
 	// Unified Orchestration
 	Root    common.Orchestrator
@@ -169,6 +176,7 @@ type Model struct {
 	ToastMessage    string
 	ToastExpireTime int64
 	ToastWarning    bool
+	BootstrapStatus string
 
 	// Model and config info (set from main.go after creation)
 	ModelName    string // Active model name
@@ -387,6 +395,23 @@ type PluginChangeMsg struct {
 // OrchestratorEventMsg is the bridge between Orchestrator goroutines and the TUI loop.
 type OrchestratorEventMsg struct {
 	Event common.Event
+}
+
+// McpStatusMsg carries background bootstrap status (MCP server connect and LLM
+// backend discovery) into the TUI update loop. An empty Text clears the status;
+// a non-empty Text sets the root agent's status text and shows a toast.
+// Warning selects a warning-style toast (⚠); otherwise a success-style toast (✓).
+type McpStatusMsg struct {
+	Text    string
+	Warning bool
+}
+
+// BootstrapStatusMsg carries startup progress into the TUI update loop.
+type BootstrapStatusMsg struct {
+	Text        string
+	Warning     bool
+	Active      bool
+	RefreshView bool
 }
 
 // FindOrchestrator recursively searches for an orchestrator by ID.

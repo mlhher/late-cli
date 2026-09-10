@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"charm.land/lipgloss/v2"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -262,7 +262,9 @@ func TestChatPromptAndThinkingRendering(t *testing.T) {
 
 	state := model.GetAgentState(model.Focused.ID())
 	state.StreamingState.ReasoningContent = "Analyzing code structure..."
-	streaming := model.renderFullStreamingResponse(state, 80)
+	model.Viewport.SetWidth(80)
+	state.State = StateThinking
+	streaming := testTranscriptContent(&model)
 	if !strings.Contains(streaming, "thinking") || !strings.Contains(streaming, "Analyzing code structure...") {
 		t.Errorf("expected streaming response to contain thinking gutter, got:\n%s", streaming)
 	}
@@ -386,7 +388,7 @@ func TestChatContentAndTableFullWidth(t *testing.T) {
 	model.Height = 30
 	model.updateLayout()
 
-	content := model.Viewport.GetContent()
+	content := testTranscriptContent(&model)
 	lines := strings.Split(content, "\n")
 
 	// Find the horizontal border of the table
@@ -416,7 +418,7 @@ func TestChatContentAndTableFullWidth(t *testing.T) {
 	model.AgentStates[model.Focused.ID()].CachedWidth = -1
 	model.updateViewport()
 
-	userContent := model.Viewport.GetContent()
+	userContent := testTranscriptContent(&model)
 	if !strings.Contains(ansi.Strip(userContent), "❯ "+userMsg) {
 		t.Errorf("expected prompt prefix and user message, got:\n%s", userContent)
 	}
@@ -432,7 +434,7 @@ func TestChatContentAndTableFullWidth(t *testing.T) {
 	updatedModel, _ := model.Update(tea.WindowSizeMsg{Width: newWidth, Height: 30})
 	model = updatedModel.(Model)
 
-	resizedContent := model.Viewport.GetContent()
+	resizedContent := testTranscriptContent(&model)
 	foundResizedTable := false
 	for _, line := range strings.Split(resizedContent, "\n") {
 		if strings.Contains(line, "─") {
@@ -560,7 +562,7 @@ func TestUserMessageRendering_EmptyAndTrailingNewlines(t *testing.T) {
 	model.Viewport.SetHeight(20)
 
 	model.updateViewport()
-	content := model.Viewport.GetContent()
+	content := testTranscriptContent(&model)
 
 	// 1. Should render the goal
 	if !strings.Contains(content, "Goal: Test poem") {
@@ -620,6 +622,7 @@ func TestHolisticVTELeaks(t *testing.T) {
 
 	// 1. Welcome Screen
 	model.updateViewport()
+	renderTestTranscript(&model)
 	vWelcome := model.View()
 	validateNoVTELeaks(t, "Welcome Screen", vWelcome.Content)
 
@@ -662,6 +665,7 @@ func TestHolisticVTELeaks(t *testing.T) {
 	}
 	model.Focused = agent
 	model.updateViewport()
+	renderTestTranscript(&model)
 	vChat := model.View()
 	validateNoVTELeaks(t, "Chat View", vChat.Content)
 }

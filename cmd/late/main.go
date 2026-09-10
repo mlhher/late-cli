@@ -31,6 +31,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
+	"golang.org/x/term"
 )
 
 // pluginInlineTool adapts a plugin.InlineTool (defined in internal/plugin/tools.go)
@@ -134,7 +135,9 @@ func main() {
 	}
 
 	var loadedHistoryPath string
+	var resumedSessionTitle string
 	var loadedSessionMeta *session.SessionMeta
+
 	if *continueReq {
 		meta, err := session.GetLatestSession()
 		if err != nil {
@@ -145,9 +148,8 @@ func main() {
 			fmt.Fprintln(os.Stderr, "No sessions found to continue.")
 			os.Exit(1)
 		}
-		fmt.Printf("Resuming session: %s (%s)\n", meta.ID, meta.Title)
-		time.Sleep(500 * time.Millisecond) // Give user a moment to see what's happening
 		loadedHistoryPath = meta.HistoryPath
+		resumedSessionTitle = fmt.Sprintf("Resumed session: %s (%s)", meta.ID, meta.Title)
 		loadedSessionMeta = meta
 	} else if flag.NArg() > 0 && flag.Arg(0) == "session" {
 		sessCmdResult := handleSessionCommand(flag.Args()[1:])
@@ -236,11 +238,7 @@ func main() {
 		systemPrompt = systemPrompt + *appendSystemPromptReq
 	}
 
-	startMsg := "Starting late TUI..."
-	if tool.IsSqzAvailable() {
-		startMsg = "Starting late TUI (sqz-enabled)..."
-	}
-	fmt.Println(startMsg)
+	// Sessions setup
 
 	// Define history path with timestamp-based session ID
 	sessionsDir, err := session.SessionDir()
@@ -278,14 +276,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Warning: Failed to load MCP config: %v\n", err)
 	}
 
-	// Try configuration-driven connections first
-	if config != nil && len(config.McpServers) > 0 {
-		fmt.Println("Connecting to MCP servers from configuration...")
-		if err := mcpClient.ConnectFromConfig(context.Background(), config); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Failed to connect to some MCP servers: %v\n", err)
-		}
-	}
-
 	// Plugin discovery and surface registration
 	var (
 		skillsDir string
@@ -313,15 +303,12 @@ func main() {
 					}
 				}
 				if pm.Count() > 0 {
-					fmt.Printf("Loading %d plugin(s)...\n", pm.Count())
-
 					// Connect plugin MCP servers
 					pluginMCP := pm.BuildMCPConfigMap()
 					if len(pluginMCP) > 0 && config == nil {
 						config = &mcp.MCPConfig{McpServers: make(map[string]mcp.MCPServer)}
 					}
 					if len(pluginMCP) > 0 && config != nil {
-						fmt.Println("Connecting to plugin MCP servers...")
 						for name, srv := range pluginMCP {
 							config.McpServers[name] = mcp.MCPServer{
 								Command:       srv.Command,
@@ -333,17 +320,11 @@ func main() {
 								Dir:           srv.Dir,
 							}
 						}
-						// Servers already connected from the user config are
-						// skipped, so this only connects the plugin servers.
-						if err := mcpClient.ConnectFromConfig(context.Background(), config); err != nil {
-							fmt.Fprintf(os.Stderr, "Warning: Failed to connect to plugin MCP servers: %v\n", err)
-						}
 					}
 				}
 			}
 		}
 	}
-
 	// Load App configuration
 	appConfig, err := appconfig.LoadConfig()
 	if err != nil {
@@ -386,7 +367,6 @@ func main() {
 		}
 	}
 	c := client.NewClient(resolvedClientConfig)
-	c.DiscoverBackend(context.Background())
 
 	// Initialize Subagent Client
 	resolvedSubagentConfig := appconfig.ResolveSubagentSettings(appConfig, resolvedOpenAIConfig)
@@ -401,7 +381,6 @@ func main() {
 			Model:        resolvedSubagentConfig.Model,
 			EnableImages: *enableImagesReq,
 		})
-		subagentClient.DiscoverBackend(context.Background())
 	}
 
 	// Flag overrides
@@ -500,7 +479,6 @@ func main() {
 		themeID = "default"
 		themeBytes = tui.LateTheme
 	}
-
 	// Initialize common renderer
 	renderer, _ := glamour.NewTermRenderer(
 		glamour.WithStylesFromJSONBytes(themeBytes),
@@ -596,8 +574,20 @@ func main() {
 		model.SubagentInfo = resolvedSubagentConfig.Model
 	}
 	model.ShowCWD = *showCWDReq
+	model.LazyHistory = true
 
-	p := tea.NewProgram(model)
+	pOpts := []tea.ProgramOption{
+		tea.WithFPS(tui.FrameRate),
+	}
+	if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 && h > 0 {
+		model.SetSize(w, h)
+		pOpts = append(pOpts, tea.WithWindowSize(w, h))
+	} else if w, h, err := term.GetSize(int(os.Stdin.Fd())); err == nil && w > 0 && h > 0 {
+		model.SetSize(w, h)
+		pOpts = append(pOpts, tea.WithWindowSize(w, h))
+	}
+
+	p := tea.NewProgram(model, pOpts...)
 
 	// toolSync serializes plugin/MCP tool-registry refreshes triggered by
 	// MCP servers' own tools/list_changed notifications (wired via
@@ -612,6 +602,12 @@ func main() {
 	go func() {
 		// Set messenger first
 		p.Send(tui.SetMessengerMsg{Messenger: p})
+		if resumedSessionTitle != "" {
+			p.Send(tui.BootstrapStatusMsg{
+				Text:   resumedSessionTitle,
+				Active: false,
+			})
+		}
 
 		// Create context with InputProvider
 		ctx := context.WithValue(context.Background(), common.InputProviderKey, tui.NewTUIInputProvider(p))
@@ -670,6 +666,11 @@ func main() {
 			Runner: runner,
 		})
 	}
+
+	// Bootstrap: connect MCP servers and discover LLM backends in the background so
+	// the TUI is usable immediately. Each MCP server connects independently and its
+	// tools are registered as they connect; status/failure is surfaced to the UI.
+	go runBootstrap(p, mcpClient, config, c, subagentClient, sess, enabledTools, pluginManager, toolSync)
 
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Unspecified error: %v", err)
@@ -1150,4 +1151,138 @@ func ForwardOrchestratorEvents(p *tea.Program, o common.Orchestrator) {
 			}
 		}
 	}()
+}
+
+// runBootstrap runs startup work (MCP connections and LLM backend discovery)
+// concurrently in the background so the TUI renders immediately. It streams live
+// animated status updates into the UI and completes when all tasks finish.
+func runBootstrap(p *tea.Program, mcpClient *mcp.Client, config *mcp.MCPConfig, c *client.Client, subagentClient *client.Client, sess *session.Session, enabledTools map[string]bool, pluginManager *plugin.PluginManager, toolSync *pluginToolSync) {
+	var (
+		wg        sync.WaitGroup
+		mu        sync.Mutex
+		connected int
+		failed    []string
+	)
+
+	hasMCP := config != nil && len(config.McpServers) > 0
+
+	// Initial notification inside TUI
+	if hasMCP {
+		p.Send(tui.BootstrapStatusMsg{
+			Text:   "Connecting MCP servers & discovering backend...",
+			Active: true,
+		})
+	} else {
+		p.Send(tui.BootstrapStatusMsg{
+			Text:   "Discovering model backend...",
+			Active: true,
+		})
+	}
+
+	// Task 1: MCP Server Connections (concurrent)
+	if hasMCP {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = mcpClient.ConnectFromConfigConcurrent(context.Background(), config, func(r mcp.ServerConnectResult) {
+				mu.Lock()
+				defer mu.Unlock()
+				if r.Err != nil {
+					failed = append(failed, r.Name)
+					p.Send(tui.BootstrapStatusMsg{
+						Text:    fmt.Sprintf("MCP %s failed: %v", r.Name, r.Err),
+						Warning: true,
+						Active:  true,
+					})
+					return
+				}
+				for _, a := range r.Adapters {
+					if !mcpToolEnabled(a, enabledTools) {
+						continue
+					}
+					sess.Registry.Register(a)
+				}
+				if toolSync != nil {
+					toolSync.refresh(p, mcpClient, pluginManager, enabledTools)
+				}
+				connected++
+				p.Send(tui.BootstrapStatusMsg{
+					Text:   fmt.Sprintf("MCP: %s connected", r.Name),
+					Active: true,
+				})
+			})
+		}()
+	}
+
+	// Task 2: Main LLM Backend Discovery (concurrent)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		b := c.DiscoverBackend(context.Background())
+		ctxSize := c.ContextSize()
+		ctxText := ""
+		if ctxSize > 0 {
+			ctxText = fmt.Sprintf(" (%dk ctx)", ctxSize/1024)
+		}
+		p.Send(tui.BootstrapStatusMsg{
+			Text:        fmt.Sprintf("Backend: %s%s", b, ctxText),
+			Active:      true,
+			RefreshView: true,
+		})
+	}()
+
+	// Task 3: Subagent LLM Backend Discovery (if distinct client)
+	if subagentClient != c {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = subagentClient.DiscoverBackend(context.Background())
+		}()
+	}
+
+	// Wait for all background bootstrap tasks to finish
+	wg.Wait()
+
+	// Build final summary
+	mu.Lock()
+	totalMCP := connected + len(failed)
+	var (
+		parts []string
+		warn  bool
+	)
+	if totalMCP > 0 {
+		if len(failed) == 0 {
+			unit := "server"
+			if totalMCP != 1 {
+				unit = "servers"
+			}
+			parts = append(parts, fmt.Sprintf("MCP: %d %s ready", connected, unit))
+		} else {
+			parts = append(parts, fmt.Sprintf("MCP: %d/%d (failed: %s)", connected, totalMCP, strings.Join(failed, ", ")))
+			warn = true
+		}
+	}
+
+	backendType := c.Backend()
+	ctxSize := c.ContextSize()
+	if backendType != "" && backendType != client.BackendUnknown {
+		if ctxSize > 0 {
+			parts = append(parts, fmt.Sprintf("Backend: %s (%dk)", backendType, ctxSize/1024))
+		} else {
+			parts = append(parts, fmt.Sprintf("Backend: %s", backendType))
+		}
+	}
+	mu.Unlock()
+
+	summary := "Ready"
+	if len(parts) > 0 {
+		summary = strings.Join(parts, " • ")
+	}
+
+	p.Send(tui.BootstrapStatusMsg{
+		Text:        summary,
+		Warning:     warn,
+		Active:      false,
+		RefreshView: true,
+	})
 }
