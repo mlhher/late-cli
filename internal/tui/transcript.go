@@ -67,6 +67,38 @@ type transcriptEntry struct {
 	labels    []transcriptLabel
 }
 
+const (
+	assistantReplyPadding = 6
+)
+
+func transcriptInnerWidth(width int, style lipgloss.Style) int {
+	return max(1, width-style.GetHorizontalFrameSize())
+}
+
+func assistantReplyStyle(width int) lipgloss.Style {
+	return aiMsgStyle.Padding(0, assistantReplyPadding).Width(width)
+}
+
+func assistantReplyContentWidth(width int) int {
+	return max(1, width-assistantReplyPadding*2)
+}
+
+func thoughtBodyStyle(width int) lipgloss.Style {
+	return thinkingStyle.Width(transcriptInnerWidth(width, thinkingStyle))
+}
+
+func thoughtOutputBodyStyle(width int) lipgloss.Style {
+	return thoughtOutputStyle.Width(transcriptInnerWidth(width, thoughtOutputStyle))
+}
+
+func userPromptContentWidth(width int) int {
+	return max(1, width-userMsgStyle.GetHorizontalFrameSize()-userMsgStyle.GetHorizontalMargins())
+}
+
+func userPromptStyle(width int) lipgloss.Style {
+	return userMsgStyle.Width(max(1, width-userMsgStyle.GetHorizontalMargins()))
+}
+
 // Invalidate content independently of viewport position. Rendering is started
 // by the presentation clock, never by a wheel or paging event.
 func (m *Model) refreshTranscript() {
@@ -319,15 +351,15 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 	}
 	// Capture styles by value. No worker accesses the live model or a shared
 	// Glamour renderer; only immutable strings and cached rows cross threads.
-	userStyle, thoughtStyle, headerStyle := userMsgStyle, thinkingStyle, thoughtHeaderStyle
+	headerStyle := thoughtHeaderStyle
 	queueStyle := queuedMsgStyle
 	noticeStyle := aiMsgStyle.MarginLeft(1).Border(boxBorderStyle).BorderForeground(warningColor)
 	errorStyle := noticeStyle.BorderForeground(errorBorderColor)
 	bg := appBgColor
 	activityHeader := m.renderActivityAt("thinking...", width, time.Unix(0, 0))
-	answerStyle := aiMsgStyle.Padding(0, 4).Width(width)
+	answerStyle := assistantReplyStyle(width)
 	return func() tea.Msg {
-		renderer, err := glamour.NewTermRenderer(glamour.WithStylesFromJSONBytes([]byte(theme)), glamour.WithWordWrap(max(1, width-8)), glamour.WithPreservedNewLines())
+		renderer, err := glamour.NewTermRenderer(glamour.WithStylesFromJSONBytes([]byte(theme)), glamour.WithWordWrap(assistantReplyContentWidth(width)), glamour.WithPreservedNewLines())
 		markdown := func(source string) string {
 			if err != nil {
 				return source
@@ -348,21 +380,25 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 				case "user":
 					text := strings.TrimRight(entry.content, "\r\n")
 					if strings.TrimSpace(text) != "" || len(entry.labels) > 0 {
-						block := text
+						// Prompt cards use the full transcript width, with a tighter
+						// outer gap than assistant output. The right inset remains the
+						// comfortable one-column surface gap.
+						innerWidth := userPromptContentWidth(width)
+						block := ansi.Wordwrap(text, innerWidth, "")
 						if len(entry.labels) > 0 {
 							for _, label := range entry.labels {
 								block += "\n" + label.rendered
 							}
 						}
-						parts = append(parts, "\n"+userStyle.Width(max(1, width-userStyle.GetHorizontalMargins())).Render(block)+"\n")
+						parts = append(parts, "\n"+userPromptStyle(width).Render(block)+"\n")
 					}
 				case "assistant":
 					if entry.reasoning != "" {
-						header := headerStyle.Render("· thinking")
+						header := headerStyle.Render("· thoughts")
 						if entry.active && entry.content == "" && len(entry.labels) == 0 {
 							header = activityHeader
 						}
-						parts = append(parts, header, thoughtStyle.Width(max(1, width-thoughtStyle.GetHorizontalFrameSize())).Render(entry.reasoning))
+						parts = append(parts, header, thoughtOutputBodyStyle(width).Render(entry.reasoning))
 					}
 					if entry.content != "" {
 						if entry.reasoning != "" {
@@ -385,7 +421,7 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 					parts = append(parts, entry.content)
 				case "thinking":
 					// Reserve the same header and gutter rows used by streamed reasoning.
-					parts = append(parts, activityHeader, thoughtStyle.Width(max(1, width-thoughtStyle.GetHorizontalFrameSize())).Render(""))
+					parts = append(parts, activityHeader, thoughtBodyStyle(width).Render(""))
 				}
 				if len(parts) == 0 {
 					continue

@@ -6,15 +6,16 @@ import (
 
 var (
 	// Refined Palette - Pure Obsidian, Warm Golden Amber, Calm Steel Ice
-	primaryColor   = lipgloss.Color("#E5A85C") // Warm Golden Amber
-	primaryGlow    = lipgloss.Color("#F0B875") // Subtle highlight
-	secondaryColor = lipgloss.Color("#56B6C2") // Steel Ice Cyan
-	accentEmerald  = lipgloss.Color("#4ECCA3") // Muted Mint
-	accentCoral    = lipgloss.Color("#E06C75") // Calm Coral
-	warningColor   = lipgloss.Color("#E06C75") // Warning Red (alias)
-	textColor      = lipgloss.Color("#E6EDF3") // Crisp Off-White
-	subtextColor   = lipgloss.Color("#7D8590") // Muted Slate
-	mutedTextColor = lipgloss.Color("#484F58") // Whisper Slate (borders, dividers)
+	primaryColor      = lipgloss.Color("#E5A85C") // Warm Golden Amber
+	primaryGlow       = lipgloss.Color("#F0B875") // Subtle highlight
+	secondaryColor    = lipgloss.Color("#56B6C2") // Steel Ice Cyan
+	promptBorderColor = lipgloss.Color("#438FA3") // Quiet attention blue for prompts
+	accentEmerald     = lipgloss.Color("#4ECCA3") // Muted Mint
+	accentCoral       = lipgloss.Color("#E06C75") // Calm Coral
+	warningColor      = lipgloss.Color("#E06C75") // Warning Red (alias)
+	textColor         = lipgloss.Color("#E6EDF3") // Crisp Off-White
+	subtextColor      = lipgloss.Color("#7D8590") // Muted Slate
+	mutedTextColor    = lipgloss.Color("#484F58") // Whisper Slate (borders, dividers)
 
 	// Canvas & Surfaces
 	appBgColor   = lipgloss.Color("#0B0C0E") // Deep Obsidian
@@ -106,13 +107,13 @@ var (
 	userMsgStyle = lipgloss.NewStyle().
 			Foreground(textColor).
 			Background(cardBgColor).
-			Margin(0, 2).
+			Margin(0, 1).
 			MarginBackground(appBgColor).
 			BorderLeft(true).
 			BorderStyle(lipgloss.NormalBorder()).
-			BorderForeground(primaryColor).
+			BorderForeground(promptBorderColor).
 			BorderBackground(cardBgColor).
-			Padding(0, 1).
+			Padding(1, 1).
 			Align(lipgloss.Left)
 
 	queuedMsgStyle = userMsgStyle.Copy().
@@ -132,12 +133,16 @@ var (
 			Foreground(subtextColor).
 			Background(appBgColor).
 			Italic(true).
-			Padding(0, 1).
+			Padding(0, 3).
 			MarginLeft(2).
 			BorderLeft(true).
 			BorderStyle(lipgloss.NormalBorder()).
 			BorderForeground(activeBorder).
 			BorderBackground(appBgColor)
+
+	// Thought output gets a little breathing room below its activity header.
+	// The placeholder row continues to use thinkingStyle so its geometry stays stable.
+	thoughtOutputStyle = thinkingStyle.Copy().PaddingTop(1)
 
 	tagStyle = lipgloss.NewStyle().
 			Foreground(primaryColor).

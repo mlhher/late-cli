@@ -571,8 +571,8 @@ func TestUserMessageRendering_EmptyAndTrailingNewlines(t *testing.T) {
 
 	// 2. Count prompt symbols '❯'
 	promptCount := strings.Count(content, "│")
-	if promptCount != 1 {
-		t.Errorf("expected exactly 1 prompt rail '│', got %d in:\n%s", promptCount, content)
+	if promptCount < 3 {
+		t.Errorf("expected prompt rail to include top, content, and bottom rows, got %d in:\n%s", promptCount, content)
 	}
 
 	// 3. Should not have gigantic vertical gaps (no 3+ consecutive empty lines)
