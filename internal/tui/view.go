@@ -629,9 +629,9 @@ func (m *Model) updateViewport() {
 
 		var prompt string
 		if busy {
-			prompt = "**Stop active agent?**\n\nThe agent is currently executing. Stopping will immediately halt tool execution and streaming.\n\n> Press **[y]** Yes, stop it  ·  **[n]** No, continue"
+			prompt = "**Stop active agent?**\n\nThe agent is currently executing. Stopping will immediately halt tool execution and streaming.\n\nPress **[y]** Yes, stop it  ·  **[n]** No, continue"
 		} else {
-			prompt = "**Exit Late?**\n\nAre you sure you want to exit the session?\n\n> Press **[y]** Yes, quit  ·  **[n]** No, stay"
+			prompt = "**Exit Late?**\n\nAre you sure you want to exit the session?\n\nPress **[y]** Yes, quit  ·  **[n]** No, stay"
 		}
 		md, _ := m.Renderer.Render(prompt)
 		dialog := modalBoxStyle.
@@ -778,41 +778,26 @@ func (m *Model) renderAnimatedTagAt(text string, baseStyle lipgloss.Style, width
 		}
 
 		step := int(factor * 99)
-		charStyle := lipgloss.NewStyle().
+		charStyle := baseStyle.Copy().
 			Foreground(grad[step]).
-			Background(bg)
+			Background(bg).
+			UnsetWidth()
 		sb.WriteString(charStyle.Render(string(r)))
 	}
 
-	return baseStyle.Copy().Width(width).Render(sb.String())
+	return sb.String()
 }
 
 func toolBadgeText(toolName, callStr string) string {
-	var icon string
-	lower := strings.ToLower(toolName + " " + callStr)
-	switch {
-	case strings.Contains(lower, "bash") || strings.Contains(lower, "powershell") || strings.Contains(lower, "shell"):
-		icon = "$"
-	case strings.Contains(lower, "write") || strings.Contains(lower, "edit") || strings.Contains(lower, "replace"):
-		icon = "edit"
-	case strings.Contains(lower, "read") || strings.Contains(lower, "view") || strings.Contains(lower, "cat"):
-		icon = "read"
-	case strings.Contains(lower, "find") || strings.Contains(lower, "grep") || strings.Contains(lower, "search"):
-		icon = "find"
-	case strings.Contains(lower, "subagent") || strings.Contains(lower, "spawn") || strings.Contains(lower, "agent"):
-		icon = "agent"
-	case strings.Contains(lower, "git"):
-		icon = "git"
-	default:
-		icon = "call"
+	if callStr != "" {
+		return callStr
 	}
-
-	return fmt.Sprintf("%s: %s", icon, callStr)
+	return toolName
 }
 
 func (m *Model) renderToolBadge(toolName, callStr string, isStreaming bool, width int) string {
 	label := toolBadgeText(toolName, callStr)
-	badgeStyle := tagStyle.Copy().Foreground(subtextColor)
+	badgeStyle := tagStyle
 
 	if isStreaming {
 		return m.renderActivityAt(label+" · running", width, time.Now())
@@ -822,7 +807,7 @@ func (m *Model) renderToolBadge(toolName, callStr string, isStreaming bool, widt
 	if lipgloss.Width(text) > width {
 		text = m.truncateWithEllipsis(text, width)
 	}
-	return badgeStyle.Copy().Width(width).Render(text)
+	return badgeStyle.Copy().Render(text)
 }
 
 func (m *Model) truncateWithEllipsis(s string, w int) string {
@@ -1514,7 +1499,11 @@ func (m *Model) renderActivityAt(text string, width int, now time.Time) string {
 	frames := spinner.Dot
 	frame := int(now.UnixNano()/int64(frames.FPS)) % len(frames.Frames)
 	marker := lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Render(strings.TrimSpace(frames.Frames[frame]))
-	style := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Italic(true)
+	fg := subtextColor
+	if strings.HasSuffix(text, " · running") {
+		fg = primaryColor
+	}
+	style := lipgloss.NewStyle().Foreground(fg).Background(appBgColor).Italic(true)
 	remaining := max(1, width-2-lipgloss.Width(marker)-1)
 	glow := m.renderAnimatedTagAt(text, style, remaining, true, now)
 	row := "  " + marker + " " + glow

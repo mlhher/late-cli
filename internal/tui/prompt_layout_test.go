@@ -65,8 +65,8 @@ func TestUserPromptRailWrapsAndPadsWholeMessage(t *testing.T) {
 	m, _ := newViewportBenchmarkModel([]client.ChatMessage{{Role: "user", Content: client.TextContent("FIRST\nSECOND " + strings.Repeat("wrapped text ", 8))}})
 	m.SetSize(40, 30)
 	rendered := testTranscriptContent(m)
-	if !strings.Contains(rendered, "67;143;163") {
-		t.Fatal("prompt rail is not the intended calm blue")
+	if !strings.Contains(rendered, "229;168;92") {
+		t.Fatal("prompt rail is not the intended gold")
 	}
 	if !strings.Contains(rendered, "18;20;26") {
 		t.Fatal("prompt has no subtle surface background")

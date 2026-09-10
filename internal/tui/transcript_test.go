@@ -388,3 +388,108 @@ func TestThinkingSpinnerReplacesCircleUntilFinished(t *testing.T) {
 		}
 	}
 }
+
+func TestToolCallPaddingAndWidth(t *testing.T) {
+	history := []client.ChatMessage{
+		{Role: "user", Content: client.TextContent("do something")},
+		{
+			Role:             "assistant",
+			ReasoningContent: "Thinking steps",
+			Content:          client.TextContent("Here is my answer"),
+			ToolCalls: []client.ToolCall{
+				{ID: "call_1", Function: client.FunctionCall{Name: strings.Repeat("tool_with_a_very_long_name_", 5)}},
+			},
+		},
+	}
+	m, _ := newViewportBenchmarkModel(history)
+	width := 80
+	m.SetSize(width, 40)
+	renderTestTranscript(m)
+	view := ansi.Strip(testTranscriptContent(m))
+	lines := strings.Split(view, "\n")
+
+	toolCallIdx := -1
+	answerIdx := -1
+	for i, l := range lines {
+		if strings.Contains(l, "↳") {
+			toolCallIdx = i
+			// Tool calls should be cut off at toolCallWidth: width - assistantReplyPadding = 80 - 6 = 74
+			contentWidth := ansi.StringWidth(strings.TrimRight(l, " "))
+			expectedCutoff := width - assistantReplyPadding
+			if contentWidth > expectedCutoff {
+				t.Fatalf("tool call content width %d exceeds assistant reply cutoff %d: %q", contentWidth, expectedCutoff, l)
+			}
+			if !strings.HasSuffix(strings.TrimRight(l, " "), "...") {
+				t.Fatalf("long tool call should end with ellipsis: %q", l)
+			}
+		}
+		if strings.Contains(l, "Here is my answer") {
+			answerIdx = i
+		}
+	}
+	if toolCallIdx == -1 {
+		t.Fatal("tool call not found in rendered transcript")
+	}
+	if answerIdx == -1 {
+		t.Fatal("answer not found in rendered transcript")
+	}
+	// Verify padding: there must be an empty line between answer and tool call (top padding)
+	if strings.TrimSpace(lines[toolCallIdx-1]) != "" {
+		t.Fatalf("expected empty row before tool call (line %d), got %q", toolCallIdx-1, lines[toolCallIdx-1])
+	}
+	// Verify padding: there must be an empty line after tool call (bottom padding)
+	if toolCallIdx < len(lines)-1 && strings.TrimSpace(lines[toolCallIdx+1]) != "" {
+		t.Fatalf("expected empty row after tool call (line %d), got %q", toolCallIdx+1, lines[toolCallIdx+1])
+	}
+}
+
+func TestActiveToolCallInHistoryHasSpinner(t *testing.T) {
+	history := []client.ChatMessage{
+		{Role: "user", Content: client.TextContent("run bash")},
+		{
+			Role: "assistant",
+			ToolCalls: []client.ToolCall{
+				{ID: "call_active", Function: client.FunctionCall{Name: "bash", Arguments: `{"command":"sleep 10"}`}},
+			},
+		},
+	}
+	m, s := newViewportBenchmarkModel(history)
+	s.State = StateThinking // orchestrator is executing the tool
+	m.SetSize(80, 40)
+	renderTestTranscript(m)
+	view := ansi.Strip(m.transcriptView())
+	if !strings.Contains(view, "running") {
+		t.Fatalf("executing tool call in history should show 'running', got:\n%s", view)
+	}
+	foundSpinner := false
+	for _, frame := range spinner.Dot.Frames {
+		if strings.Contains(view, strings.TrimSpace(frame)) {
+			foundSpinner = true
+			break
+		}
+	}
+	if !foundSpinner {
+		t.Fatalf("executing tool call in history should show dot spinner, got:\n%s", view)
+	}
+}
+
+func TestTranscriptBottomBreathingSpace(t *testing.T) {
+	history := []client.ChatMessage{
+		{Role: "user", Content: client.TextContent("hello")},
+		{Role: "assistant", Content: client.TextContent("Hello! How can I help?")},
+	}
+	m, _ := newViewportBenchmarkModel(history)
+	m.SetSize(80, 40)
+	renderTestTranscript(m)
+	rows := m.GetAgentState(m.Focused.ID()).Transcript.rows
+	if len(rows) < 2 {
+		t.Fatalf("expected at least 2 transcript rows, got %d", len(rows))
+	}
+	for i := 1; i <= 2; i++ {
+		row := strings.TrimSpace(ansi.Strip(rows[len(rows)-i]))
+		if row != "" {
+			t.Fatalf("expected row %d from bottom to be empty for breathing space, got %q", i, row)
+		}
+	}
+}
+

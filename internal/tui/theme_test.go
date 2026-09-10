@@ -121,13 +121,13 @@ func TestRenderToolBadge(t *testing.T) {
 		callStr  string
 		wantText string
 	}{
-		{"bash", "bash: go test ./...", "$"},
-		{"write_file", "write_file: main.go", "edit"},
-		{"read_file", "read_file: config.json", "read"},
-		{"grep_search", "grep: TODO", "find"},
-		{"spawn_subagent", "spawn_subagent: coder", "agent"},
-		{"git_log", "git: commit", "git"},
-		{"custom_tool", "custom: something", "call"},
+		{"bash", "bash: go test ./...", "bash: go test ./..."},
+		{"write_file", "write_file: main.go", "write_file: main.go"},
+		{"read_file", "Reading file config.json", "Reading file config.json"},
+		{"grep_search", "grep: TODO", "grep: TODO"},
+		{"spawn_subagent", "spawn_subagent: coder", "spawn_subagent: coder"},
+		{"git_log", "git: commit", "git: commit"},
+		{"custom_tool", "custom: something", "custom: something"},
 	}
 
 	for _, tt := range tests {

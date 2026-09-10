@@ -87,8 +87,8 @@ func thoughtBodyStyle(width int) lipgloss.Style {
 	return thinkingStyle.Width(transcriptInnerWidth(width, thinkingStyle))
 }
 
-func thoughtOutputBodyStyle(width int) lipgloss.Style {
-	return thoughtOutputStyle.Width(transcriptInnerWidth(width, thoughtOutputStyle))
+func toolCallWidth(width int) int {
+	return max(1, width-assistantReplyPadding)
 }
 
 func userPromptContentWidth(width int) int {
@@ -152,7 +152,7 @@ func (m *Model) transcriptView() string {
 		if t.offset+i < end {
 			row := t.rows[t.offset+i]
 			if activity, ok := t.activities[t.offset+i]; ok {
-				row = m.renderActivityAt(activity, m.Viewport.Width(), now)
+				row = m.renderActivityAt(activity, toolCallWidth(m.Viewport.Width()), now)
 			}
 			b.WriteString(row)
 		}
@@ -278,6 +278,7 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 	}
 	theme := string(styles)
 	entries := make([]transcriptEntry, 0, len(m.Focused.History())+3)
+	toolWidth := toolCallWidth(width)
 	toolLabels := func(calls []client.ToolCall, active bool) []transcriptLabel {
 		labels := make([]transcriptLabel, 0, len(calls))
 		for _, tc := range calls {
@@ -287,10 +288,10 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 					label = tool.CallString([]byte(tc.Function.Arguments))
 				}
 			}
-			item := transcriptLabel{rendered: m.renderToolBadge(tc.Function.Name, label, false, width)}
+			item := transcriptLabel{rendered: m.renderToolBadge(tc.Function.Name, label, false, toolWidth)}
 			if active {
 				item.activity = toolBadgeText(tc.Function.Name, label) + " · running"
-				item.rendered = m.renderActivityAt(item.activity, width, time.Unix(0, 0))
+				item.rendered = m.renderActivityAt(item.activity, toolWidth, time.Unix(0, 0))
 			}
 			labels = append(labels, item)
 		}
@@ -302,13 +303,45 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 		start = max(0, len(history)-4)
 	}
 	partial := start > 0
+	hasActiveTool := false
 	for i := start; i < len(history); i++ {
 		msg := history[i]
 		content := msg.Content.String()
 		if msg.Role == "user" {
 			content = msg.Content.UIString()
 		}
-		entry := transcriptEntry{index: i, role: msg.Role, content: content, reasoning: msg.ReasoningContent, labels: toolLabels(msg.ToolCalls, false)}
+		isLatestAssistant := (i == len(history)-1) || (i == len(history)-2 && history[len(history)-1].Role == "tool")
+		calls := msg.ToolCalls
+		labels := make([]transcriptLabel, 0, len(calls))
+		for _, tc := range calls {
+			label := tc.Function.Name
+			if registry := m.Focused.Registry(); registry != nil {
+				if tool := registry.Get(label); tool != nil && len(tc.Function.Arguments) > 0 {
+					label = tool.CallString([]byte(tc.Function.Arguments))
+				}
+			}
+			isActive := false
+			if isLatestAssistant && (s.State == StateThinking || s.State == StateStreaming) {
+				hasResult := false
+				for _, h := range history[i+1:] {
+					if h.Role == "tool" && h.ToolCallID == tc.ID {
+						hasResult = true
+						break
+					}
+				}
+				if !hasResult {
+					isActive = true
+					hasActiveTool = true
+				}
+			}
+			item := transcriptLabel{rendered: m.renderToolBadge(tc.Function.Name, label, false, toolWidth)}
+			if isActive {
+				item.activity = toolBadgeText(tc.Function.Name, label) + " · running"
+				item.rendered = m.renderActivityAt(item.activity, toolWidth, time.Unix(0, 0))
+			}
+			labels = append(labels, item)
+		}
+		entry := transcriptEntry{index: i, role: msg.Role, content: content, reasoning: msg.ReasoningContent, labels: labels}
 		if len(msg.AttachedFiles) > 0 {
 			names := make([]string, len(msg.AttachedFiles))
 			for j, f := range msg.AttachedFiles {
@@ -322,7 +355,7 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 		active := s.StreamingState
 		if active.Content != "" || active.ReasoningContent != "" || len(active.ToolCalls) > 0 {
 			entries = append(entries, transcriptEntry{active: true, index: len(history), role: "assistant", content: active.Content, reasoning: active.ReasoningContent, labels: toolLabels(active.ToolCalls, true)})
-		} else {
+		} else if !hasActiveTool {
 			entries = append(entries, transcriptEntry{index: len(history), role: "thinking", content: "thinking..."})
 		}
 	}
@@ -356,7 +389,7 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 	noticeStyle := aiMsgStyle.MarginLeft(1).Border(boxBorderStyle).BorderForeground(warningColor)
 	errorStyle := noticeStyle.BorderForeground(errorBorderColor)
 	bg := appBgColor
-	activityHeader := m.renderActivityAt("thinking...", width, time.Unix(0, 0))
+	activityHeader := m.renderActivityAt("thinking...", toolWidth, time.Unix(0, 0))
 	answerStyle := assistantReplyStyle(width)
 	return func() tea.Msg {
 		renderer, err := glamour.NewTermRenderer(glamour.WithStylesFromJSONBytes([]byte(theme)), glamour.WithWordWrap(assistantReplyContentWidth(width)), glamour.WithPreservedNewLines())
@@ -394,11 +427,11 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 					}
 				case "assistant":
 					if entry.reasoning != "" {
-						header := headerStyle.Render("· thoughts")
+						header := headerStyle.Render("· thinking")
 						if entry.active && entry.content == "" && len(entry.labels) == 0 {
 							header = activityHeader
 						}
-						parts = append(parts, header, thoughtOutputBodyStyle(width).Render(entry.reasoning))
+						parts = append(parts, header, thoughtBodyStyle(width).Render(entry.reasoning))
 					}
 					if entry.content != "" {
 						if entry.reasoning != "" {
@@ -406,8 +439,14 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 						}
 						parts = append(parts, answerStyle.Render(strings.Trim(markdown(entry.content), "\r\n")))
 					}
-					for _, label := range entry.labels {
-						parts = append(parts, label.rendered)
+					if len(entry.labels) > 0 {
+						if len(parts) > 0 && parts[len(parts)-1] != "" {
+							parts = append(parts, "")
+						}
+						for _, label := range entry.labels {
+							parts = append(parts, label.rendered)
+						}
+						parts = append(parts, "")
 					}
 				case "notice", "error":
 					style := noticeStyle
@@ -449,13 +488,30 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 			if entry.active && entry.reasoning != "" && entry.content == "" && len(entry.labels) == 0 {
 				result.activities[start] = "thinking..."
 			}
-			for j, label := range entry.labels {
-				if label.activity != "" {
-					result.activities[start+len(rows)-len(entry.labels)+j] = label.activity
+			if len(entry.labels) > 0 {
+				for j, label := range entry.labels {
+					if label.activity != "" {
+						result.activities[start+len(rows)-1-len(entry.labels)+j] = label.activity
+					}
 				}
 			}
 			result.rows = append(result.rows, rows...)
 			result.blocks = append(result.blocks, RenderBlock{MessageIndex: entry.index, Content: entry.content, StartLine: start, EndLine: len(result.rows) - 1})
+		}
+		if !welcome && len(result.rows) > 0 {
+			spacer := lipgloss.NewStyle().Background(bg).Render(strings.Repeat(" ", width))
+			trailingEmpty := 0
+			for i := len(result.rows) - 1; i >= 0; i-- {
+				if strings.TrimSpace(result.rows[i]) == "" {
+					trailingEmpty++
+				} else {
+					break
+				}
+			}
+			for trailingEmpty < 2 {
+				result.rows = append(result.rows, spacer)
+				trailingEmpty++
+			}
 		}
 		return result
 	}

@@ -111,7 +111,7 @@ var (
 			MarginBackground(appBgColor).
 			BorderLeft(true).
 			BorderStyle(lipgloss.NormalBorder()).
-			BorderForeground(promptBorderColor).
+			BorderForeground(primaryColor).
 			BorderBackground(cardBgColor).
 			Padding(1, 1).
 			Align(lipgloss.Left)
@@ -140,15 +140,10 @@ var (
 			BorderForeground(activeBorder).
 			BorderBackground(appBgColor)
 
-	// Thought output gets a little breathing room below its activity header.
-	// The placeholder row continues to use thinkingStyle so its geometry stays stable.
-	thoughtOutputStyle = thinkingStyle.Copy().PaddingTop(1)
-
 	tagStyle = lipgloss.NewStyle().
 			Foreground(primaryColor).
 			Bold(true).
-			Background(appBgColor).
-			MarginLeft(2)
+			Background(appBgColor)
 
 	thoughtHeaderStyle = lipgloss.NewStyle().
 				Foreground(subtextColor).
