@@ -58,11 +58,11 @@ type CommandDef struct {
 
 // AvailableCommands lists all slash commands available in the TUI.
 var AvailableCommands = []CommandDef{
-	{Name: "/clear", Description: "Clear the terminal screen"},
 	{Name: "/compose", Description: "Compose a message with an editor"},
 	{Name: "/help", Description: "Show help and shortcuts"},
 	{Name: "/log", Description: "View git commit log"},
 	{Name: "/model", Description: "Select AI model for agents"},
+	{Name: "/new", Description: "Start fresh conversation"},
 	{Name: "/quit", Description: "Exit the application"},
 	{Name: "/rewind", Description: "Rewind conversation history"},
 	{Name: "/themes", Description: "List and switch themes"},

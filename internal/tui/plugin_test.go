@@ -71,7 +71,7 @@ func TestSetPluginCommands_Replace(t *testing.T) {
 // TestAvailableCommands_ContainsBuiltins verifies that the built-in command set
 // includes the expected slash commands.
 func TestAvailableCommands_ContainsBuiltins(t *testing.T) {
-	expected := []string{"/clear", "/compose", "/help", "/log", "/quit", "/rewind"}
+	expected := []string{"/compose", "/help", "/log", "/model", "/new", "/quit", "/rewind", "/themes"}
 
 	for _, exp := range expected {
 		found := false
@@ -83,6 +83,14 @@ func TestAvailableCommands_ContainsBuiltins(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("AvailableCommands should contain %q", exp)
+		}
+	}
+
+	// Verify alphabetical order
+	for i := 1; i < len(AvailableCommands); i++ {
+		if AvailableCommands[i-1].Name > AvailableCommands[i].Name {
+			t.Errorf("AvailableCommands not sorted alphabetically: %q before %q",
+				AvailableCommands[i-1].Name, AvailableCommands[i].Name)
 		}
 	}
 

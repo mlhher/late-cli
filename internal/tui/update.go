@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -1604,6 +1605,9 @@ func (m *Model) updateAutocomplete() {
 			}
 		}
 		if len(matches) > 0 {
+			sort.Slice(matches, func(i, j int) bool {
+				return strings.ToLower(matches[i].Name) < strings.ToLower(matches[j].Name)
+			})
 			m.ShowAutocomplete = true
 			m.AutocompleteItems = matches
 			if m.AutocompleteIndex >= len(matches) {

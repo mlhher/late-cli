@@ -510,7 +510,6 @@ func (m *Model) statusBarView() string {
 		rightItems = append(rightItems, strings.Join(pathParts, breadcrumbSeparatorStyle.Render(" › ")))
 	}
 
-	rightItems = append(rightItems, lipgloss.NewStyle().Foreground(mutedTextColor).Render("ctrl+h help"))
 	rightSection := strings.Join(rightItems, statusDivider)
 
 	// Layout spacing
@@ -626,12 +625,13 @@ func (m *Model) updateViewport() {
   **ctrl+g** / **esc** Interrupt / stop active agent
 
 ### Slash Commands
+  **/help**           Show help and shortcuts
+  **/log**            Browse git commit history & diffs
   **/model**          Configure AI models for agents
   **/new**            Start fresh conversation session
-  **/log**            Browse git commit history & diffs
+  **/quit**           Exit Late
   **/rewind**         Time-travel back to previous prompt
   **/themes**         List and switch themes
-  **/quit**           Exit Late
 `
 
 		// Plugin-provided slash commands
@@ -1337,15 +1337,15 @@ func (m *Model) renderWelcomeMessage() string {
 	// 1. Brandmark Header
 	var banner string
 	if w >= 60 {
-		l1 := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("  █    ████▄ ▀█████ █▀ █████")
-		l2 := lipgloss.NewStyle().Foreground(primaryGlow).Bold(true).Render("  █    █▄▄█▄   ██   ██ █▄▄  ")
-		l3 := lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("  ████ █   █   ██   ██ █████")
+		l1 := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("  ██      ▄██▄   ██████  ██████")
+		l2 := lipgloss.NewStyle().Foreground(primaryGlow).Bold(true).Render("  ██     ██████    ██    ███   ")
+		l3 := lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("  █████  ██  ██    ██    ██████")
 		banner = l1 + "\n" + l2 + "\n" + l3
 	} else {
 		banner = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("  L A T E")
 	}
 
-	tagline := lipgloss.NewStyle().Foreground(subtextColor).Render("  Autonomous Agentic Pair-Programmer") +
+	tagline := lipgloss.NewStyle().Foreground(subtextColor).Render("  Lightweight AI Terminal Environment") +
 		lipgloss.NewStyle().Foreground(mutedTextColor).Render(" · v"+common.Version)
 
 	// 2. System Status Badges
@@ -1427,11 +1427,11 @@ func (m *Model) renderWelcomeMessage() string {
 		Render(lipgloss.JoinVertical(lipgloss.Left,
 			headerStyle.Render("Essential Commands"),
 			"",
+			keyStyle.Render(" /compose  ") + descStyle.Render("Draft prompt in external $EDITOR"),
+			keyStyle.Render(" /log      ") + descStyle.Render("Browse git commit log & diffs"),
 			keyStyle.Render(" /model    ") + descStyle.Render("Select AI models for agents"),
 			keyStyle.Render(" /new      ") + descStyle.Render("Start fresh conversation"),
-			keyStyle.Render(" /log      ") + descStyle.Render("Browse git commit log & diffs"),
 			keyStyle.Render(" /rewind   ") + descStyle.Render("Time-travel back to any prompt"),
-			keyStyle.Render(" /compose  ") + descStyle.Render("Draft prompt in external $EDITOR"),
 			keyStyle.Render(" ctrl+o    ") + descStyle.Render("Attach files or images"),
 			keyStyle.Render(" ctrl+h    ") + descStyle.Render("Full keyboard shortcut reference"),
 		))
