@@ -653,6 +653,7 @@ func main() {
 			if err != nil {
 				return "", err
 			}
+			child.SetMiddlewares(buildMiddlewares(pluginManager, p, child.Registry()))
 
 			res, err := child.Execute("")
 			if err != nil {
@@ -700,13 +701,13 @@ func newModelClient(ctx context.Context, setting appconfig.ModelSetting, enableI
 	return c
 }
 
-// buildMiddlewares assembles the tool-call middleware chain for rootAgent.
+// buildMiddlewares assembles the tool-call middleware chain for rootAgent and subagents.
 // Middlewares are applied innermost-last, so the plugin onToolCall hooks
 // run FIRST (outermost), then the TUI confirmation, then the onToolResult
 // hooks. Confirmation must see the arguments AFTER plugins mutated them —
 // otherwise a plugin could change the arguments after the user approved
 // the call.
-func buildMiddlewares(pluginManager *plugin.PluginManager, p *tea.Program, registry *common.ToolRegistry) []common.ToolMiddleware {
+func buildMiddlewares(pluginManager *plugin.PluginManager, p tui.Messenger, registry *common.ToolRegistry) []common.ToolMiddleware {
 	mws := []common.ToolMiddleware{}
 	if pluginManager != nil {
 		mws = append(mws, pluginManager.BuildHookMiddlewares(func(ctx context.Context, tc client.ToolCall) bool {

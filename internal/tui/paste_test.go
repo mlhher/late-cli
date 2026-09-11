@@ -35,6 +35,7 @@ func (m *mockOrchestrator) Events() <-chan common.Event              { return ni
 func (m *mockOrchestrator) History() []client.ChatMessage            { return nil }
 func (m *mockOrchestrator) Context() context.Context                 { return context.Background() }
 func (m *mockOrchestrator) Middlewares() []common.ToolMiddleware     { return nil }
+func (m *mockOrchestrator) SetMiddlewares([]common.ToolMiddleware)    {}
 func (m *mockOrchestrator) Registry() *common.ToolRegistry           { return nil }
 func (m *mockOrchestrator) SystemPrompt() string                     { return "" }
 func (m *mockOrchestrator) ToolDefinitions() []client.ToolDefinition { return nil }

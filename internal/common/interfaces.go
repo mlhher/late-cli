@@ -25,6 +25,7 @@ type Orchestrator interface {
 	History() []client.ChatMessage
 	Context() context.Context
 	Middlewares() []ToolMiddleware
+	SetMiddlewares([]ToolMiddleware)
 	Registry() *ToolRegistry
 	SystemPrompt() string
 	ToolDefinitions() []client.ToolDefinition
