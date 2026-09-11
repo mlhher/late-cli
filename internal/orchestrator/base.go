@@ -208,8 +208,10 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 	// Inject orchestrator ID into context for tool interactions
 	ctx = context.WithValue(ctx, common.OrchestratorIDKey, o.id)
 
-	if err := o.sess.AddUserMessage(text); err != nil {
-		return "", err
+	if strings.TrimSpace(text) != "" {
+		if err := o.sess.AddUserMessage(text); err != nil {
+			return "", err
+		}
 	}
 
 	o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
@@ -245,7 +247,7 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 		usage := o.acc.Usage
 		o.acc.Reset()
 		o.mu.Unlock()
-		o.eventCh <- common.ContentEvent{ID: o.id, Usage: usage}
+		o.eventCh <- common.ContentEvent{ID: o.id, Usage: usage, Completed: true}
 	}
 
 	res, err := executor.RunLoop(
@@ -315,7 +317,7 @@ func (o *BaseOrchestrator) run() {
 			usage := o.acc.Usage
 			o.acc.Reset()
 			o.mu.Unlock()
-			o.eventCh <- common.ContentEvent{ID: o.id, Usage: usage}
+			o.eventCh <- common.ContentEvent{ID: o.id, Usage: usage, Completed: true}
 		}
 
 		// Build extra body

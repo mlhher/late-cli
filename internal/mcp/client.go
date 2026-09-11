@@ -91,6 +91,7 @@ func (t *ToolAdapter) Name() string {
 	return common.SanitizeToolName(t.mcpTool.Name)
 }
 
+
 // BareName returns the bare (unnamespaced) tool name as reported by the MCP
 // server. Used by the tool-enable config check for backwards compatibility
 // with configs written before namespacing was introduced.
@@ -174,7 +175,16 @@ func (t *ToolAdapter) CallString(args json.RawMessage) string {
 //
 // Connecting to a server name that already has a session closes the old
 // session first (reconnecting must not leak the previous subprocess).
+// It is kept for external callers (e.g. cmd/mcp-run). The discovered tool adapters
+// are returned by the internal connect helper.
 func (c *Client) Connect(ctx context.Context, transport mcp.Transport, serverName string) error {
+	_, err := c.connect(ctx, transport, serverName)
+	return err
+}
+
+// connect establishes a connection to an MCP server and returns the tool adapters
+// it discovered. The session and adapters are stored on the Client under c.mu.
+func (c *Client) connect(ctx context.Context, transport mcp.Transport, serverName string) ([]*ToolAdapter, error) {
 	// Close any previous session for the same server name before opening a
 	// new one so reconnects never leak the old subprocess.
 	c.mu.Lock()
@@ -194,11 +204,9 @@ func (c *Client) Connect(ctx context.Context, transport mcp.Transport, serverNam
 
 	session, err := c.sdkClient.Connect(ctx, transport, nil)
 	if err != nil {
-		return fmt.Errorf("failed to connect to MCP server: %w", err)
+		return nil, fmt.Errorf("failed to connect to MCP server: %w", err)
 	}
 
-	// Collect adapters without holding the lock; the SDK's Tools iterator may
-	// perform RPCs, and we want to avoid blocking readers.
 	var adapters []*ToolAdapter
 	for tool := range session.Tools(ctx, &mcp.ListToolsParams{}) {
 		if tool != nil {
@@ -221,7 +229,7 @@ func (c *Client) Connect(ctx context.Context, transport mcp.Transport, serverNam
 	}
 	c.mu.Unlock()
 
-	return nil
+	return adapters, nil
 }
 
 // assignToolNames assigns each adapter a name that is unique across all
@@ -255,7 +263,6 @@ func (c *Client) assignToolNames(serverName string, adapters []*ToolAdapter) {
 		a.name = uniq[i]
 	}
 }
-
 // handleToolListChanged re-discovers tools for a server when the SDK notifies
 // us of a tools/list change. It removes stale tool adapters for that server
 // and re-enumerates via the session's paginating Tools iterator.
@@ -476,6 +483,92 @@ func TransportForServer(ctx context.Context, server *MCPServer) (mcp.Transport, 
 	return t, nil
 }
 
+// ServerConnectResult reports the outcome of connecting a single MCP server.
+// Adapters is non-nil on success; Err is non-nil on failure.
+type ServerConnectResult struct {
+	Name     string
+	Adapters []*ToolAdapter
+	Err      error
+}
+
+// connectServer builds a transport for one configured MCP server and connects it,
+// returning the discovered tool adapters and any error. Stdio servers buffer their
+// subprocess stderr so diagnostics can be included in the failure message.
+func (c *Client) connectServer(ctx context.Context, name string, server MCPServer) ([]*ToolAdapter, error) {
+	// Snapshot the desired config before env-var expansion so change
+	// detection (here and in Reconcile) isn't sensitive to expansion
+	// producing a different string each reload for the same inputs.
+	desiredConfig := server
+
+	c.mu.RLock()
+	_, already := c.sessions[name]
+	unchanged := already && mcpServerEqual(c.serverConfigs[name], desiredConfig)
+	c.mu.RUnlock()
+	if unchanged {
+		c.mu.RLock()
+		var existing []*ToolAdapter
+		for _, t := range c.tools {
+			if t.serverName == name {
+				existing = append(existing, t)
+			}
+		}
+		c.mu.RUnlock()
+		return existing, nil
+	}
+
+	// Expand server variables in server configuration
+	ExpandServerEnvVars(&server)
+
+	var (
+		adapters []*ToolAdapter
+		err      error
+	)
+
+	isStdio := server.TransportType == "stdio" ||
+		(server.TransportType == "" && server.Command != "" && server.URL == "")
+
+	if isStdio {
+		envSlice := make([]string, 0, len(server.Env))
+		for k, v := range server.Env {
+			envSlice = append(envSlice, k+"="+v)
+		}
+		var stderrBuf lockedBuffer
+		var transport mcp.Transport
+		transport, err = NewStdioTransportWithStderr(ctx, server.Command, server.Args, envSlice, &stderrBuf, server.Dir)
+		if err == nil {
+			adapters, err = c.connect(ctx, transport, name)
+		}
+		if err != nil {
+			// Give the stderr goroutine a moment to capture the error.
+			time.Sleep(50 * time.Millisecond)
+			if stderrBuf.Len() > 0 {
+				err = fmt.Errorf("failed to connect to server %s: %w\nstderr:\n%s", name, err, stderrBuf.String())
+			} else {
+				err = fmt.Errorf("failed to connect to server %s: %w", name, err)
+			}
+		}
+	} else {
+		var transport mcp.Transport
+		transport, err = TransportForServer(ctx, &server)
+		if err == nil {
+			adapters, err = c.connect(ctx, transport, name)
+		}
+		if err != nil {
+			err = fmt.Errorf("failed to connect to server %s: %w", name, err)
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	c.serverConfigs[name] = desiredConfig
+	c.mu.Unlock()
+
+	return adapters, nil
+}
+
 // ConnectFromConfig connects to every enabled server in config in stable
 // alphabetical order. Servers that are already connected (same name) are
 // skipped, so calling this with a config that includes previously-connected
@@ -495,63 +588,51 @@ func (c *Client) ConnectFromConfig(ctx context.Context, config *MCPConfig) error
 			// fmt.Printf("Skipping disabled MCP server: %s\n", name)
 			continue
 		}
-
-		// Snapshot the desired config before env-var expansion so change
-		// detection (here and in Reconcile) isn't sensitive to expansion
-		// producing a different string each reload for the same inputs.
-		desiredConfig := server
-
-		c.mu.RLock()
-		_, already := c.sessions[name]
-		unchanged := already && mcpServerEqual(c.serverConfigs[name], desiredConfig)
-		c.mu.RUnlock()
-		if unchanged {
-			continue // already connected with this exact config — don't reconnect
+		if _, err := c.connectServer(ctx, name, server); err != nil {
+			return err
 		}
-
-		// Expand server variables in server configuration
-		ExpandServerEnvVars(&server)
-
-		var transport mcp.Transport
-		var err error
-
-		// For stdio transports, buffer stderr so we can include diagnostics if
-		// the connection fails. Remote transports don't have stderr.
-		if server.TransportType == "stdio" || (server.TransportType == "" && server.Command != "" && server.URL == "") {
-			envSlice := make([]string, 0, len(server.Env))
-			for k, v := range server.Env {
-				envSlice = append(envSlice, k+"="+v)
-			}
-			var stderrBuf lockedBuffer
-			transport, err = NewStdioTransportWithStderr(ctx, server.Command, server.Args, envSlice, &stderrBuf, server.Dir)
-			if err == nil {
-				err = c.Connect(ctx, transport, name)
-			}
-			if err != nil {
-				// Give the stderr goroutine a moment to capture the error.
-				time.Sleep(50 * time.Millisecond)
-				if stderrBuf.Len() > 0 {
-					return fmt.Errorf("failed to connect to server %s: %w\nstderr:\n%s", name, err, stderrBuf.String())
-				}
-				return fmt.Errorf("failed to connect to server %s: %w", name, err)
-			}
-		} else {
-			transport, err = TransportForServer(ctx, &server)
-			if err != nil {
-				return fmt.Errorf("failed to create transport for server %s: %w", name, err)
-			}
-
-			if err := c.Connect(ctx, transport, name); err != nil {
-				return fmt.Errorf("failed to connect to server %s: %w", name, err)
-			}
-		}
-
-		c.mu.Lock()
-		c.serverConfigs[name] = desiredConfig
-		c.mu.Unlock()
 	}
 
 	return nil
+}
+
+func (c *Client) ConnectFromConfigConcurrent(ctx context.Context, config *MCPConfig, onResult func(ServerConnectResult)) error {
+	names := make([]string, 0, len(config.McpServers))
+	for name := range config.McpServers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var (
+		wg       sync.WaitGroup
+		errMu    sync.Mutex
+		firstErr error
+	)
+
+	for _, name := range names {
+		server := config.McpServers[name]
+		if server.Disabled {
+			continue
+		}
+		wg.Add(1)
+		go func(name string, server MCPServer) {
+			defer wg.Done()
+			adapters, err := c.connectServer(ctx, name, server)
+			if onResult != nil {
+				onResult(ServerConnectResult{Name: name, Adapters: adapters, Err: err})
+			}
+			if err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+			}
+		}(name, server)
+	}
+
+	wg.Wait()
+	return firstErr
 }
 
 // mcpServerEqual reports whether two MCPServer configs are equivalent for

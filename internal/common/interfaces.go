@@ -25,6 +25,7 @@ type Orchestrator interface {
 	History() []client.ChatMessage
 	Context() context.Context
 	Middlewares() []ToolMiddleware
+	SetMiddlewares([]ToolMiddleware)
 	Registry() *ToolRegistry
 	SystemPrompt() string
 	ToolDefinitions() []client.ToolDefinition
@@ -53,6 +54,7 @@ type ContentEvent struct {
 	ReasoningContent string
 	ToolCalls        []client.ToolCall
 	Usage            client.Usage
+	Completed        bool // Assistant message has been saved to history.
 }
 
 func (e ContentEvent) OrchestratorID() string { return e.ID }

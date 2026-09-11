@@ -1,0 +1,8 @@
+{
+  "name": "late dev",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "postCreateCommand": "go mod tidy"
+}

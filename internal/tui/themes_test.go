@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 )
 
 // makeTheme builds a ThemeEntry suitable for testing.
@@ -206,8 +206,8 @@ func TestApplyTheme_ClearsRenderCaches(t *testing.T) {
 	m := &Model{
 		AgentStates: map[string]*AppState{
 			"agent-1": {
-				RenderedHistory:     []string{"cached"},
-				LastTotalContent:    "x",
+				RenderedHistory:      []string{"cached"},
+				LastTotalContent:     "x",
 				LastStreamingContent: "y",
 				StreamingStyledCache: "z",
 			},
@@ -319,7 +319,7 @@ func TestSlashThemes_NoThemesToast(t *testing.T) {
 	t.Skip("requires orchestrator plumbing; covered manually")
 	m := &Model{} // simpler: empty model, type a command
 	// Type "/themes" then press enter.
-	m.Input.SetValue("> /themes")
+	m.Input.SetValue("/themes")
 	nm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	nm2 := nm.(Model)
 	if nm2.ToastMessage == "" || !strings.Contains(nm2.ToastMessage, "no plugin themes") {
@@ -337,7 +337,7 @@ func TestSlashThemes_AppliesByName(t *testing.T) {
 		},
 		Viewport: viewport.Model{},
 	}
-	m.Input.SetValue("> /themes deep")
+	m.Input.SetValue("/themes deep")
 	nm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	nm2 := nm.(Model)
 	if nm2.SelectedTheme != "ocean:deep" {
@@ -355,7 +355,7 @@ func TestSlashThemes_UnknownName(t *testing.T) {
 		ThemeEntries: []ThemeEntry{makeTheme("a:b", "a", "b")},
 		Viewport:     viewport.Model{},
 	}
-	m.Input.SetValue("> /themes missing")
+	m.Input.SetValue("/themes missing")
 	nm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	nm2 := nm.(Model)
 	if !strings.Contains(nm2.ToastMessage, "theme not found") {
@@ -374,7 +374,7 @@ func TestSlashThemes_OpensPickerAtActive(t *testing.T) {
 		SelectedTheme: "c:d",
 		Viewport:      viewport.Model{},
 	}
-	m.Input.SetValue("> /themes")
+	m.Input.SetValue("/themes")
 	nm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	nm2 := nm.(Model)
 	if nm2.Mode != ViewThemes {
