@@ -92,7 +92,7 @@ func TestModelPickerPersistsStableModelID(t *testing.T) {
 func TestModelPickerUnavailableWhileAgentIsActive(t *testing.T) {
 	model := NewModel(&mockOrchestrator{}, nil, &config.Config{})
 	model.GetAgentState("active-child").State = StateThinking
-	model.Input.SetValue("> /model")
+	model.Input.SetValue("/model")
 
 	updated, _ := model.updateChat(mockKey{code: '\r', text: "enter"})
 

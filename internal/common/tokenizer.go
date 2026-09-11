@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/pkoukk/tiktoken-go"
 )
@@ -61,18 +62,41 @@ func (embeddedBpeLoader) LoadTiktokenBpe(_ string) (map[string]int, error) {
 func init() {
 	// Override tiktoken-go's network loader with the embedded vocab.
 	tiktoken.SetBpeLoader(embeddedBpeLoader{})
+	// Warm up BPE asynchronously in the background so main thread / TUI startup is instant.
+	go func() {
+		_, _ = loadBPE()
+	}()
 }
 
 var (
 	bpeEnc    *tiktoken.Tiktoken
 	bpeEncErr error
-	bpeOnce   sync.Once
+	bpeReady  atomic.Bool
+	bpeMu     sync.Mutex
 )
+
+func loadBPE() (*tiktoken.Tiktoken, error) {
+	if bpeReady.Load() {
+		return bpeEnc, bpeEncErr
+	}
+	bpeMu.Lock()
+	defer bpeMu.Unlock()
+	if !bpeReady.Load() {
+		bpeEnc, bpeEncErr = tiktoken.GetEncoding("cl100k_base")
+		bpeReady.Store(true)
+	}
+	return bpeEnc, bpeEncErr
+}
 
 // bpe returns a cached cl100k_base BPE encoder backed by the embedded vocab.
 func bpe() (*tiktoken.Tiktoken, error) {
-	bpeOnce.Do(func() {
-		bpeEnc, bpeEncErr = tiktoken.GetEncoding("cl100k_base")
-	})
-	return bpeEnc, bpeEncErr
+	return loadBPE()
+}
+
+// bpeIfReady returns the loaded BPE encoder, or nil if still loading in the background.
+func bpeIfReady() *tiktoken.Tiktoken {
+	if bpeReady.Load() {
+		return bpeEnc
+	}
+	return nil
 }

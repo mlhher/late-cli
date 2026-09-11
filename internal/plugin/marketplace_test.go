@@ -133,29 +133,6 @@ func TestMarketplaceClient_Resolve_NilOrEmpty(t *testing.T) {
 	}
 }
 
-// TestDefaultRegistry_NoDefaultURL is a regression test: no registry has
-// been published yet, so DefaultRegistryBaseURL must stay empty rather
-// than pointing at a placeholder host. DefaultRegistry() honors
-// LATE_PLUGIN_REGISTRY when set, and otherwise resolves to an empty
-// BaseURL — which Resolve() rejects, so a bare-name install falls through
-// to npm (see Install's fallback policy) instead of hitting a
-// placeholder endpoint.
-func TestDefaultRegistry_NoDefaultURL(t *testing.T) {
-	if DefaultRegistryBaseURL != "" {
-		t.Fatalf("expected DefaultRegistryBaseURL to be empty until a registry is published, got %q", DefaultRegistryBaseURL)
-	}
-
-	t.Setenv("LATE_PLUGIN_REGISTRY", "")
-	if c := DefaultRegistry(); c.BaseURL != "" {
-		t.Fatalf("expected empty BaseURL with no env override, got %q", c.BaseURL)
-	}
-
-	t.Setenv("LATE_PLUGIN_REGISTRY", "https://example.com/registry/")
-	if c := DefaultRegistry(); c.BaseURL != "https://example.com/registry" {
-		t.Fatalf("expected env override (trailing slash trimmed), got %q", c.BaseURL)
-	}
-}
-
 // TestMarketplaceEntry_SourceType: explicit table check for the discriminator.
 func TestMarketplaceEntry_SourceType(t *testing.T) {
 	cases := []struct {

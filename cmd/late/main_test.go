@@ -6,7 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"late/internal/agent"
 	"late/internal/client"
+	"late/internal/orchestrator"
+	"late/internal/plugin"
 	"late/internal/session"
 )
 
@@ -197,3 +200,46 @@ func TestDeriveEffectiveSessionID(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildMiddlewares_SubagentInheritsPluginHooks(t *testing.T) {
+	c := client.NewClient(client.Config{BaseURL: "http://localhost:8080"})
+	parentSess := session.New(c, "", nil, "parent prompt", false)
+	parent := orchestrator.NewBaseOrchestrator("parent", parentSess, nil, 10)
+
+	child, err := agent.NewSubagentOrchestrator(c, "subagent goal", nil, "coder", map[string]bool{"bash": true}, false, false, 10, "", false, parent, nil)
+	if err != nil {
+		t.Fatalf("NewSubagentOrchestrator: %v", err)
+	}
+
+	// 1. Without plugins: 1 middleware (TUI confirmation)
+	mwsNoPlugin := buildMiddlewares(nil, nil, child.Registry())
+	if len(mwsNoPlugin) != 1 {
+		t.Fatalf("expected 1 middleware without plugins, got %d", len(mwsNoPlugin))
+	}
+
+	// 2. With plugins declaring onToolCall and onToolResult: 3 middlewares
+	pm := plugin.NewPluginManager(t.TempDir())
+	pm.Add(&plugin.InstalledPlugin{
+		Name:    "test-plugin",
+		Enabled: true,
+		Path:    t.TempDir(),
+		Late: &plugin.LateManifest{
+			Hooks: &plugin.LateHooksManifest{
+				OnToolCall:   []string{"hook.sh"},
+				OnToolResult: []string{"hook.sh"},
+			},
+		},
+	})
+
+	mwsWithPlugin := buildMiddlewares(pm, nil, child.Registry())
+	if len(mwsWithPlugin) != 3 {
+		t.Fatalf("expected 3 middlewares with plugins (onToolCall + confirm + onToolResult), got %d", len(mwsWithPlugin))
+	}
+
+	// 3. SetMiddlewares on the child subagent orchestrator
+	child.SetMiddlewares(mwsWithPlugin)
+	if len(child.Middlewares()) != 3 {
+		t.Fatalf("expected child to have 3 middlewares attached, got %d", len(child.Middlewares()))
+	}
+}
+

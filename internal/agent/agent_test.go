@@ -341,6 +341,9 @@ func TestNewSubagentOrchestrator_PersistsWhenOptedIn(t *testing.T) {
 	if !foundGoal {
 		t.Errorf("Expected a message containing goal %q, got %d messages", goal, len(msgs))
 	}
+	if strings.HasSuffix(msgs[0].Content.String(), "\n") {
+		t.Errorf("Initial goal message should not have trailing newlines, got: %q", msgs[0].Content.String())
+	}
 
 	// The parent sequence reservation writes its root metadata sidecar. Subagent
 	// sessions themselves must never write nested .meta.json sidecars.

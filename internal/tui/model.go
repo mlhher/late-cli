@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"late/internal/common"
 	"late/internal/config"
+	"late/internal/git"
 	"os"
+	"time"
 
 	"charm.land/bubbles/v2/filepicker"
 	"charm.land/bubbles/v2/spinner"
@@ -17,7 +19,7 @@ import (
 
 func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *config.Config) Model {
 	ti := textarea.New()
-	ti.Placeholder = "Ask Late anything..."
+	ti.Placeholder = "Ask Late to build, refactor, search, run bash... (Type / for commands)"
 	ti.Focus()
 	ti.CharLimit = 100000 // Allow pasting large code blocks
 	ti.SetWidth(72)
@@ -26,32 +28,37 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 	ti.MaxHeight = 4
 	ti.SetHeight(1)
 	ti.ShowLineNumbers = false
-	ti.Prompt = ""    // Remove the line prompt characters
-	ti.SetValue("> ") // Set initial "fake" prompt to force background render logic on first line
+	// A real prompt gutter reserves space on every wrapped and explicit line.
+	ti.SetPromptFunc(2, func(info textarea.PromptInfo) string {
+		if info.LineNumber == 0 {
+			return "❯ "
+		}
+		return "  "
+	})
 	ti.KeyMap.InsertNewline.SetEnabled(false)
 
 	// Set opaque background for textarea content
-	bgStyle := lipgloss.NewStyle().Background(lipgloss.Color("#0E0E10")).Foreground(textColor)
+	bgStyle := lipgloss.NewStyle().Background(appBgColor).Foreground(textColor)
 	styles := ti.Styles()
 	styles.Focused.Base = bgStyle
 	styles.Focused.Text = bgStyle
-	styles.Focused.Placeholder = bgStyle.Foreground(lipgloss.Color("#4A4B50"))
+	styles.Focused.Placeholder = bgStyle.Foreground(mutedTextColor)
 	styles.Focused.CursorLine = bgStyle
-	styles.Focused.Prompt = bgStyle
+	styles.Focused.Prompt = bgStyle.Foreground(primaryColor)
 
 	styles.Blurred.Base = bgStyle
 	styles.Blurred.Text = bgStyle
-	styles.Blurred.Placeholder = bgStyle.Foreground(lipgloss.Color("#4A4B50"))
+	styles.Blurred.Placeholder = bgStyle.Foreground(mutedTextColor)
 	styles.Blurred.CursorLine = bgStyle
-	styles.Blurred.Prompt = bgStyle
+	styles.Blurred.Prompt = bgStyle.Foreground(primaryColor)
 	ti.SetStyles(styles)
 
 	// Initialize with 0, so that the first WindowSizeMsg sets correct dimensions
 	// This prevents the "50% width" issue if the default 60 is too small for a large terminal
 	vp := viewport.New(viewport.WithWidth(0), viewport.WithHeight(0))
-	vp.MouseWheelDelta = 6 // Lines per wheel tick; default 3 feels slow on chat history
+	vp.MouseWheelDelta = 2
 	// VTE-based terminals: set explicit background on the viewport so its
-	// internal padding cells don't become transparent after ANSI resets.
+	// internal padding cells and empty lines don't become transparent after ANSI resets.
 	vp.Style = lipgloss.NewStyle().Background(appBgColor)
 	// Initial welcome is set to empty; updateViewport in view.go renders
 	// the rich welcome when history is empty using renderWelcomeMessage().
@@ -79,11 +86,15 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 		Height:              24, // Default start height
 		AgentStates:         make(map[string]*AppState),
 		InspectingTool:      false,
-		Spinner:             spinner.New(spinner.WithSpinner(spinner.Dot)),
+		Spinner: spinner.New(spinner.WithSpinner(spinner.Spinner{
+			Frames: spinner.Dot.Frames,
+			FPS:    40 * time.Millisecond,
+		})),
 		InputHistory:        make([]string, 0),
 		HistoryIndex:        -1,
 		CWD:                 cwd,
 		ShowCWD:             true,
+		GitBranch:           git.CurrentBranch(cwd),
 		cachedRendererWidth: -1, // Force first creation
 		Pastes:              make(map[string]string),
 		AppConfig:           cfg,
@@ -102,9 +113,9 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 
 	// Apply styles for visibility
 	s := filepicker.DefaultStyles()
-	s.Selected = lipgloss.NewStyle().Foreground(secondaryColor).Bold(true)
-	s.File = lipgloss.NewStyle().Foreground(textColor)
-	s.Directory = lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+	s.Selected = filePickerSelectedStyle
+	s.File = filePickerFileStyle
+	s.Directory = filePickerDirectoryStyle
 	fp.Styles = s
 
 	m.FilePicker = fp
@@ -112,15 +123,26 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 	history := root.History()
 	cumulativeTokens := 0
 	if history != nil && len(history) >= 0 {
-		cumulativeTokens = common.CalculateHistoryTokens(history, root.SystemPrompt(), root.ToolDefinitions())
+		cumulativeTokens = common.CalculateHistoryTokensFast(history, root.SystemPrompt(), root.ToolDefinitions())
 	}
 	m.AgentStates[root.ID()] = &AppState{
 		State:                initialState,
 		StatusText:           "Ready",
 		CumulativeTokenCount: cumulativeTokens,
+		CachedWidth:          -1,
 	}
 
 	return m
+}
+
+// SetSize sets initial terminal dimensions and computes the layout before launch.
+func (m *Model) SetSize(w, h int) {
+	if w <= 0 || h <= 0 {
+		return
+	}
+	m.Width = w
+	m.Height = h
+	m.updateLayout()
 }
 
 // GetRenderer returns a glamour renderer word-wrapped at width, built from
@@ -254,5 +276,5 @@ func applyMessageHook(hook func(string) string, text string) string {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.Spinner.Tick, m.FilePicker.Init())
+	return tea.Batch(textarea.Blink, m.Spinner.Tick, func() tea.Msg { return transcriptFrameMsg{} })
 }
