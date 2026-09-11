@@ -34,6 +34,10 @@ var LateTheme = []byte(`
     "level_indent": 2,
     "background_color": "#0B0C0E"
   },
+  "item": {
+    "block_prefix": "• ",
+    "color": "#E5A85C"
+  },
   "bullet": {
     "color": "#E5A85C"
   },

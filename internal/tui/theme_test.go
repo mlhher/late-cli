@@ -53,6 +53,18 @@ func TestCodeBlockRendering(t *testing.T) {
 	}
 }
 
+func TestMarkdownListRendering(t *testing.T) {
+	model := NewModel(&mockOrchestrator{}, nil, nil)
+	rendered := model.renderMarkdownBlock("- First item\n- Second item", 80)
+	plain := ansi.Strip(rendered)
+	if !strings.Contains(plain, "• First item") {
+		t.Errorf("expected rendered list to contain bullet '• First item', got:\n%s (raw: %q)", plain, rendered)
+	}
+	if !strings.Contains(plain, "• Second item") {
+		t.Errorf("expected rendered list to contain bullet '• Second item', got:\n%s (raw: %q)", plain, rendered)
+	}
+}
+
 func TestRenderWelcomeMessage(t *testing.T) {
 	model := NewModel(&mockOrchestrator{}, nil, nil)
 	model.ModelName = "test-model-4"
