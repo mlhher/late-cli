@@ -54,6 +54,7 @@ type ContentEvent struct {
 	ReasoningContent string
 	ToolCalls        []client.ToolCall
 	Usage            client.Usage
+	Completed        bool // Assistant message has been saved to history.
 }
 
 func (e ContentEvent) OrchestratorID() string { return e.ID }

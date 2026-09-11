@@ -55,7 +55,7 @@ func (r *ToolRegistry) Get(name string) Tool {
 func (r *ToolRegistry) All() []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	var all []Tool
+	all := make([]Tool, 0, len(r.tools))
 	for _, t := range r.tools {
 		all = append(all, t)
 	}

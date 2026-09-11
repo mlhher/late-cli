@@ -2,6 +2,8 @@ package tui
 
 import (
 	"errors"
+	"fmt"
+	"late/internal/client"
 	"strings"
 	"testing"
 	"time"
@@ -71,7 +73,7 @@ func TestSetPluginCommands_Replace(t *testing.T) {
 // TestAvailableCommands_ContainsBuiltins verifies that the built-in command set
 // includes the expected slash commands.
 func TestAvailableCommands_ContainsBuiltins(t *testing.T) {
-	expected := []string{"/clear", "/compose", "/help", "/log", "/quit", "/rewind"}
+	expected := []string{"/compose", "/help", "/log", "/model", "/new", "/quit", "/rewind", "/themes"}
 
 	for _, exp := range expected {
 		found := false
@@ -83,6 +85,14 @@ func TestAvailableCommands_ContainsBuiltins(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("AvailableCommands should contain %q", exp)
+		}
+	}
+
+	// Verify alphabetical order
+	for i := 1; i < len(AvailableCommands); i++ {
+		if AvailableCommands[i-1].Name > AvailableCommands[i].Name {
+			t.Errorf("AvailableCommands not sorted alphabetically: %q before %q",
+				AvailableCommands[i-1].Name, AvailableCommands[i].Name)
 		}
 	}
 
@@ -138,7 +148,7 @@ func TestIsPluginCmd_MatchesWithArgs(t *testing.T) {
 func TestMessageHookLocksInputUntilSubmission(t *testing.T) {
 	orch := &mockOrchestrator{supportsVision: true}
 	m := NewModel(orch, nil, nil)
-	m.Input.SetValue("> hello")
+	m.Input.SetValue("hello")
 	m.AttachedFiles = []string{"image.png"}
 	m.MessageHook = strings.ToUpper
 
@@ -149,7 +159,7 @@ func TestMessageHookLocksInputUntilSubmission(t *testing.T) {
 	if m.RunningPluginAction != "message hooks" {
 		t.Fatalf("running action = %q, want message hooks", m.RunningPluginAction)
 	}
-	if got := m.Input.Value(); got != "> " {
+	if got := m.Input.Value(); got != "" {
 		t.Fatalf("input was not cleared while hooks run: %q", got)
 	}
 	if len(m.AttachedFiles) != 0 {
@@ -171,7 +181,7 @@ func TestMessageHookLocksInputUntilSubmission(t *testing.T) {
 	}
 	m, _ = m.updateInternal(tea.KeyPressMsg(tea.Key{Code: 'x', Text: "x"}))
 	m, _ = m.updateInternal(tea.PasteMsg{Content: "new draft"})
-	if got := m.Input.Value(); got != "> " {
+	if got := m.Input.Value(); got != "" {
 		t.Fatalf("input changed while hooks were running: %q", got)
 	}
 
@@ -195,7 +205,7 @@ func TestMessageHookRestoresDraftWhenSubmissionFails(t *testing.T) {
 	submitErr := errors.New("submission failed")
 	orch := &mockOrchestrator{supportsVision: true, submitErr: submitErr}
 	m := NewModel(orch, nil, nil)
-	m.Input.SetValue("> keep this draft")
+	m.Input.SetValue("keep this draft")
 	m.AttachedFiles = []string{"image.png"}
 	m.Pastes = map[string]string{"placeholder": "original paste"}
 	m.MessageHook = func(text string) string { return text + " transformed" }
@@ -212,7 +222,7 @@ func TestMessageHookRestoresDraftWhenSubmissionFails(t *testing.T) {
 	if m.RunningPluginAction != "" {
 		t.Fatalf("running action not cleared after failure: %q", m.RunningPluginAction)
 	}
-	if got := m.Input.Value(); got != "> keep this draft" {
+	if got := m.Input.Value(); got != "keep this draft" {
 		t.Fatalf("restored input = %q", got)
 	}
 	if len(m.AttachedFiles) != 1 || m.AttachedFiles[0] != "image.png" {
@@ -220,5 +230,95 @@ func TestMessageHookRestoresDraftWhenSubmissionFails(t *testing.T) {
 	}
 	if got := m.Pastes["placeholder"]; got != "original paste" {
 		t.Fatalf("paste mapping was not preserved: %q", got)
+	}
+}
+
+func TestSlashNew_ResetsViewportAndDismissesAutocomplete(t *testing.T) {
+	orch := &mockOrchestrator{
+		history: []client.ChatMessage{
+			{Role: "user", Content: client.TextContent("hello")},
+			{Role: "assistant", Content: client.TextContent("world")},
+		},
+	}
+	m := NewModel(orch, nil, nil)
+	m.Width = 80
+	m.Height = 24
+	m.updateLayout()
+
+	// Simulate being scrolled down in chat history
+	m.Viewport.SetYOffset(10)
+	// Simulate autocomplete being open because user typed /new
+	m.ShowAutocomplete = true
+	m.AutocompleteItems = []CommandDef{{Name: "/new", Description: "Start fresh conversation"}}
+
+	// Submit /new command
+	m.Input.SetValue("/new")
+	updatedModel, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	um := updatedModel.(Model)
+
+	if um.ShowAutocomplete {
+		t.Errorf("expected ShowAutocomplete to be false after /new")
+	}
+	if len(um.AutocompleteItems) != 0 {
+		t.Errorf("expected AutocompleteItems to be empty, got %d", len(um.AutocompleteItems))
+	}
+	if um.Viewport.YOffset() != 0 {
+		t.Errorf("expected Viewport YOffset to be 0 (top of welcome screen), got %d", um.Viewport.YOffset())
+	}
+}
+
+func TestAutocompleteHeight_InvariantScreenHeight(t *testing.T) {
+	orch := &mockOrchestrator{}
+	m := NewModel(orch, nil, nil)
+	m.Width = 80
+	m.Height = 24
+	m.updateLayout()
+
+	// Initial view without autocomplete
+	baseView := m.View()
+	baseHeight := strings.Count(baseView.Content, "\n") + 1
+	if baseHeight != m.Height {
+		t.Fatalf("expected initial view height = %d, got %d", m.Height, baseHeight)
+	}
+
+	// Test with various numbers of autocomplete items (1 to 12)
+	for count := 1; count <= 12; count++ {
+		var items []CommandDef
+		for i := 0; i < count; i++ {
+			items = append(items, CommandDef{
+				Name:        fmt.Sprintf("/cmd%d", i),
+				Description: fmt.Sprintf("Command %d description", i),
+			})
+		}
+		m.ShowAutocomplete = true
+		m.AutocompleteItems = items
+		m.AutocompleteIndex = 0
+		m.updateLayout()
+
+		rendered := m.View()
+		gotHeight := strings.Count(rendered.Content, "\n") + 1
+		if gotHeight != m.Height {
+			t.Errorf("item count %d: expected view height = %d, got %d", count, m.Height, gotHeight)
+		}
+
+		// Test scrolling through items
+		for idx := 0; idx < count; idx++ {
+			m.AutocompleteIndex = idx
+			scrollRendered := m.View()
+			scrollH := strings.Count(scrollRendered.Content, "\n") + 1
+			if scrollH != m.Height {
+				t.Errorf("item count %d, index %d: expected view height = %d, got %d", count, idx, m.Height, scrollH)
+			}
+		}
+	}
+
+	// Close autocomplete and verify height remains identical
+	m.ShowAutocomplete = false
+	m.AutocompleteItems = nil
+	m.updateLayout()
+	closedView := m.View()
+	closedHeight := strings.Count(closedView.Content, "\n") + 1
+	if closedHeight != m.Height {
+		t.Errorf("expected closed view height = %d, got %d", m.Height, closedHeight)
 	}
 }

@@ -119,3 +119,27 @@ func GetActiveWorktree() (string, error) {
 	}
 	return strings.TrimSpace(string(output)), nil
 }
+
+// CurrentBranch returns the current git branch name at cwd, or "" if not in a git repo.
+func CurrentBranch(cwd string) string {
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	branch := strings.TrimSpace(string(output))
+	if branch == "HEAD" {
+		// Detached HEAD: get short SHA
+		shortCmd := exec.Command("git", "rev-parse", "--short", "HEAD")
+		if cwd != "" {
+			shortCmd.Dir = cwd
+		}
+		if shortOut, errShort := shortCmd.Output(); errShort == nil {
+			return strings.TrimSpace(string(shortOut))
+		}
+	}
+	return branch
+}
