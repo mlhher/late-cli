@@ -371,6 +371,82 @@ func TestCentralizedBoxBorders(t *testing.T) {
 			break
 		}
 	}
+
+	// Themes view (empty state) uses rounded borders
+	model.Mode = ViewThemes
+	model.ThemeEntries = nil
+	model.updateViewport()
+	themeEmptyContent := model.Viewport.View()
+	if !strings.Contains(themeEmptyContent, "╭") || !strings.Contains(themeEmptyContent, "╰") {
+		t.Errorf("expected /themes (empty) to use rounded border corners (╭/╰), got:\n%s", themeEmptyContent)
+	}
+	if strings.Contains(themeEmptyContent, "╔") || strings.Contains(themeEmptyContent, "╚") {
+		t.Errorf("expected /themes (empty) not to use double border corners (╔/╚), got:\n%s", themeEmptyContent)
+	}
+
+	// Themes view (populated state) uses rounded borders
+	model.ThemeEntries = []ThemeEntry{
+		{ID: "test:dark", PluginName: "test", ThemeName: "dark"},
+	}
+	model.ThemeIndex = 0
+	model.updateViewport()
+	themePopulatedContent := model.Viewport.View()
+	if !strings.Contains(themePopulatedContent, "╭") || !strings.Contains(themePopulatedContent, "╰") {
+		t.Errorf("expected /themes (populated) to use rounded border corners (╭/╰), got:\n%s", themePopulatedContent)
+	}
+	if strings.Contains(themePopulatedContent, "╔") || strings.Contains(themePopulatedContent, "╚") {
+		t.Errorf("expected /themes (populated) not to use double border corners (╔/╚), got:\n%s", themePopulatedContent)
+	}
+}
+
+func TestThemePickerSelectionStyle(t *testing.T) {
+	model := NewModel(&mockOrchestrator{}, nil, nil)
+	model.Viewport.SetWidth(90)
+	model.Viewport.SetHeight(100)
+	model.Mode = ViewThemes
+	model.ThemeEntries = []ThemeEntry{
+		{ID: "test:dark", PluginName: "test", ThemeName: "dark"},
+		{ID: "test:light", PluginName: "test", ThemeName: "light"},
+	}
+	model.SelectedTheme = "test:dark" // dark is active
+
+	// 1. When index 0 is selected:
+	model.ThemeIndex = 0
+	model.updateViewport()
+	c0 := model.Viewport.View()
+	p0 := ansi.Strip(c0)
+
+	// dark is selected and active: ▸ ● dark
+	if !strings.Contains(p0, "▸ ● dark") {
+		t.Errorf("expected selected active theme to have '▸ ● dark', got:\n%s", p0)
+	}
+	// light is unselected and inactive: 4 spaces prefix "    light"
+	if !strings.Contains(p0, "    light") {
+		t.Errorf("expected unselected inactive theme to have '    light', got:\n%s", p0)
+	}
+	// Verify gold color #E5A85C (38;2;229;168;92) is used on selection
+	if !strings.Contains(c0, "38;2;229;168;92") {
+		t.Errorf("expected selected theme row to contain gold highlight color #E5A85C (38;2;229;168;92), got:\n%s", c0)
+	}
+
+	// 2. When index moves to 1:
+	model.ThemeIndex = 1
+	model.updateViewport()
+	c1 := model.Viewport.View()
+	p1 := ansi.Strip(c1)
+
+	// dark is now unselected but still active: "  ● dark"
+	if !strings.Contains(p1, "  ● dark") {
+		t.Errorf("expected unselected active theme to have '  ● dark', got:\n%s", p1)
+	}
+	// light is now selected and inactive: "▸   light"
+	if !strings.Contains(p1, "▸   light") {
+		t.Errorf("expected selected inactive theme to have '▸   light', got:\n%s", p1)
+	}
+	// Arrow moved along to light
+	if strings.Contains(p1, "▸ ● dark") {
+		t.Errorf("expected arrow to move away from dark when index is 1, got:\n%s", p1)
+	}
 }
 
 func TestChatContentAndTableFullWidth(t *testing.T) {

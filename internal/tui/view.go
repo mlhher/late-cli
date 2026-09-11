@@ -999,13 +999,8 @@ func (m *Model) renderThemeView() {
 			Padding(0, 1).
 			Width(width - 8).
 			Render("No plugin themes installed.")
-		box := lipgloss.NewStyle().
-			Border(lipgloss.DoubleBorder()).
-			BorderForeground(secondaryColor).
-			BorderBackground(appBgColor).
-			Background(appBgColor).
-			Width(width-2).
-			Padding(1, 2).
+		box := modalBoxStyle.
+			Width(width - 2).
 			Render(lipgloss.JoinVertical(lipgloss.Left, header, subtitle, empty))
 		paddedContent := lipgloss.NewStyle().
 			Width(m.Viewport.Width()).
@@ -1018,11 +1013,15 @@ func (m *Model) renderThemeView() {
 	var rows []string
 	for i, t := range m.ThemeEntries {
 		isActive := t.ID == m.SelectedTheme || (t.ID == "default" && (m.SelectedTheme == "" || m.SelectedTheme == "default"))
+		prefix := "  "
+		if i == m.ThemeIndex {
+			prefix = "▸ "
+		}
 		marker := "  "
 		if isActive {
 			marker = "\u25cf "
 		}
-		label := fmt.Sprintf("%s%s", marker, t.ThemeName)
+		label := fmt.Sprintf("%s%s%s", prefix, marker, t.ThemeName)
 		sub := fmt.Sprintf("    %s", t.PluginName)
 		if isActive {
 			sub += "  \u2022 active"
@@ -1031,7 +1030,7 @@ func (m *Model) renderThemeView() {
 		var row string
 		if i == m.ThemeIndex {
 			row = lipgloss.NewStyle().
-				Foreground(textColor).
+				Foreground(primaryColor).
 				Background(userMsgBg).
 				Bold(true).
 				Width(width-8).
@@ -1072,13 +1071,8 @@ func (m *Model) renderThemeView() {
 
 	emptyLine := lipgloss.NewStyle().Background(appBgColor).Width(width - 8).Render("")
 
-	box := lipgloss.NewStyle().
-		Border(lipgloss.DoubleBorder()).
-		BorderForeground(secondaryColor).
-		BorderBackground(appBgColor).
-		Background(appBgColor).
-		Width(width-2).
-		Padding(1, 2).
+	box := modalBoxStyle.
+		Width(width - 2).
 		Render(lipgloss.JoinVertical(lipgloss.Left,
 			header,
 			subtitle,

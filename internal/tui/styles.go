@@ -26,7 +26,7 @@ var (
 
 	// Centralized Border Styles & Colors
 	boxBorderStyle   = lipgloss.RoundedBorder()
-	modalBorderColor = secondaryColor // Primary border color for dialogs & overlays (/help, commit detail)
+	modalBorderColor = secondaryColor // Primary border color for dialogs & overlays (/help, /themes, commit detail)
 	cardBorderColor  = borderColor    // Subtle border for embedded cards & matrices (welcome card)
 	warnBorderColor  = accentCoral    // Warning / confirmation border color (stop dialog, tool permissions)
 	errorBorderColor = accentCoral    // Error border color (context limit exceeded)
@@ -36,6 +36,7 @@ var (
 			Padding(1, 2).
 			Border(boxBorderStyle).
 			BorderForeground(modalBorderColor).
+			BorderBackground(appBgColor).
 			Background(appBgColor)
 
 	// Fullscreen View Styles (/log, /rewind, /model)
