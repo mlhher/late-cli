@@ -463,7 +463,11 @@ func (m *Model) statusBarView() string {
 		statePart = m.renderIdleEqualizer()
 		statusText = "authorize execution (y/s/p/g/n)"
 	default:
-		statePart = m.renderIdleEqualizer()
+		if m.BootstrapStatus != "" {
+			statePart = m.renderScannerTrack("✦", primaryColor)
+		} else {
+			statePart = m.renderIdleEqualizer()
+		}
 	}
 	leftItems = append(leftItems, statePart)
 

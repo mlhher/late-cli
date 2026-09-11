@@ -584,6 +584,7 @@ func main() {
 		pOpts = append(pOpts, tea.WithWindowSize(w, h))
 	}
 
+	model.BootstrapStatus = "Starting..."
 	p := tea.NewProgram(model, pOpts...)
 
 	// toolSync serializes plugin/MCP tool-registry refreshes triggered by
@@ -618,6 +619,10 @@ func main() {
 
 		// Start forwarding events from the root agent to the TUI
 		ForwardOrchestratorEvents(p, rootAgent)
+
+		// Wait only in this background goroutine: the TUI remains usable while
+		// connections and discovery finish, but --prompt needs their results.
+		runBootstrap(p, mcpClient, config, c, subagentClient, sess, enabledTools, pluginManager, toolSync)
 
 		if *promptReq != "" {
 			p.Send(tui.StartPromptMsg(*promptReq))
@@ -664,11 +669,6 @@ func main() {
 			Runner: runner,
 		})
 	}
-
-	// Bootstrap: connect MCP servers and discover LLM backends in the background so
-	// the TUI is usable immediately. Each MCP server connects independently and its
-	// tools are registered as they connect; status/failure is surfaced to the UI.
-	go runBootstrap(p, mcpClient, config, c, subagentClient, sess, enabledTools, pluginManager, toolSync)
 
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Unspecified error: %v", err)
