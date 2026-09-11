@@ -335,31 +335,64 @@ func (m *Model) renderContextBar(current, max int) string {
 }
 
 func (m *Model) renderMinimalEqualizer() string {
-	t := float64(time.Now().UnixMilli()) / 140.0
-	bars := []rune(" ▂▃▄▅▆▇█")
+	return m.renderMinimalEqualizerAt(time.Now())
+}
+
+func (m *Model) renderMinimalEqualizerAt(now time.Time) string {
+	t := float64(now.UnixMilli()) / 220.0
+	bars := []rune(" ▂▃▄▅▆▇█") // 9 height levels
 	numBars := len(bars)
 
 	var cols [5]rune
-	phases := [5]float64{0.0, 1.3, 2.7, 4.0, 5.2}
+	var indices [5]int
 	for i := 0; i < 5; i++ {
-		val := (math.Sin(t+phases[i]) + 1.0) / 2.0 // oscillates 0 to 1
-		idx := int(val * float64(numBars-1))
+		// Single cohesive traveling wave with graceful spatial flow
+		w1 := math.Sin(t*1.5 - float64(i)*0.85)
+
+		// Gentle incommensurate harmonic (golden ratio 1.618) creates organic, non-repeating crests
+		// Low amplitude ensures it never causes erratic snap or jitter
+		w2 := 0.35 * math.Sin(t*0.93 + float64(i)*0.55 + 1.2)
+
+		// Breathing envelope gives gentle natural cadence
+		swell := 0.88 + 0.20*math.Sin(t*0.38+float64(i)*0.25)
+
+		combined := (w1 + w2) * swell
+
+		// Smooth normalization to [0, 1]
+		norm := (combined + 1.45) / 2.90
+		if norm < 0.0 {
+			norm = 0.0
+		}
+		if norm > 1.0 {
+			norm = 1.0
+		}
+
+		// Smoothstep contrast curve: brings out deep troughs and crests without jumpiness
+		val := norm * norm * (3.0 - 2.0*norm)
+
+		idx := int(math.Round(val * float64(numBars-1)))
 		if idx < 0 {
 			idx = 0
 		}
 		if idx >= numBars {
 			idx = numBars - 1
 		}
+		indices[i] = idx
 		cols[i] = bars[idx]
 	}
 
 	bracketStyle := lipgloss.NewStyle().Foreground(mutedTextColor).Background(appBgColor)
 	equalizerStyle := lipgloss.NewStyle().Foreground(secondaryColor).Background(appBgColor)
+	peakStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8BE9FD")).Bold(true).Background(appBgColor)
 
 	var sb strings.Builder
 	sb.WriteString(bracketStyle.Render("["))
-	for _, col := range cols {
-		sb.WriteString(equalizerStyle.Render(string(col)))
+	for i, col := range cols {
+		if indices[i] >= 6 {
+			sb.WriteString(peakStyle.Render(string(col)))
+		} else {
+			sb.WriteString(equalizerStyle.Render(string(col)))
+		}
 	}
 	sb.WriteString(bracketStyle.Render("]"))
 	return sb.String()
@@ -383,23 +416,77 @@ func (m *Model) renderScannerTrack(symbol string, symbolColor color.Color) strin
 }
 
 func (m *Model) renderScannerTrackAt(symbol string, symbolColor color.Color, now time.Time) string {
-	t := float64(now.UnixMilli()) / 120.0
-	pos := int(math.Round(3.0 + 3.0*math.Sin(t)))
+	// Base cruising timing: 250ms divisor gives a smooth 1.57s round-trip
+	t := float64(now.UnixMilli()) / 250.0
+	p := 2.0 + 2.0*math.Sin(t)
+	v := math.Cos(t) // velocity
 
-	track := []rune("·······")
-	if pos >= 0 && pos < len(track) {
-		track[pos] = []rune(symbol)[0]
+	headIdx := int(math.Round(p))
+	if headIdx < 0 {
+		headIdx = 0
+	}
+	if headIdx > 4 {
+		headIdx = 4
+	}
+
+	frac := p - float64(headIdx) // sub-cell offset (-0.5 to +0.5)
+
+	var runes [5]rune
+	for i := 0; i < 5; i++ {
+		runes[i] = '·'
+	}
+	runes[headIdx] = []rune(symbol)[0]
+
+	if v > 0.12 { // Moving RIGHT
+		// Optical wake to the left
+		if headIdx > 0 {
+			if frac < 0.15 {
+				runes[headIdx-1] = '✧'
+			} else {
+				runes[headIdx-1] = '•'
+			}
+		}
+		// Leading aura to the right (cell starts warming up before arrival)
+		if headIdx < 4 && frac > 0.18 {
+			runes[headIdx+1] = '•'
+		}
+	} else if v < -0.12 { // Moving LEFT
+		// Optical wake to the right
+		if headIdx < 4 {
+			if frac > -0.15 {
+				runes[headIdx+1] = '✧'
+			} else {
+				runes[headIdx+1] = '•'
+			}
+		}
+		// Leading aura to the left
+		if headIdx > 0 && frac < -0.18 {
+			runes[headIdx-1] = '•'
+		}
+	} else {
+		// Turnaround deceleration: the wake smoothly catches up to the head
+		if headIdx == 4 {
+			runes[3] = '•'
+		} else if headIdx == 0 {
+			runes[1] = '•'
+		}
 	}
 
 	bracketStyle := lipgloss.NewStyle().Foreground(mutedTextColor).Background(appBgColor)
-	symbolStyle := lipgloss.NewStyle().Foreground(symbolColor).Background(appBgColor)
-	dotStyle := lipgloss.NewStyle().Foreground(borderColor).Background(appBgColor)
+	headStyle := lipgloss.NewStyle().Foreground(symbolColor).Bold(true).Background(appBgColor)
+	trailSparkStyle := lipgloss.NewStyle().Foreground(symbolColor).Background(appBgColor)
+	auraBulletStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#C48D46")).Background(appBgColor)
+	dotStyle := lipgloss.NewStyle().Foreground(mutedTextColor).Background(appBgColor)
 
 	var sb strings.Builder
 	sb.WriteString(bracketStyle.Render("["))
-	for _, r := range track {
-		if string(r) == symbol {
-			sb.WriteString(symbolStyle.Render(string(r)))
+	for i, r := range runes {
+		if i == headIdx {
+			sb.WriteString(headStyle.Render(string(r)))
+		} else if r == '✧' {
+			sb.WriteString(trailSparkStyle.Render(string(r)))
+		} else if r == '•' {
+			sb.WriteString(auraBulletStyle.Render(string(r)))
 		} else {
 			sb.WriteString(dotStyle.Render(string(r)))
 		}

@@ -6,6 +6,7 @@ import (
 	"late/internal/git"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -200,6 +201,25 @@ func TestRenderAnimations(t *testing.T) {
 	if !strings.Contains(track, "✦") {
 		t.Errorf("expected scanner track to contain symbol, got %q", track)
 	}
+
+	idle := model.renderIdleEqualizer()
+
+	// All statusbar indicator states must have identical rendered width (7 cells)
+	// so adjacent telemetry (git branch, cwd) does not jitter on state transitions.
+	eqWidth := lipgloss.Width(eq)
+	trackWidth := lipgloss.Width(track)
+	idleWidth := lipgloss.Width(idle)
+
+	if eqWidth != 7 || trackWidth != 7 || idleWidth != 7 {
+		t.Errorf("expected all animation widgets to have width 7, got eq=%d, track=%d, idle=%d",
+			eqWidth, trackWidth, idleWidth)
+	}
+
+	// Scanner track should produce the optical trail spark
+	trackWithTrail := model.renderScannerTrackAt("✦", primaryColor, time.UnixMilli(100))
+	if !strings.Contains(trackWithTrail, "✧") && !strings.Contains(trackWithTrail, "✦") {
+		t.Errorf("expected scanner track to render comet head or wake, got: %q", trackWithTrail)
+	}
 }
 
 func TestStatusBarViewTelemetry(t *testing.T) {
@@ -301,8 +321,8 @@ func TestStatusBarStatePills(t *testing.T) {
 	// Working (pure animation indicator, no redundant 'working' text label)
 	s.State = StateThinking
 	viewWorking := model.statusBarView()
-	if !strings.Contains(viewWorking, "✦") {
-		t.Errorf("expected status bar working scanner track, got:\n%s", viewWorking)
+	if !strings.Contains(viewWorking, "✦") || !strings.Contains(viewWorking, "[") || !strings.Contains(viewWorking, "]") {
+		t.Errorf("expected status bar working breathing core with spark, got:\n%s", viewWorking)
 	}
 
 	// Streaming (pure equalizer animation, no redundant 'streaming' text label)

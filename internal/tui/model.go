@@ -6,6 +6,7 @@ import (
 	"late/internal/config"
 	"late/internal/git"
 	"os"
+	"time"
 
 	"charm.land/bubbles/v2/filepicker"
 	"charm.land/bubbles/v2/spinner"
@@ -85,7 +86,10 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 		Height:              24, // Default start height
 		AgentStates:         make(map[string]*AppState),
 		InspectingTool:      false,
-		Spinner:             spinner.New(spinner.WithSpinner(spinner.Dot)),
+		Spinner: spinner.New(spinner.WithSpinner(spinner.Spinner{
+			Frames: spinner.Dot.Frames,
+			FPS:    40 * time.Millisecond,
+		})),
 		InputHistory:        make([]string, 0),
 		HistoryIndex:        -1,
 		CWD:                 cwd,
