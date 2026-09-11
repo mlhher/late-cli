@@ -110,7 +110,6 @@ var (
 
 	// AI Response
 	aiMsgStyle = baseStyle.Copy().
-			Foreground(textColor).
 			Background(appBgColor)
 
 	// Thinking / Introspection Gutter

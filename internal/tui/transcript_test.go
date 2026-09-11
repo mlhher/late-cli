@@ -492,3 +492,29 @@ func TestTranscriptBottomBreathingSpace(t *testing.T) {
 		}
 	}
 }
+
+func TestTranscriptTableHeaderSeparatorUniformity(t *testing.T) {
+	history := []client.ChatMessage{
+		{
+			Role: "assistant",
+			Content: client.TextContent("| ID | Component |\n| --- | --- |\n| 1 | Test |\n"),
+		},
+	}
+	m, _ := newViewportBenchmarkModel(history)
+	m.SetSize(80, 40)
+	renderTestTranscript(m)
+	rows := m.GetAgentState(m.Focused.ID()).Transcript.rows
+	var sepRow string
+	for _, r := range rows {
+		if strings.Contains(r, "┼") && strings.Contains(r, "─") {
+			sepRow = r
+			break
+		}
+	}
+	if sepRow == "" {
+		t.Fatal("expected to find a table separator row with ┼ and ─")
+	}
+	if strings.Contains(sepRow, "230;237;243") {
+		t.Fatalf("table separator row contains leaked foreground color: %q", sepRow)
+	}
+}
