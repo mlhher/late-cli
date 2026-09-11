@@ -1222,10 +1222,11 @@ func ForwardOrchestratorEvents(p *tea.Program, o common.Orchestrator) {
 // animated status updates into the UI and completes when all tasks finish.
 func runBootstrap(p *tea.Program, mcpClient *mcp.Client, config *mcp.MCPConfig, c *client.Client, subagentClient *client.Client, sess *session.Session, enabledTools map[string]bool, pluginManager *plugin.PluginManager, toolSync *pluginToolSync, suppressThinkingWords bool, explicitUserLogitBias, explicitSubagentLogitBias map[string]int) {
 	var (
-		wg        sync.WaitGroup
-		mu        sync.Mutex
-		connected int
-		failed    []string
+		wg             sync.WaitGroup
+		mu             sync.Mutex
+		connected      int
+		failed         []string
+		logitBiasToast *tui.ToastMsg
 	)
 
 	sendMsg := func(msg tea.Msg) {
@@ -1306,23 +1307,37 @@ func runBootstrap(p *tea.Program, mcpClient *mcp.Client, config *mcp.MCPConfig, 
 				defer cancel()
 				resolved, err := client.ResolveThinkingBiases(resolveCtx, c.BaseURL(), c.APIKey(), c.HTTPClient())
 				if err != nil {
-					sendMsg(tui.BootstrapStatusMsg{
-						Text:    fmt.Sprintf("Warning: Failed to resolve thinking words via /tokenize: %v", err),
+					mu.Lock()
+					logitBiasToast = &tui.ToastMsg{
+						Text:    "Logit bias failed: tokenize error",
 						Warning: true,
-						Active:  true,
-					})
+					}
+					mu.Unlock()
 				} else {
 					c.SetLogitBias(client.MergeLogitBiases(resolved, explicitUserLogitBias))
 					if subagentClient != c {
 						subagentClient.SetLogitBias(client.MergeLogitBiases(resolved, explicitSubagentLogitBias))
 					}
+					mu.Lock()
+					logitBiasToast = &tui.ToastMsg{
+						Text: "Applied logit biases",
+					}
+					mu.Unlock()
 				}
 			} else {
-				sendMsg(tui.BootstrapStatusMsg{
-					Text:   "Info: Dynamic phrase suppression (--suppress-thinking-words) is only supported on llama.cpp backends; skipping",
-					Active: true,
-				})
+				mu.Lock()
+				logitBiasToast = &tui.ToastMsg{
+					Text:    "Logit bias failed: not llama.cpp",
+					Warning: true,
+				}
+				mu.Unlock()
 			}
+		} else if len(explicitUserLogitBias) > 0 || len(explicitSubagentLogitBias) > 0 {
+			mu.Lock()
+			logitBiasToast = &tui.ToastMsg{
+				Text: "Applied logit biases",
+			}
+			mu.Unlock()
 		}
 	}()
 
@@ -1379,5 +1394,6 @@ func runBootstrap(p *tea.Program, mcpClient *mcp.Client, config *mcp.MCPConfig, 
 		Warning:     warn,
 		Active:      false,
 		RefreshView: true,
+		NextToast:   logitBiasToast,
 	})
 }
