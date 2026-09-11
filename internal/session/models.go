@@ -161,13 +161,36 @@ func ListSessions() ([]SessionMeta, error) {
 // GetLatestSession returns the metadata of the latest session (most recently updated).
 // If no sessions exist, it returns nil, nil.
 func GetLatestSession() (*SessionMeta, error) {
-	metas, err := ListSessions()
+	sessionsDir, err := SessionDir()
 	if err != nil {
 		return nil, err
 	}
-	if len(metas) == 0 {
+
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read sessions directory: %w", err)
+	}
+
+	var latestEntry os.DirEntry
+	var latestModTime time.Time
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".meta.json") {
+			if info, err := entry.Info(); err == nil {
+				if latestEntry == nil || info.ModTime().After(latestModTime) {
+					latestEntry = entry
+					latestModTime = info.ModTime()
+				}
+			}
+		}
+	}
+
+	if latestEntry == nil {
 		return nil, nil
 	}
-	// ListSessions returns sessions sorted by LastUpdated ascending (oldest first)
-	return &metas[len(metas)-1], nil
+
+	id := strings.TrimSuffix(latestEntry.Name(), ".meta.json")
+	return LoadSessionMeta(id)
 }

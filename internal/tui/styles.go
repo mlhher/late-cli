@@ -5,143 +5,179 @@ import (
 )
 
 var (
-	// Premium Palette - Vesper Slate & Amber
-	primaryColor   = lipgloss.Color("#E5A85C") // Warm Amber Gold
-	secondaryColor = lipgloss.Color("#62B3D5") // Steel Blue
-	textColor      = lipgloss.Color("#F3F4F6") // Crisp Off-White
-	subtextColor   = lipgloss.Color("#8A94A6") // Muted Slate
-	warningColor   = lipgloss.Color("#EF4444") // Red/Orange warning
+	// Refined Palette - Pure Obsidian, Warm Golden Amber, Calm Steel Ice
+	primaryColor   = lipgloss.Color("#E5A85C") // Warm Golden Amber
+	primaryGlow    = lipgloss.Color("#F0B875") // Subtle highlight
+	secondaryColor = lipgloss.Color("#56B6C2") // Steel Ice Cyan
+	accentEmerald  = lipgloss.Color("#4ECCA3") // Muted Mint
+	accentCoral    = lipgloss.Color("#E06C75") // Calm Coral
+	warningColor   = lipgloss.Color("#E06C75") // Warning Red (alias)
+	textColor      = lipgloss.Color("#E6EDF3") // Crisp Off-White
+	subtextColor   = lipgloss.Color("#7D8590") // Muted Slate
+	mutedTextColor = lipgloss.Color("#484F58") // Whisper Slate (borders, dividers)
 
-	// Message Backgrounds
-	appBgColor     = lipgloss.Color("#0E0E10") // Charcoal Black
-	userMsgBg      = lipgloss.Color("#16161B") // Slightly lighter cool charcoal
-	aiMsgBg        = appBgColor                // Keep alias for AI msgs
-	thoughtBgColor = lipgloss.Color("#09090A") // Darker Charcoal for thinking
+	// Canvas & Surfaces
+	appBgColor   = lipgloss.Color("#0B0C0E") // Deep Obsidian
+	userMsgBg    = appBgColor                // Clean seamless canvas
+	cardBgColor  = lipgloss.Color("#12141A") // Subtle Container (autocomplete popup)
+	chipBgColor  = lipgloss.Color("#1B1E28") // Elevated Pill / Badge Surface
+	borderColor  = lipgloss.Color("#1C1F26") // Hairline Divider
+	activeBorder = lipgloss.Color("#2D323E") // Focused / Active Border
+
+	// Centralized Border Styles & Colors
+	boxBorderStyle   = lipgloss.RoundedBorder()
+	modalBorderColor = secondaryColor // Primary border color for dialogs & overlays (/help, /themes, commit detail)
+	cardBorderColor  = borderColor    // Subtle border for embedded cards & matrices (welcome card)
+	warnBorderColor  = accentCoral    // Warning / confirmation border color (stop dialog, tool permissions)
+	errorBorderColor = accentCoral    // Error border color (context limit exceeded)
+
+	modalBoxStyle = lipgloss.NewStyle().
+			MarginLeft(1).
+			Padding(1, 2).
+			Border(boxBorderStyle).
+			BorderForeground(modalBorderColor).
+			BorderBackground(appBgColor).
+			Background(appBgColor)
+
+	// Fullscreen View Styles (/log, /rewind, /model)
+	viewHeaderStyle = lipgloss.NewStyle().
+			Foreground(primaryColor).
+			Bold(true).
+			Background(appBgColor).
+			PaddingLeft(1)
+
+	viewEmptyStyle = lipgloss.NewStyle().
+			Foreground(subtextColor).
+			Background(appBgColor).
+			PaddingLeft(2)
+
+	viewFooterStyle = lipgloss.NewStyle().
+			Foreground(mutedTextColor).
+			Background(appBgColor).
+			PaddingLeft(1)
+
+	// File Picker Styles
+	filePickerSelectedStyle  = lipgloss.NewStyle().Foreground(secondaryColor).Bold(true)
+	filePickerFileStyle      = lipgloss.NewStyle().Foreground(textColor)
+	filePickerDirectoryStyle = lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+
+	// Centralized Pill & Badge Styles (Elevated Neutral Surface)
+	chipStyle = lipgloss.NewStyle().
+			Background(chipBgColor).
+			Padding(0, 1)
+
+	commitHashChipStyle     = chipStyle.Foreground(secondaryColor)
+	commitSelectedChipStyle = chipStyle.Foreground(primaryColor).Bold(true)
+	modelPickerChipStyle    = chipStyle.Foreground(subtextColor)
+	headBadgeStyle          = lipgloss.NewStyle().
+				Foreground(appBgColor).
+				Background(accentEmerald).
+				Bold(true).
+				Padding(0, 1)
+
+	telemetryChipStyle  = chipStyle
+	telemetryLabelStyle = lipgloss.NewStyle().
+				Foreground(subtextColor).
+				Background(chipBgColor)
+	telemetryValueStyle = lipgloss.NewStyle().
+				Foreground(textColor).
+				Background(chipBgColor)
 
 	// Base Style for inheritance
 	baseStyle = lipgloss.NewStyle().Background(appBgColor)
 
 	// Layout Constants
-	UserMsgOverhead = 6 // MarginL(1) + Border(1) + Padding(2)*2 = 6
-	AIMsgOverhead   = 8 // MarginL(1) + Border(1) + PaddingL(4) + PaddingR(2) = 8
+	AIMsgOverhead = 0
 
-	// Styles
-	appStyle = baseStyle.Copy().
-			Foreground(textColor)
-
-	inputStyle = baseStyle.Copy().
-			BorderBackground(appBgColor).
-			MarginBackground(appBgColor).
-			Padding(0, 1)
-
-	// User Bubble
+	// User Prompt & Message
 	userMsgStyle = lipgloss.NewStyle().
-			Background(userMsgBg).
 			Foreground(textColor).
-			Padding(0, 2).
-			MarginLeft(1).
+			Background(cardBgColor).
+			Margin(0, 1).
 			MarginBackground(appBgColor).
-			Align(lipgloss.Left).
-			Border(lipgloss.NormalBorder(), false, false, false, true).
-			BorderLeftForeground(secondaryColor).
-			BorderBackground(userMsgBg).
-			PaddingLeft(2)
+			BorderLeft(true).
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderForeground(primaryColor).
+			BorderBackground(cardBgColor).
+			Padding(1, 1).
+			Align(lipgloss.Left)
 
 	queuedMsgStyle = userMsgStyle.Copy().
-			Foreground(subtextColor).
-			BorderLeftForeground(subtextColor)
+			Foreground(subtextColor)
 
 	attachmentStyle = lipgloss.NewStyle().
-			Foreground(secondaryColor).
+			Foreground(subtextColor).
 			Italic(true)
 
-	// AI Bubble
+	// AI Response
 	aiMsgStyle = baseStyle.Copy().
-			Padding(0, 2).
-			MarginLeft(1).
-			MarginBackground(appBgColor).
-			PaddingLeft(4).
-			Border(lipgloss.NormalBorder(), false, false, false, true).
-			BorderLeftForeground(primaryColor).
-			BorderBackground(appBgColor)
+			Background(appBgColor)
 
-	// Thinking Block
+	// Thinking / Introspection Gutter
 	thinkingStyle = lipgloss.NewStyle().
 			Foreground(subtextColor).
-			Background(thoughtBgColor).
+			Background(appBgColor).
 			Italic(true).
-			Padding(0, 1).
-			MarginLeft(4).
+			Padding(0, 3).
+			MarginLeft(2).
 			BorderLeft(true).
-			BorderStyle(lipgloss.ThickBorder()).
-			BorderForeground(lipgloss.Color("#3F4E5A")).
-			BorderBackground(thoughtBgColor)
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderForeground(activeBorder).
+			BorderBackground(appBgColor)
 
 	tagStyle = lipgloss.NewStyle().
 			Foreground(primaryColor).
 			Bold(true).
-			Background(thoughtBgColor).
-			MarginBackground(appBgColor).
-			MarginLeft(1).
-			PaddingLeft(1)
+			Background(appBgColor)
 
-	thoughtHeaderStyle = tagStyle.Copy().
-				Foreground(subtextColor)
+	thoughtHeaderStyle = lipgloss.NewStyle().
+				Foreground(subtextColor).
+				Italic(true).
+				Background(appBgColor).
+				MarginLeft(2)
 
+	// Status Bar
 	statusBarBaseStyle = lipgloss.NewStyle().
 				Background(appBgColor).
 				MarginBackground(appBgColor).
 				Border(lipgloss.NormalBorder(), true, false, false, false).
-				BorderForeground(lipgloss.Color("#232329")).
+				BorderForeground(borderColor).
 				BorderBackground(appBgColor).
 				Foreground(textColor)
 
-	statusModeStyle = lipgloss.NewStyle().
-			Foreground(primaryColor).
-			Bold(true).
-			MarginRight(1)
+	statusDivider = lipgloss.NewStyle().
+			Foreground(activeBorder).
+			Background(appBgColor).
+			Render(" │ ")
 
 	statusKeyStyle = lipgloss.NewStyle().
-			Foreground(primaryColor).
+			Foreground(subtextColor).
 			Background(appBgColor).
-			MarginBackground(appBgColor).
 			Bold(true)
 
 	statusTextStyle = lipgloss.NewStyle().
 			Foreground(subtextColor).
-			Background(appBgColor).
-			MarginBackground(appBgColor).
-			MarginLeft(1)
+			Background(appBgColor)
 
 	statusWarningStyle = lipgloss.NewStyle().
-				Foreground(warningColor).
-				Background(appBgColor).
-				Bold(true).
-				MarginLeft(1)
-
-	keycapStyle = lipgloss.NewStyle().
-			Foreground(secondaryColor).
-			Bold(true)
-
-	statusAttachedStyle = lipgloss.NewStyle().
-				Foreground(secondaryColor).
+				Foreground(accentCoral).
 				Background(appBgColor).
 				Bold(true)
 
-	statusTokenStyle = lipgloss.NewStyle().
-				Foreground(subtextColor)
-
-	// Breadcrumb styles
-	breadcrumbLateStyle = lipgloss.NewStyle().
-				Foreground(subtextColor).
+	statusSuccessStyle = lipgloss.NewStyle().
+				Foreground(accentEmerald).
 				Background(appBgColor)
 
+	statusAttachedStyle = lipgloss.NewStyle().
+				Foreground(secondaryColor).
+				Background(appBgColor)
+
+	// Breadcrumb styles
 	breadcrumbSeparatorStyle = lipgloss.NewStyle().
-					Foreground(secondaryColor).
+					Foreground(activeBorder).
 					Background(appBgColor)
 
 	breadcrumbAgentStyle = lipgloss.NewStyle().
 				Foreground(textColor).
-				Background(appBgColor).
-				Bold(true)
+				Background(appBgColor)
 )

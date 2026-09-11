@@ -188,6 +188,7 @@ type InstalledPlugin struct {
 	Version     string       `json:"version"`     // plugin version
 	Description string       `json:"description,omitempty"`
 	Path        string       `json:"path"`        // absolute path to the plugin directory
+	Subpath     string       `json:"subpath,omitempty"` // relative path within a monorepo
 	SourceType  string       `json:"source_type"` // "npm", "git", "local", "marketplace"
 	Source      string       `json:"source,omitempty"` // original install string passed by the user (pkg, URL, path, or marketplace name); empty for symlinked local plugins
 	Enabled     bool         `json:"enabled"`
@@ -501,6 +502,7 @@ func LoadPluginMeta(dir string) (*InstalledPlugin, error) {
 	} else {
 		fresh.SourceType = meta.SourceType
 		fresh.Source = meta.Source
+		fresh.Subpath = meta.Subpath
 		fresh.Enabled = meta.Enabled
 		fresh.Path = dir
 	}

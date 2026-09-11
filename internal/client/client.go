@@ -263,15 +263,17 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 func (c *Client) RefreshContextSize(ctx context.Context) {
 	c.mu.RLock()
 	isLlama := c.backend == BackendLlamaCPP
+	baseURL := strings.TrimSuffix(c.cfg.BaseURL, "/")
+	apiKey := c.cfg.APIKey
 	c.mu.RUnlock()
 	if !isLlama {
 		return
 	}
 
-	// Try /props at the raw BaseURL and at the parent path
-	baseURL := strings.TrimSuffix(c.cfg.BaseURL, "/")
-	propsURLs := []string{baseURL + "/props"}
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
 
+	propsURLs := []string{baseURL + "/props"}
 	if u, err := url.Parse(baseURL); err == nil && u.Path != "" && u.Path != "/" {
 		parent := strings.TrimSuffix(baseURL, u.Path)
 		if parent != baseURL {
@@ -279,13 +281,14 @@ func (c *Client) RefreshContextSize(ctx context.Context) {
 		}
 	}
 
+	var newCtxSize int
 	for _, propsURL := range propsURLs {
-		req, err := http.NewRequestWithContext(ctx, "GET", propsURL, nil)
+		req, err := http.NewRequestWithContext(probeCtx, "GET", propsURL, nil)
 		if err != nil {
 			continue
 		}
-		if c.cfg.APIKey != "" {
-			req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
 		}
 
 		resp, err := c.httpClient.Do(req)
@@ -297,35 +300,34 @@ func (c *Client) RefreshContextSize(ctx context.Context) {
 			body, err := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			if err == nil {
-				c.mu.Lock()
-				c.parsePropsBody(body)
-
-				// If /props returned n_ctx <= 0, try /v1/models as fallback
-				if c.ctxSize <= 0 {
-					ctxSize := c.probeModelsEndpoint(ctx, baseURL)
-					if ctxSize > 0 {
-						c.ctxSize = ctxSize
-					}
+				nCtx, _ := parsePropsBodyData(body)
+				newCtxSize = nCtx
+				if newCtxSize <= 0 {
+					newCtxSize = c.probeModelsEndpoint(probeCtx, baseURL)
 				}
-				c.mu.Unlock()
 			}
-			return
+			break
 		}
 		resp.Body.Close()
 	}
 
-	// /props not found or failed — try /v1/models as fallback
-	c.mu.Lock()
-	ctxSize := c.probeModelsEndpoint(ctx, baseURL)
-	if ctxSize > 0 {
-		c.ctxSize = ctxSize
+	if newCtxSize <= 0 {
+		newCtxSize = c.probeModelsEndpoint(probeCtx, baseURL)
 	}
-	c.mu.Unlock()
+
+	if newCtxSize > 0 {
+		c.mu.Lock()
+		c.ctxSize = newCtxSize
+		c.mu.Unlock()
+	}
 }
 
 // DiscoverBackend probes certain endpoints to identify the inference engine.
 // It tries `/props` at the raw BaseURL and at the parent path (in case
 // BaseURL includes a path prefix like "/v1").
+//
+// Crucially, this function performs network requests without holding c.mu,
+// so that concurrent readers (e.g. TUI rendering ContextSize) are never blocked.
 func (c *Client) DiscoverBackend(ctx context.Context) BackendType {
 	c.mu.RLock()
 	if c.backend == BackendLlamaCPP && c.ctxSize != -1 {
@@ -333,21 +335,15 @@ func (c *Client) DiscoverBackend(ctx context.Context) BackendType {
 		c.mu.RUnlock()
 		return b
 	}
+	baseURL := strings.TrimSuffix(c.cfg.BaseURL, "/")
+	apiKey := c.cfg.APIKey
 	c.mu.RUnlock()
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// Bound the discovery probe so an unreachable server never hangs indefinitely
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
 
-	// Double-check
-	if c.backend == BackendLlamaCPP && c.ctxSize != -1 {
-		return c.backend
-	}
-
-	// Try /props at the raw BaseURL and at the parent path
-	baseURL := strings.TrimSuffix(c.cfg.BaseURL, "/")
 	propsURLs := []string{baseURL + "/props"}
-
-	// Also try parent path (e.g. if BaseURL is "http://h:8080/v1", try "http://h:8080/props")
 	if u, err := url.Parse(baseURL); err == nil && u.Path != "" && u.Path != "/" {
 		parent := strings.TrimSuffix(baseURL, u.Path)
 		if parent != baseURL {
@@ -355,14 +351,19 @@ func (c *Client) DiscoverBackend(ctx context.Context) BackendType {
 		}
 	}
 
-	var propsResp *http.Response
+	var (
+		discoveredBackend        = BackendUnknown
+		discoveredCtxSize        = -1
+		discoveredSupportsVision = false
+	)
+
 	for _, propsURL := range propsURLs {
-		req, err := http.NewRequestWithContext(ctx, "GET", propsURL, nil)
+		req, err := http.NewRequestWithContext(probeCtx, "GET", propsURL, nil)
 		if err != nil {
 			continue
 		}
-		if c.cfg.APIKey != "" {
-			req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
 		}
 
 		resp, err := c.httpClient.Do(req)
@@ -371,39 +372,44 @@ func (c *Client) DiscoverBackend(ctx context.Context) BackendType {
 		}
 
 		if resp.StatusCode == http.StatusOK {
-			propsResp = resp
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err == nil {
+				discoveredBackend = BackendLlamaCPP
+				nCtx, vis := parsePropsBodyData(body)
+				discoveredCtxSize = nCtx
+				discoveredSupportsVision = vis
+			}
 			break
 		}
 		resp.Body.Close()
 	}
 
-	if propsResp != nil {
-		defer propsResp.Body.Close()
-		c.backend = BackendLlamaCPP
-
-		body, err := io.ReadAll(propsResp.Body)
-		propsResp.Body.Close()
-		if err == nil {
-			c.parsePropsBody(body)
-		}
-	}
-
 	// If /props returned n_ctx <= 0 or failed entirely, try /v1/models
-	// to get the context size from the loaded model's metadata.
-	if c.ctxSize <= 0 {
-		ctxSize := c.probeModelsEndpoint(ctx, baseURL)
+	if discoveredCtxSize <= 0 {
+		ctxSize := c.probeModelsEndpoint(probeCtx, baseURL)
 		if ctxSize > 0 {
-			c.ctxSize = ctxSize
-			c.backend = BackendLlamaCPP
+			discoveredCtxSize = ctxSize
+			discoveredBackend = BackendLlamaCPP
 		}
 	}
 
-	// If still unknown, mark as generic OpenAI
-	if c.backend == BackendUnknown {
-		c.backend = BackendGenericOpenAI
+	if discoveredBackend == BackendUnknown {
+		discoveredBackend = BackendGenericOpenAI
 	}
 
-	return c.backend
+	c.mu.Lock()
+	c.backend = discoveredBackend
+	if discoveredCtxSize > 0 {
+		c.ctxSize = discoveredCtxSize
+	}
+	if discoveredSupportsVision {
+		c.supportsVision = discoveredSupportsVision
+	}
+	res := c.backend
+	c.mu.Unlock()
+
+	return res
 }
 
 // probeModelsEndpoint fetches /v1/models and extracts n_ctx from the loaded model.
@@ -472,52 +478,57 @@ func (c *Client) probeModelsEndpoint(ctx context.Context, baseURL string) int {
 	return 0
 }
 
-// parsePropsBody extracts ctxSize and vision support from a /props JSON body.
-// It tries structured decode first, then falls back to raw JSON traversal.
-func (c *Client) parsePropsBody(body []byte) {
+// parsePropsBodyData extracts ctxSize and vision support from a /props JSON body.
+func parsePropsBodyData(body []byte) (int, bool) {
 	var props PropsResponse
 	if err := json.Unmarshal(body, &props); err == nil {
-		// n_ctx == 0 means "unlimited/default" — still a valid report
-		c.ctxSize = props.DefaultGenerationSettings.NCtx
-		c.supportsVision = props.Modalities.Vision
-		return
+		return props.DefaultGenerationSettings.NCtx, props.Modalities.Vision
 	}
 
-	// Fallback: extract n_ctx from raw JSON in case the structure differs
 	var rawMap map[string]json.RawMessage
 	if err := json.Unmarshal(body, &rawMap); err != nil {
-		return
+		return 0, false
 	}
 
-	dgs, ok := rawMap["default_generation_settings"]
-	if !ok {
-		return
-	}
-
-	var dgsMap map[string]json.RawMessage
-	if err := json.Unmarshal(dgs, &dgsMap); err != nil {
-		return
-	}
-
-	if nCtxRaw, ok := dgsMap["n_ctx"]; ok {
-		var nCtx int
-		if json.Unmarshal(nCtxRaw, &nCtx) == nil {
-			c.ctxSize = nCtx
+	var (
+		nCtx int
+		vis  bool
+	)
+	if dgs, ok := rawMap["default_generation_settings"]; ok {
+		var dgsMap map[string]json.RawMessage
+		if json.Unmarshal(dgs, &dgsMap) == nil {
+			if nCtxRaw, ok := dgsMap["n_ctx"]; ok {
+				_ = json.Unmarshal(nCtxRaw, &nCtx)
+			}
 		}
 	}
 
 	if modRaw, ok := rawMap["modalities"]; ok {
 		var mods Modalities
 		if json.Unmarshal(modRaw, &mods) == nil {
-			c.supportsVision = mods.Vision
+			vis = mods.Vision
 		}
 	}
+	return nCtx, vis
 }
+
 
 func (c *Client) getBackend() BackendType {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.backend
+}
+
+func (c *Client) Backend() BackendType {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.backend
+}
+
+func (c *Client) BaseURL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.cfg.BaseURL
 }
 
 func (c *Client) ContextSize() int {

@@ -83,14 +83,14 @@ Type `/` into the input box to bring up a command picker. You can navigate throu
 
 | Command | Description |
 | --- | --- |
-| `/new` | Start a new session/chat. |
-| `/rewind` | Open a visual history of your messages to rewind the conversation to an earlier point. |
 | `/compose` | Open your system's default external editor (`$EDITOR`) to draft long or complex instructions. |
-| `/model` | Select the model used by the orchestrator and each subagent type. |
-| `/log` | Open the Git commit log viewer. |
-| `/themes` | Open the theme picker or switch themes (`/themes [name]`). |
 | `/help` | Show default keybindings. |
+| `/log` | Open the Git commit log viewer. |
+| `/model` | Select the model used by the orchestrator and each subagent type. |
+| `/new` | Start a new session/chat. |
 | `/quit` | Exit Late. |
+| `/rewind` | Open a visual history of your messages to rewind the conversation to an earlier point. |
+| `/themes` | Open the theme picker or switch themes (`/themes [name]`). |
 
 ### File Attachments
 

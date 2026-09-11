@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -90,61 +91,114 @@ func InstallFromNpm(pm *PluginManager, pkgName string, projectLocal ...bool) (*I
 }
 
 // InstallFromGit installs a plugin from a Git repository.
-// Supports URLs like https://github.com/user/repo.git and shorthand like github:user/repo.
+// Supports URLs like https://github.com/user/repo.git, shorthand like github:user/repo,
+// and monorepo subpaths like github:user/repo//plugins/name.
 // If project is true and a project dir is configured, installs into the project-local dir.
 func InstallFromGit(pm *PluginManager, url string, projectLocal ...bool) (*InstalledPlugin, error) {
+	return installFromGit(pm, url, "", projectLocal...)
+}
+
+func installFromGit(pm *PluginManager, url string, expectedName string, projectLocal ...bool) (*InstalledPlugin, error) {
 	project := len(projectLocal) > 0 && projectLocal[0]
 	destDir := pm.TargetDir(project)
-
-	// Determine plugin name from URL
-	name := pluginNameFromURL(url)
-	if err := validatePluginName(name); err != nil {
-		return nil, fmt.Errorf("invalid plugin name in git URL %q: %w", url, err)
-	}
-	targetDir := filepath.Join(destDir, name)
 
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create plugins directory: %w", err)
 	}
 
-	if _, err := os.Stat(targetDir); err == nil {
-		return nil, fmt.Errorf("plugin %s already exists at %s", name, targetDir)
+	rawURL, subpath := splitURLSubpath(url)
+
+	// Determine preliminary name for early validation
+	nameCandidate := expectedName
+	if nameCandidate == "" && subpath != "" {
+		nameCandidate = filepath.Base(subpath)
+	}
+	if nameCandidate == "" {
+		nameCandidate = pluginNameFromURL(rawURL)
+	}
+	if err := validatePluginName(nameCandidate); err != nil {
+		return nil, fmt.Errorf("invalid plugin name in git URL %q: %w", url, err)
+	}
+
+	if nameCandidate != "" {
+		earlyTarget := filepath.Join(destDir, nameCandidate)
+		if _, err := os.Stat(earlyTarget); err == nil {
+			return nil, fmt.Errorf("plugin %s already exists at %s", nameCandidate, earlyTarget)
+		}
 	}
 
 	// Expand shorthand: github:user/repo -> https://github.com/user/repo.git
-	gitURL := expandGitURL(url)
+	gitURL := expandGitURL(rawURL)
+
+	// Clone into a staging dir inside destDir so moves/renames are on the same filesystem
+	tmpClone, err := os.MkdirTemp(destDir, "."+nameCandidate+"-clone-")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create staging directory: %w", err)
+	}
+	defer func() {
+		if _, statErr := os.Stat(tmpClone); statErr == nil {
+			_ = os.RemoveAll(tmpClone)
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", gitURL, targetDir)
+	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", gitURL, tmpClone)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		// Clean up partial clone so the user's next attempt isn't blocked
-		// by an "already exists" error against a half-populated directory.
-		if rmErr := os.RemoveAll(targetDir); rmErr != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to remove partial clone dir %s: %v\n", targetDir, rmErr)
+		if rmErr := os.RemoveAll(tmpClone); rmErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to remove partial clone dir %s: %v\n", tmpClone, rmErr)
 		}
 		return nil, fmt.Errorf("git clone failed: %w", err)
 	}
 
 	// Remove .git to keep the store clean
-	os.RemoveAll(filepath.Join(targetDir, ".git"))
+	_ = os.RemoveAll(filepath.Join(tmpClone, ".git"))
 
-	plugin, err := LoadPlugin(targetDir)
+	// Locate the target plugin directory inside the clone
+	stagedPluginDir, resolvedSubpath, err := locatePluginDir(tmpClone, expectedName, subpath)
+	if err != nil {
+		return nil, err
+	}
+
+	plugin, err := LoadPlugin(stagedPluginDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load installed plugin: %w", err)
 	}
-	plugin.SourceType = "git"
-	plugin.Source = url
 
-	if err := SavePluginMeta(plugin); err != nil {
+	if err := validatePluginName(plugin.Name); err != nil {
+		return nil, fmt.Errorf("invalid plugin name %q in manifest: %w", plugin.Name, err)
+	}
+
+	targetDir := filepath.Join(destDir, plugin.Name)
+	if plugin.Name != nameCandidate {
+		if _, err := os.Stat(targetDir); err == nil {
+			return nil, fmt.Errorf("plugin %s already exists at %s", plugin.Name, targetDir)
+		}
+	}
+
+	if err := moveDir(stagedPluginDir, targetDir); err != nil {
+		return nil, fmt.Errorf("failed to install plugin to %s: %w", targetDir, err)
+	}
+
+	installed, err := LoadPlugin(targetDir)
+	if err != nil {
+		_ = os.RemoveAll(targetDir)
+		return nil, fmt.Errorf("failed to load installed plugin from %s: %w", targetDir, err)
+	}
+	installed.SourceType = "git"
+	installed.Source = url
+	installed.Subpath = resolvedSubpath
+
+	if err := SavePluginMeta(installed); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to save plugin metadata: %v\n", err)
 	}
 
-	pm.Add(plugin)
-	return plugin, nil
+	pm.Add(installed)
+	return installed, nil
 }
 
 // InstallFromLocal installs a plugin from a local path by symlinking it
@@ -248,7 +302,20 @@ func Install(pm *PluginManager, source string, mc *MarketplaceClient, projectLoc
 		case "npm":
 			return InstallFromNpm(pm, entry.Npm, projectLocal)
 		case "git":
-			return InstallFromGit(pm, entry.Git, projectLocal)
+			targetURL := entry.Git
+			if entry.Path != "" {
+				targetURL = entry.Git + "//" + entry.Path
+			}
+			plugin, err := installFromGit(pm, targetURL, source, projectLocal)
+			if err != nil {
+				return nil, err
+			}
+			plugin.SourceType = "marketplace"
+			plugin.Source = source
+			if err := SavePluginMeta(plugin); err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to save plugin metadata: %v\n", err)
+			}
+			return plugin, nil
 		}
 	}
 	// Miss or error → keep treating the bare name as an npm package name.
@@ -360,6 +427,9 @@ func Update(pm *PluginManager, name string, mc *MarketplaceClient) (*InstalledPl
 			sourceType = "npm"
 		case "git":
 			source = entry.Git
+			if entry.Path != "" {
+				source = entry.Git + "//" + entry.Path
+			}
 			sourceType = "git"
 		default:
 			return nil, fmt.Errorf("update: marketplace entry for %s has no installable target", name)
@@ -390,7 +460,7 @@ func Update(pm *PluginManager, name string, mc *MarketplaceClient) (*InstalledPl
 }
 
 // updateGit clones `source` into a unique sibling tmpdir, strips its
-// .git subdir, then atomically swaps it over the existing plugin dir.
+// .git subdir, locates the plugin (supporting monorepos), then atomically swaps it over the existing plugin dir.
 func updateGit(pm *PluginManager, old *InstalledPlugin, source, targetDir string) (*InstalledPlugin, error) {
 	tmp, err := os.MkdirTemp(targetDir, "."+filepath.Base(old.Path)+updateGitTempSuffix)
 	if err != nil {
@@ -403,7 +473,12 @@ func updateGit(pm *PluginManager, old *InstalledPlugin, source, targetDir string
 		}
 	}()
 
-	gitURL := expandGitURL(source)
+	rawURL, subpath := splitURLSubpath(source)
+	if subpath == "" && old.Subpath != "" {
+		subpath = old.Subpath
+	}
+
+	gitURL := expandGitURL(rawURL)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	if err := runCommand(ctx, "git", "clone", "--depth", "1", gitURL, tmp); err != nil {
@@ -412,19 +487,22 @@ func updateGit(pm *PluginManager, old *InstalledPlugin, source, targetDir string
 	// Match the fresh-install contract: keep the store clean.
 	_ = os.RemoveAll(filepath.Join(tmp, ".git"))
 
-	// Swap window. Hold the write lock so concurrent reads can't race us
-	// mid-rename.
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 	if _, statErr := os.Stat(old.Path); statErr != nil {
 		return nil, fmt.Errorf("update: original plugin dir vanished mid-update: %w", statErr)
 	}
 
+	stagedDir, resolvedSubpath, err := locatePluginDir(tmp, old.Name, subpath)
+	if err != nil {
+		return nil, fmt.Errorf("update: replacement clone at %s is not a valid plugin (%v); keeping the current install", tmp, err)
+	}
+
 	// Validate the freshly cloned replacement BEFORE touching the working
 	// copy: a broken update (bad clone, invalid manifest) must never
 	// destroy the working installation.
-	if _, err := LoadPlugin(tmp); err != nil {
-		return nil, fmt.Errorf("update: replacement clone at %s is not a valid plugin (%v); keeping the current install", tmp, err)
+	if _, err := LoadPlugin(stagedDir); err != nil {
+		return nil, fmt.Errorf("update: replacement clone at %s is not a valid plugin (%v); keeping the current install", stagedDir, err)
 	}
 
 	// Swap with rollback: move the working copy aside, move the clone into
@@ -433,7 +511,7 @@ func updateGit(pm *PluginManager, old *InstalledPlugin, source, targetDir string
 	if err := os.Rename(old.Path, backup); err != nil {
 		return nil, fmt.Errorf("update: cannot move old plugin dir aside: %w", err)
 	}
-	if err := os.Rename(tmp, old.Path); err != nil {
+	if err := moveDir(stagedDir, old.Path); err != nil {
 		_ = os.Rename(backup, old.Path)
 		return nil, fmt.Errorf("update: cannot move new dir into place: %w", err)
 	}
@@ -449,6 +527,7 @@ func updateGit(pm *PluginManager, old *InstalledPlugin, source, targetDir string
 
 	loaded.Source = old.Source
 	loaded.SourceType = old.SourceType
+	loaded.Subpath = resolvedSubpath
 	if !old.Enabled {
 		loaded.Enabled = false
 	}
@@ -652,7 +731,13 @@ func Link(pm *PluginManager, localPath string, projectLocal ...bool) (*Installed
 }
 
 // pluginNameFromURL extracts a plugin name from a Git URL.
+// If the URL contains a "//subpath", the base of the subpath is preferred.
 func pluginNameFromURL(url string) string {
+	rawURL, subpath := splitURLSubpath(url)
+	if subpath != "" {
+		return filepath.Base(subpath)
+	}
+	url = rawURL
 	// Remove trailing .git
 	url = strings.TrimSuffix(url, ".git")
 
@@ -670,6 +755,147 @@ func pluginNameFromURL(url string) string {
 	}
 
 	return name
+}
+
+// splitURLSubpath separates an optional "//subpath" from a Git URL.
+// The "//" must appear after any protocol scheme (e.g. "https://").
+func splitURLSubpath(url string) (string, string) {
+	searchStart := 0
+	if idx := strings.Index(url, "://"); idx != -1 {
+		searchStart = idx + 3
+	}
+	if relIdx := strings.Index(url[searchStart:], "//"); relIdx != -1 {
+		splitPos := searchStart + relIdx
+		base := strings.TrimSpace(url[:splitPos])
+		subpath := strings.Trim(url[splitPos+2:], "/")
+		return base, subpath
+	}
+	return strings.TrimSpace(url), ""
+}
+
+// locatePluginDir searches for a valid plugin directory within a cloned repository.
+// It checks in order:
+//  1. Explicit subpath if provided
+//  2. root package.json if it exists and matches expectedName (or expectedName is empty)
+//  3. root/plugins/<expectedName>
+//  4. root/<expectedName>
+//  5. root package.json if root has a valid plugin (fallback for single-plugin repos)
+//  6. Scanning immediate subdirectories of root and root/plugins for a manifest matching expectedName
+func locatePluginDir(root, expectedName, subpath string) (string, string, error) {
+	if subpath != "" {
+		cand := filepath.Join(root, subpath)
+		if hasPluginManifest(cand) {
+			return cand, subpath, nil
+		}
+		return "", "", fmt.Errorf("subpath %q in %s does not contain a plugin manifest", subpath, root)
+	}
+
+	if hasPluginManifest(root) {
+		if expectedName == "" {
+			return root, "", nil
+		}
+		if p, err := LoadPlugin(root); err == nil && p.Name == expectedName {
+			return root, "", nil
+		}
+	}
+
+	if expectedName != "" {
+		cand := filepath.Join(root, "plugins", expectedName)
+		if hasPluginManifest(cand) {
+			return cand, filepath.Join("plugins", expectedName), nil
+		}
+		cand = filepath.Join(root, expectedName)
+		if hasPluginManifest(cand) {
+			return cand, expectedName, nil
+		}
+	}
+
+	if hasPluginManifest(root) {
+		return root, "", nil
+	}
+
+	if expectedName != "" {
+		for _, parent := range []string{filepath.Join(root, "plugins"), root} {
+			entries, err := os.ReadDir(parent)
+			if err != nil {
+				continue
+			}
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				cand := filepath.Join(parent, entry.Name())
+				if hasPluginManifest(cand) {
+					if p, err := LoadPlugin(cand); err == nil && p.Name == expectedName {
+						rel, _ := filepath.Rel(root, cand)
+						return cand, rel, nil
+					}
+				}
+			}
+		}
+	}
+
+	return "", "", fmt.Errorf("no recognized plugin format in %s", root)
+}
+
+func hasPluginManifest(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, "package.json"))
+	return err == nil
+}
+
+func moveDir(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	if err := copyDir(src, dst); err != nil {
+		return err
+	}
+	return os.RemoveAll(src)
+}
+
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			linkTarget, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(linkTarget, target)
+		}
+		return copyFile(path, target, info.Mode())
+	})
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
 }
 
 // isSuspiciousPluginPath returns true if the given absolute path is not

@@ -44,9 +44,8 @@ const (
 	ViewModelPicker
 )
 
-// Fixed layout heights (crush-style)
+// Fixed layout heights
 const (
-	InputHeight     = 9
 	StatusBarHeight = 2
 	AppPadding      = 0
 )
@@ -59,11 +58,11 @@ type CommandDef struct {
 
 // AvailableCommands lists all slash commands available in the TUI.
 var AvailableCommands = []CommandDef{
-	{Name: "/clear", Description: "Clear the terminal screen"},
 	{Name: "/compose", Description: "Compose a message with an editor"},
 	{Name: "/help", Description: "Show help and shortcuts"},
 	{Name: "/log", Description: "View git commit log"},
 	{Name: "/model", Description: "Select AI model for agents"},
+	{Name: "/new", Description: "Start fresh conversation"},
 	{Name: "/quit", Description: "Exit the application"},
 	{Name: "/rewind", Description: "Rewind conversation history"},
 	{Name: "/themes", Description: "List and switch themes"},
@@ -96,6 +95,7 @@ type RewindEntry struct {
 
 // AppState tracks the interactive state of a single orchestrator.
 type AppState struct {
+	Transcript           transcriptState
 	State                ValidationState
 	StreamingState       common.ContentEvent
 	PendingConfirm       *ConfirmRequestMsg
@@ -125,6 +125,7 @@ type AppState struct {
 	CachedHistoryLines   []string // Completed history, split once for windowed streaming
 	CachedHistoryBlocks  []RenderBlock
 	CachedHistoryHashes  []uint64 // Content identity for same-length history mutations
+	CachedWidth          int      // Viewport width at which history was rendered
 	StreamingWindow      bool     // Viewport currently contains only the recent history window
 	StreamingWindowStart int      // Full-history line represented by viewport line zero
 
@@ -135,6 +136,11 @@ type AppState struct {
 }
 
 type Model struct {
+	cachedScreen   tea.View
+	screenReady    bool
+	screenDirty    bool
+	framePending   bool
+	lastFrame      time.Time
 	Mode           ViewState
 	Input          textarea.Model
 	Viewport       viewport.Model
@@ -143,6 +149,7 @@ type Model struct {
 	Height         int
 	Renderer       *glamour.TermRenderer
 	InspectingTool bool
+	LazyHistory    bool // When true, startup renders only the visible tail of history and defers older messages
 
 	// Unified Orchestration
 	Root    common.Orchestrator
@@ -169,12 +176,14 @@ type Model struct {
 	ToastMessage    string
 	ToastExpireTime int64
 	ToastWarning    bool
+	BootstrapStatus string
 
 	// Model and config info (set from main.go after creation)
 	ModelName    string // Active model name
 	SubagentInfo string // Subagent model/config description, empty if same as main
 	CWD          string // Current working directory, shown in status bar
 	ShowCWD      bool   // Whether to show current working directory in status bar
+	GitBranch    string // Current git branch name, if in a git repo
 
 	// Configuration
 	AppConfig              *config.Config
@@ -209,9 +218,10 @@ type Model struct {
 	RewindIndex   int
 
 	// Slash-command autocomplete
-	ShowAutocomplete  bool
-	AutocompleteItems []CommandDef
-	AutocompleteIndex int
+	ShowAutocomplete   bool
+	AutocompleteItems  []CommandDef
+	AutocompleteIndex  int
+	AutocompleteOffset int
 
 	// Plugin-provided slash commands (registered at startup from plugins)
 	PluginCommands []string // each entry should include leading slash, e.g. "/query"
@@ -385,6 +395,23 @@ type PluginChangeMsg struct {
 // OrchestratorEventMsg is the bridge between Orchestrator goroutines and the TUI loop.
 type OrchestratorEventMsg struct {
 	Event common.Event
+}
+
+// McpStatusMsg carries background bootstrap status (MCP server connect and LLM
+// backend discovery) into the TUI update loop. An empty Text clears the status;
+// a non-empty Text sets the root agent's status text and shows a toast.
+// Warning selects a warning-style toast (⚠); otherwise a success-style toast (✓).
+type McpStatusMsg struct {
+	Text    string
+	Warning bool
+}
+
+// BootstrapStatusMsg carries startup progress into the TUI update loop.
+type BootstrapStatusMsg struct {
+	Text        string
+	Warning     bool
+	Active      bool
+	RefreshView bool
 }
 
 // FindOrchestrator recursively searches for an orchestrator by ID.
