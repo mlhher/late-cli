@@ -492,4 +492,3 @@ func TestTranscriptBottomBreathingSpace(t *testing.T) {
 		}
 	}
 }
-

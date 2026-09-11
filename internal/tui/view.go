@@ -698,10 +698,6 @@ Press **ctrl+h** or **esc** to return to chat.`
 	m.refreshTranscript()
 }
 
-func (m *Model) renderAnimatedTag(text string, baseStyle lipgloss.Style, width int, active bool) string {
-	return m.renderAnimatedTagAt(text, baseStyle, width, active, time.Now())
-}
-
 func (m *Model) renderAnimatedTagAt(text string, baseStyle lipgloss.Style, width int, active bool, now time.Time) string {
 	textWidth := lipgloss.Width(text)
 
@@ -724,7 +720,6 @@ func (m *Model) renderAnimatedTagAt(text string, baseStyle lipgloss.Style, width
 	period := float64(textWidth)
 	if isTruncated {
 		text = m.truncateWithEllipsis(text, width)
-		textWidth = lipgloss.Width(text)
 		period = float64(width)
 	}
 
@@ -733,7 +728,7 @@ func (m *Model) renderAnimatedTagAt(text string, baseStyle lipgloss.Style, width
 	bg := baseStyle.GetBackground()
 
 	// If background is unset, use the app background to prevent leakage
-	if bg == nil {
+	if bg == (lipgloss.NoColor{}) {
 		bg = appBgColor
 	}
 
@@ -804,10 +799,9 @@ func (m *Model) truncateWithEllipsis(s string, w int) string {
 	}
 
 	limit := w - 3
-	runes := []rune(s)
 	res := ""
 	currW := 0
-	for _, r := range runes {
+	for _, r := range s {
 		rw := lipgloss.Width(string(r))
 		if currW+rw > limit {
 			break
@@ -826,10 +820,6 @@ func (m *Model) renderMarkdownBlock(content string, innerWidth int) string {
 	return md
 }
 
-// splitMarkdownChunks splits markdown content at paragraph boundaries (\n\n)
-// that are NOT inside fenced code blocks. Returns complete paragraphs (stable,
-// cacheable during streaming) and the trailing incomplete content (must be
-// re-rendered each frame).
 // renderWelcomeMessage builds the rich welcome screen shown when history is empty.
 func (m *Model) renderWelcomeMessage() string {
 	w := m.Viewport.Width()
@@ -1286,99 +1276,10 @@ func (m *Model) renderRewindView() {
 	m.Viewport.SetContent(strings.Join(lines, "\n"))
 }
 
-// overlayCentered places the dialog string centered over the background string,
-// matching the viewport dimensions. The dialog is sized to fit its content.
-func overlayCentered(background, dialog string, vpWidth, vpHeight int) string {
-	bgLines := strings.Split(background, "\n")
-	dialogLines := strings.Split(dialog, "\n")
-
-	// Calculate dialog dimensions from actual content
-	dialogW := 0
-	for _, line := range dialogLines {
-		w := lipgloss.Width(line)
-		if w > dialogW {
-			dialogW = w
-		}
-	}
-	dialogH := len(dialogLines)
-
-	// Clamp to viewport
-	if dialogW > vpWidth {
-		dialogW = vpWidth
-	}
-	if dialogH > vpHeight {
-		dialogH = vpHeight
-	}
-
-	// Center position
-	startX := (vpWidth - dialogW) / 2
-	startY := (vpHeight - dialogH) / 2
-
-	// Build result by overlaying dialog onto background
-	result := make([]string, 0, vpHeight)
-	for y := 0; y < vpHeight; y++ {
-		var bgLine string
-		if y < len(bgLines) {
-			bgLine = bgLines[y]
-		} else {
-			bgLine = ""
-		}
-
-		// Pad background line to full width
-		if len(bgLine) < vpWidth {
-			bgLine += strings.Repeat(" ", vpWidth-len(bgLine))
-		}
-
-		// Overlay dialog
-		dialogIdx := y - startY
-		if dialogIdx >= 0 && dialogIdx < dialogH {
-			dl := dialogLines[dialogIdx]
-			// Pad dialog line
-			if len(dl) < dialogW {
-				dl += strings.Repeat(" ", dialogW-len(dl))
-			}
-			// Replace characters in the background
-			runes := []rune(bgLine)
-			for x := 0; x < dialogW && startX+x < len(runes); x++ {
-				runes[startX+x] = []rune(dl)[x]
-			}
-			bgLine = string(runes)
-		}
-
-		result = append(result, bgLine)
-	}
-
-	return strings.Join(result, "\n")
-}
-
-func splitMarkdownChunks(content string) (complete []string, tail string) {
-	inFence := false
-	lastSplit := 0
-
-	for i := 0; i < len(content); i++ {
-		// Detect code fence toggles at line starts
-		if (i == 0 || content[i-1] == '\n') && i+3 <= len(content) && content[i:i+3] == "```" {
-			inFence = !inFence
-		}
-		// Split at \n\n outside code fences
-		if !inFence && i+1 < len(content) && content[i] == '\n' && content[i+1] == '\n' {
-			complete = append(complete, content[lastSplit:i+2])
-			lastSplit = i + 2
-		}
-	}
-	tail = content[lastSplit:]
-	return
-}
-
 // renderModelPickerView renders the active agent models configuring list in the viewport.
 func (m *Model) renderModelPickerView() {
 	s := m.GetAgentState(m.Focused.ID())
 	s.LastTotalContent = ""
-
-	msgWidth := m.Viewport.Width() - 2
-	if msgWidth < 1 {
-		msgWidth = 80
-	}
 
 	var lines []string
 	header := viewHeaderStyle.Render("── Configure Agent Models ──────────────────────────")

@@ -1930,11 +1930,7 @@ func isBinary(data []byte) bool {
 			}
 		}
 	}
-	if float64(control)/float64(limit) > 0.10 {
-		return true
-	}
-
-	return false
+	return float64(control)/float64(limit) > 0.10
 }
 
 // isPluginCmd checks whether the given input is a registered plugin command.

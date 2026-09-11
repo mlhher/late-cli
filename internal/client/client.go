@@ -512,16 +512,6 @@ func parsePropsBodyData(body []byte) (int, bool) {
 	return nCtx, vis
 }
 
-// parsePropsBody extracts ctxSize and vision support from a /props JSON body and updates c.
-func (c *Client) parsePropsBody(body []byte) {
-	nCtx, vis := parsePropsBodyData(body)
-	if nCtx > 0 {
-		c.ctxSize = nCtx
-	}
-	if vis {
-		c.supportsVision = vis
-	}
-}
 
 func (c *Client) getBackend() BackendType {
 	c.mu.RLock()

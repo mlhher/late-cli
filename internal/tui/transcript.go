@@ -194,7 +194,7 @@ func (m *Model) applyTranscript(result transcriptRenderedMsg) {
 	if styles == nil {
 		styles = LateTheme
 	}
-	if result.generation != t.generation || result.width != m.Viewport.Width() || result.theme != string(styles) {
+	if result.width != m.Viewport.Width() || result.theme != string(styles) {
 		t.dirty = true
 		return
 	}

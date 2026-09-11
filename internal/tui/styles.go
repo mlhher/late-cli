@@ -6,21 +6,19 @@ import (
 
 var (
 	// Refined Palette - Pure Obsidian, Warm Golden Amber, Calm Steel Ice
-	primaryColor      = lipgloss.Color("#E5A85C") // Warm Golden Amber
-	primaryGlow       = lipgloss.Color("#F0B875") // Subtle highlight
-	secondaryColor    = lipgloss.Color("#56B6C2") // Steel Ice Cyan
-	promptBorderColor = lipgloss.Color("#438FA3") // Quiet attention blue for prompts
-	accentEmerald     = lipgloss.Color("#4ECCA3") // Muted Mint
-	accentCoral       = lipgloss.Color("#E06C75") // Calm Coral
-	warningColor      = lipgloss.Color("#E06C75") // Warning Red (alias)
-	textColor         = lipgloss.Color("#E6EDF3") // Crisp Off-White
-	subtextColor      = lipgloss.Color("#7D8590") // Muted Slate
-	mutedTextColor    = lipgloss.Color("#484F58") // Whisper Slate (borders, dividers)
+	primaryColor   = lipgloss.Color("#E5A85C") // Warm Golden Amber
+	primaryGlow    = lipgloss.Color("#F0B875") // Subtle highlight
+	secondaryColor = lipgloss.Color("#56B6C2") // Steel Ice Cyan
+	accentEmerald  = lipgloss.Color("#4ECCA3") // Muted Mint
+	accentCoral    = lipgloss.Color("#E06C75") // Calm Coral
+	warningColor   = lipgloss.Color("#E06C75") // Warning Red (alias)
+	textColor      = lipgloss.Color("#E6EDF3") // Crisp Off-White
+	subtextColor   = lipgloss.Color("#7D8590") // Muted Slate
+	mutedTextColor = lipgloss.Color("#484F58") // Whisper Slate (borders, dividers)
 
 	// Canvas & Surfaces
 	appBgColor   = lipgloss.Color("#0B0C0E") // Deep Obsidian
 	userMsgBg    = appBgColor                // Clean seamless canvas
-	aiMsgBg      = appBgColor                // Clean seamless canvas
 	cardBgColor  = lipgloss.Color("#12141A") // Subtle Container (autocomplete popup)
 	chipBgColor  = lipgloss.Color("#1B1E28") // Elevated Pill / Badge Surface
 	borderColor  = lipgloss.Color("#1C1F26") // Hairline Divider
@@ -90,20 +88,7 @@ var (
 	// Layout Constants
 	AIMsgOverhead = 0
 
-	// Styles
-	appStyle = baseStyle.Copy().
-			Foreground(textColor)
-
-	inputStyle = baseStyle.Copy().
-			BorderBackground(appBgColor).
-			MarginBackground(appBgColor).
-			Padding(0, 1)
-
 	// User Prompt & Message
-	promptSymbolStyle = lipgloss.NewStyle().
-				Foreground(primaryColor).
-				Bold(true)
-
 	userMsgStyle = lipgloss.NewStyle().
 			Foreground(textColor).
 			Background(cardBgColor).
@@ -165,10 +150,6 @@ var (
 			Background(appBgColor).
 			Render(" │ ")
 
-	statusModeStyle = lipgloss.NewStyle().
-			Foreground(primaryColor).
-			Bold(true)
-
 	statusKeyStyle = lipgloss.NewStyle().
 			Foreground(subtextColor).
 			Background(appBgColor).
@@ -187,20 +168,11 @@ var (
 				Foreground(accentEmerald).
 				Background(appBgColor)
 
-	keycapStyle = lipgloss.NewStyle().
-			Foreground(subtextColor).
-			Background(chipBgColor).
-			Padding(0, 1)
-
 	statusAttachedStyle = lipgloss.NewStyle().
 				Foreground(secondaryColor).
 				Background(appBgColor)
 
 	// Breadcrumb styles
-	breadcrumbLateStyle = lipgloss.NewStyle().
-				Foreground(subtextColor).
-				Background(appBgColor)
-
 	breadcrumbSeparatorStyle = lipgloss.NewStyle().
 					Foreground(activeBorder).
 					Background(appBgColor)

@@ -292,4 +292,3 @@ func TestBaseOrchestrator_Execute_EmptyTextDoesNotAddMessage(t *testing.T) {
 		t.Fatalf("expected exactly 1 user message, got %d", userMsgCount)
 	}
 }
-

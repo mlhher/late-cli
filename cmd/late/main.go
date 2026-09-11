@@ -466,18 +466,15 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Applied plugin theme: %s\n", info.ID)
 			} else {
 				themeID = "default"
-				themeBytes = tui.LateTheme
 			}
 		} else {
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Theme lookup failed for %q: %v\n", themeID, err)
 			}
 			themeID = "default"
-			themeBytes = tui.LateTheme
 		}
 	} else {
 		themeID = "default"
-		themeBytes = tui.LateTheme
 	}
 	// Initialize common renderer
 	renderer, _ := glamour.NewTermRenderer(
