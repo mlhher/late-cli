@@ -25,6 +25,8 @@ pr_review_report.md
 .late/
 .plans/
 .hermes/
+*.local.json
+.devcontainer/*.local.json
 
 # OS
 .DS_Store
