@@ -531,21 +531,6 @@ func (m *Model) statusBarView() string {
 		rightItems = append(rightItems, m.renderContextBar(s.CumulativeTokenCount, maxTokens))
 	}
 
-	// Plugin count badge
-	pluginCmdCount := len(m.PluginCommands)
-	if pluginCmdCount > 0 {
-		badge := fmt.Sprintf("%d plugin", pluginCmdCount)
-		if pluginCmdCount > 1 {
-			badge += "s"
-		}
-		pluginStr := lipgloss.NewStyle().
-			Foreground(primaryColor).
-			Background(appBgColor).
-			Bold(true).
-			Render(badge)
-		rightItems = append(rightItems, pluginStr)
-	}
-
 	// Breadcrumbs
 	var pathParts []string
 	curr := m.Focused
