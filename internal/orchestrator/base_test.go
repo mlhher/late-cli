@@ -2,10 +2,13 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"encoding/json"
 	"late/internal/client"
 	"late/internal/common"
 	"late/internal/session"
+	"net/http"
+	"net/http/httptest"
 	"late/internal/tool"
 	"os"
 	"path/filepath"
@@ -147,5 +150,160 @@ func TestBaseOrchestrator_ResetStartsNewConversation(t *testing.T) {
 	}
 	if len(preserved) != 2 {
 		t.Fatalf("saving the new conversation changed original history: %#v", preserved)
+	}
+}
+
+func TestNextChildID_FormatAndMonotonic(t *testing.T) {
+	o := NewBaseOrchestrator("parent", session.New(nil, "", nil, "", false), nil, 0)
+
+	var got []string
+	for i := 0; i < 3; i++ {
+		id, err := o.NextChildID("researcher")
+		if err != nil {
+			t.Fatalf("NextChildID() error = %v", err)
+		}
+		got = append(got, id)
+	}
+	id, err := o.NextChildID("coder")
+	if err != nil {
+		t.Fatalf("NextChildID() error = %v", err)
+	}
+	got = append(got, id)
+
+	want := []string{
+		"researcher-subagent-0",
+		"researcher-subagent-1",
+		"researcher-subagent-2",
+		// The counter is global per parent, NOT per type.
+		"coder-subagent-3",
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("got %d IDs, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("ID %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestNextChildID_Concurrent(t *testing.T) {
+	o := NewBaseOrchestrator("parent", session.New(nil, "", nil, "", false), nil, 0)
+
+	const goroutines = 64
+	const perGoroutine = 16
+
+	var mu sync.Mutex
+	ids := make([]string, 0, goroutines*perGoroutine)
+
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < perGoroutine; i++ {
+				id, err := o.NextChildID("researcher")
+				if err != nil {
+					t.Errorf("NextChildID() error = %v", err)
+					return
+				}
+				mu.Lock()
+				ids = append(ids, id)
+				mu.Unlock()
+			}
+			// Interleave lightweight child registration to ensure concurrent
+			// AddChild calls don't interfere with ID minting.
+			o.AddChild(NewBaseOrchestrator(fmt.Sprintf("dummy-%d", g), nil, nil, 0))
+		}(g)
+	}
+	wg.Wait()
+
+	if len(ids) != goroutines*perGoroutine {
+		t.Fatalf("minted %d IDs, want %d", len(ids), goroutines*perGoroutine)
+	}
+
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if _, dup := seen[id]; dup {
+			t.Fatalf("duplicate ID minted: %q", id)
+		}
+		seen[id] = struct{}{}
+	}
+
+	if n := len(o.Children()); n != goroutines {
+		t.Errorf("Children() length = %d, want %d", n, goroutines)
+	}
+}
+
+func TestNextChildIDPersistsSequenceForResume(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalSessionDir := session.SessionDir
+	session.SessionDir = func() (string, error) { return tmpDir, nil }
+	t.Cleanup(func() { session.SessionDir = originalSessionDir })
+
+	historyPath := filepath.Join(tmpDir, "session-test.json")
+	sess := session.New(nil, historyPath, nil, "", false)
+	sess.SetSubagentMetadata(4, nil)
+	o := NewBaseOrchestrator("parent", sess, nil, 0)
+
+	id, err := o.NextChildID("researcher")
+	if err != nil {
+		t.Fatalf("NextChildID() error = %v", err)
+	}
+	if id != "researcher-subagent-4" {
+		t.Fatalf("NextChildID() = %q, want researcher-subagent-4", id)
+	}
+
+	meta, err := session.LoadSessionMeta("session-test")
+	if err != nil {
+		t.Fatalf("LoadSessionMeta() error = %v", err)
+	}
+	if meta.SubagentSeq != 5 {
+		t.Fatalf("SubagentSeq = %d, want 5", meta.SubagentSeq)
+	}
+
+	resumed := session.New(nil, historyPath, nil, "", false)
+	resumed.SetSubagentMetadata(meta.SubagentSeq, meta.SaveSubagentHistories)
+	resumedOrchestrator := NewBaseOrchestrator("parent", resumed, nil, 0)
+	resumedID, err := resumedOrchestrator.NextChildID("coder")
+	if err != nil {
+		t.Fatalf("resumed NextChildID() error = %v", err)
+	}
+	if resumedID != "coder-subagent-5" {
+		t.Errorf("resumed NextChildID() = %q, want coder-subagent-5", resumedID)
+	}
+}
+
+func TestBaseOrchestrator_Execute_EmptyTextDoesNotAddMessage(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer ts.Close()
+
+	tmpDir := t.TempDir()
+	historyPath := filepath.Join(tmpDir, "session.json")
+	initial := []client.ChatMessage{
+		{Role: "user", Content: client.TextContent("initial goal")},
+	}
+	c := client.NewClient(client.Config{BaseURL: ts.URL})
+	sess := session.New(c, historyPath, initial, "", false)
+	o := NewBaseOrchestrator("test", sess, nil, 1)
+
+	_, _ = o.Execute("")
+
+	userMsgCount := 0
+	for _, msg := range o.History() {
+		if msg.Role == "user" {
+			userMsgCount++
+			if msg.Content.String() != "initial goal" {
+				t.Fatalf("unexpected user message in history: %#v", msg)
+			}
+		}
+	}
+	if userMsgCount != 1 {
+		t.Fatalf("expected exactly 1 user message, got %d", userMsgCount)
 	}
 }

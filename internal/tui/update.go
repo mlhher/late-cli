@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"late/internal/assets"
 	"late/internal/common"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -29,31 +31,111 @@ type StreamMsg struct {
 
 type clearToastMsg struct{}
 
+const messageHookIndicatorDelay = 400 * time.Millisecond
+
 type composeFinishedMsg struct {
 	content string
 	err     error
+}
+
+// pluginCommandResultMsg carries the outcome of an asynchronously executed
+// plugin slash-command handler. Handlers run off the TUI update loop (a
+// slow plugin script must not freeze input and rendering), so the result
+// is delivered back as a message.
+type pluginCommandResultMsg struct {
+	cmd     string // the full input as typed (for plain-prompt fall-through)
+	name    string // the slash command name
+	output  string
+	handled bool
+	err     error
+}
+
+// messageHookResultMsg carries the outcome of asynchronously running a
+// plugin's onMessageSend hooks (PluginManager.HookedMessage). Each hook
+// script runs off the TUI update loop — a slow or misbehaving script must
+// not freeze input and rendering for up to hookTimeout per hook — so the
+// (possibly transformed) message is delivered back as a message and the
+// actual submission happens once it arrives. See submitMessage.
+type messageHookResultMsg struct {
+	target        common.Orchestrator // the agent that was focused when Enter was pressed
+	attachedFiles []string
+	draft         string // original editor text, for restoration if Submit fails
+	input         string // expandedInput, pre-hook (for input-history dedup)
+	submitted     string // post-hook text to actually submit
 }
 
 // StartPromptMsg submits a prompt as soon as the TUI is ready.
 type StartPromptMsg string
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch event := msg.(type) {
+	case transcriptFrameMsg:
+		return m.transcriptFrame()
+	case transcriptRenderedMsg:
+		m.applyTranscript(event)
+		return m.present(nil)
+	case OrchestratorEventMsg:
+		if _, ok := event.Event.(common.ContentEvent); ok {
+			updated, cmd := m.updateChat(msg)
+			return updated.present(cmd)
+		}
+	}
+	if m.Mode == ViewChat && !m.EscConfirmPending && !m.ShowFilePicker {
+		switch event := msg.(type) {
+		case tea.KeyReleaseMsg:
+			return m, nil
+		case tea.KeyPressMsg:
+			switch event.String() {
+			case "pgup":
+				m.scrollTranscript(-max(1, m.Viewport.Height()-2), 0)
+				return m.present(nil)
+			case "pgdown":
+				m.scrollTranscript(max(1, m.Viewport.Height()-2), 0)
+				return m.present(nil)
+			case "shift+home":
+				m.scrollTranscript(0, -1)
+				return m.present(nil)
+			case "shift+end":
+				m.scrollTranscript(0, 1)
+				return m.present(nil)
+			case "home", "end":
+				if m.Input.Value() == "" {
+					edge := 1
+					if event.String() == "home" {
+						edge = -1
+					}
+					m.scrollTranscript(0, edge)
+					return m.present(nil)
+				}
+			}
+		case tea.MouseWheelMsg:
+			if event.Mouse().Y >= 0 && event.Mouse().Y < m.Viewport.Height() {
+				switch event.Mouse().Button {
+				case tea.MouseWheelUp:
+					m.scrollTranscript(-2, 0)
+				case tea.MouseWheelDown:
+					m.scrollTranscript(2, 0)
+				}
+			}
+			return m.present(nil)
+		}
+	}
 	oldHeight := m.Input.Height()
 	oldShowAuto := m.ShowAutocomplete
-	oldAutoLen := len(m.AutocompleteItems)
+	oldAutoH := m.autocompleteHeight()
 	oldMode := m.Mode
 
 	newModel, cmd := m.updateInternal(msg)
 
-	if newModel.Input.Height() != oldHeight || newModel.ShowAutocomplete != oldShowAuto || len(newModel.AutocompleteItems) != oldAutoLen || newModel.Mode != oldMode {
+	if newModel.Input.Height() != oldHeight || newModel.ShowAutocomplete != oldShowAuto || newModel.autocompleteHeight() != oldAutoH || newModel.Mode != oldMode {
 		newModel.updateLayout()
 	}
-	return newModel, cmd
+	return newModel.present(cmd)
 }
 
 func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 	if prompt, ok := msg.(StartPromptMsg); ok {
-		m.Input.SetValue("> " + string(prompt))
+		m.Input.SetValue(string(prompt))
 		m.Input.CursorEnd()
 		return m, func() tea.Msg {
 			return tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter})
@@ -78,6 +160,9 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		if msg.String() == "ctrl+o" {
+			if m.RunningPluginAction != "" {
+				return m, nil
+			}
 			m.ShowFilePicker = !m.ShowFilePicker
 			if m.ShowFilePicker {
 				m.Mode = ViewFilePicker
@@ -87,6 +172,9 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 			return m, m.FilePicker.Init()
 		}
 		if msg.String() == "ctrl+x" {
+			if m.RunningPluginAction != "" {
+				return m, nil
+			}
 			m.AttachedFiles = nil
 			return m, nil
 		}
@@ -106,13 +194,23 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+	if _, ok := msg.(tea.PasteMsg); ok && m.RunningPluginAction != "" {
+		return m, nil
+	}
 
 	// Window Sizing
 	if msg, ok := msg.(tea.WindowSizeMsg); ok {
+		if msg.Width == m.Width && msg.Height == m.Height {
+			return m, nil
+		}
+		widthChanged := m.Width != msg.Width
 		m.Width = msg.Width
 		m.Height = msg.Height
-		for _, s := range m.AgentStates {
-			s.RenderedHistory = nil
+		if widthChanged {
+			for _, s := range m.AgentStates {
+				s.RenderedHistory = nil
+				s.CachedWidth = -1
+			}
 		}
 		m.updateLayout()
 	}
@@ -182,8 +280,95 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 			m.Err = msg.err
 			return m, nil
 		}
-		m.Input.SetValue("> " + msg.content)
+		m.Input.SetValue(msg.content)
 		m.Input.CursorEnd()
+		return m, nil
+	}
+	if msg, ok := msg.(PluginChangeMsg); ok {
+		m.SetPluginCommands(msg.Commands)
+		m.SetThemes(msg.Themes)
+		// Re-register plugin-provided tools (MCP adapters + inline tools):
+		// removed or disabled plugins stop advertising their tools, new or
+		// re-enabled plugins' tools become callable. Done here in the
+		// update loop so the registry map is only touched from one place.
+		if m.Root != nil {
+			if reg := m.Root.Registry(); reg != nil {
+				for _, name := range msg.RemovedTools {
+					reg.Unregister(name)
+				}
+				for _, t := range msg.AddedTools {
+					reg.Register(t)
+				}
+			}
+		}
+		m.ShowAutocomplete = false
+		// If the theme picker was open against a stale list, re-clamp the
+		// cursor so the user doesn't see an out-of-range index.
+		if m.ThemeIndex >= len(m.ThemeEntries) {
+			m.ThemeIndex = len(m.ThemeEntries) - 1
+		}
+		if m.ThemeIndex < 0 {
+			m.ThemeIndex = 0
+		}
+		if m.SelectedTheme != "" && m.SelectedTheme != "default" && m.FindTheme(m.SelectedTheme) == nil {
+			_ = m.ApplyTheme(&DefaultThemeEntry)
+		}
+		// Force viewport refresh so help text and status bar update
+		m.updateViewport()
+		return m, nil
+	}
+	if msg, ok := msg.(pluginCommandResultMsg); ok {
+		m.RunningPluginAction = ""
+		m.RunningPluginActionVisibleAfter = time.Time{}
+		if !msg.handled {
+			// The plugin registered the name but has no handler (legacy
+			// plain-prompt dispatch) — submit the input as a normal prompt.
+			return m.submitMessage(msg.cmd)
+		}
+		// Capture in input history (avoid consecutive duplicates).
+		if len(m.InputHistory) == 0 || m.InputHistory[len(m.InputHistory)-1] != msg.cmd {
+			m.InputHistory = append(m.InputHistory, msg.cmd)
+		}
+		m.HistoryIndex = -1
+		m.HistoryWorking = ""
+
+		// Reset input box.
+		m.Input.Reset()
+		m.Input.SetValue("")
+
+		// Toast UX for handler output.
+		if msg.err != nil {
+			m.ToastMessage = fmt.Sprintf("error executing %s: %v", msg.name, msg.err)
+		} else if msg.output != "" {
+			firstLine := strings.SplitN(strings.TrimSpace(msg.output), "\n", 2)[0]
+			m.ToastMessage = fmt.Sprintf("executed %s: %s", msg.name, firstLine)
+			if len(m.ToastMessage) > 80 {
+				m.ToastMessage = m.ToastMessage[:77] + "..."
+			}
+		} else {
+			m.ToastMessage = fmt.Sprintf("%s executed", msg.name)
+		}
+		m.ToastExpireTime = time.Now().UnixMilli() + 3000
+		clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+			return clearToastMsg{}
+		})
+		m.updateViewport()
+		return m, clearCmd
+	}
+	if msg, ok := msg.(messageHookResultMsg); ok {
+		m.RunningPluginAction = ""
+		m.RunningPluginActionVisibleAfter = time.Time{}
+		if err := msg.target.Submit(msg.submitted, msg.attachedFiles); err != nil {
+			// Submission did not take ownership of the snapshotted draft, so
+			// restore it exactly as the user entered it and return its files.
+			m.Input.SetValue(msg.draft)
+			m.Input.CursorEnd()
+			m.AttachedFiles = append([]string(nil), msg.attachedFiles...)
+			m.Err = err
+			m.updateViewport()
+			return m, nil
+		}
+		m = m.finishSubmit(msg.target, msg.input)
 		return m, nil
 	}
 
@@ -209,6 +394,9 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 
 	// Filter key events that were consumed by updateChat during confirmation
 	forwardToInput := true
+	if m.RunningPluginAction != "" {
+		forwardToInput = false
+	}
 
 	if pasteMsg, ok := msg.(tea.PasteMsg); ok {
 		if isBinary([]byte(pasteMsg.Content)) {
@@ -232,7 +420,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
 		switch keyMsg.String() {
 		case "y", "Y", "n", "N", "s", "S", "p", "P", "g", "G":
-			if escBefore || (stateBefore == StateConfirmTool && strings.TrimPrefix(m.Input.Value(), "> ") == "") {
+			if escBefore || (stateBefore == StateConfirmTool && m.Input.Value() == "") {
 				forwardToInput = false
 			}
 		case "up":
@@ -240,7 +428,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 				if m.ShowAutocomplete || wasAtExactStart {
 					forwardToInput = false
 				} else if wasAtTopRow {
-					m.Input.SetCursorColumn(2)
+					m.Input.SetCursorColumn(0)
 					forwardToInput = false
 				}
 			} else {
@@ -267,20 +455,6 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 	// Update Sub-models
 	if forwardToInput {
 		m.Input, tiCmd = m.Input.Update(msg)
-		// Prevent cursor from moving before the "> " prompt on the first line
-		if m.Input.Line() == 0 && m.Input.Column() < 2 {
-			m.Input.SetCursorColumn(2)
-		}
-
-		if !strings.HasPrefix(m.Input.Value(), "> ") {
-			val := m.Input.Value()
-			if strings.HasPrefix(val, ">") {
-				m.Input.SetValue("> " + strings.TrimPrefix(val, ">"))
-			} else {
-				m.Input.SetValue("> " + val)
-			}
-			m.Input.CursorEnd()
-		}
 	}
 
 	// Update autocomplete state whenever the input changes
@@ -329,9 +503,6 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "pgup", "pgdown", "home", "end":
-			if msg.String() == "pgup" || msg.String() == "home" {
-				m.restoreFullHistoryForScroll()
-			}
 			forwardToViewport = true
 		default:
 			// Never forward character keys to the viewport to prevent conflicts with textarea input.
@@ -341,9 +512,6 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 	case tea.MouseWheelMsg:
 		// Wheel events forwarded to viewport for scroll handling.
 		// Bubbletea v2 dispatches these as a distinct type from MouseMsg.
-		if msg.Mouse().Button == tea.MouseWheelUp {
-			m.restoreFullHistoryForScroll()
-		}
 		forwardToViewport = true
 	case tea.MouseMsg:
 		forwardToViewport = true
@@ -356,6 +524,9 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 						m.LastClickTime = 0 // prevent triple click from double-triggering
 						clickedLine := m.Viewport.YOffset() + mouseMsg.Y
 						s := m.GetAgentState(m.Focused.ID())
+						if m.Mode == ViewChat {
+							clickedLine = s.Transcript.offset + mouseMsg.Y
+						}
 						var foundBlock *RenderBlock
 						for _, block := range s.RenderBlocks {
 							if clickedLine >= block.StartLine && clickedLine <= block.EndLine {
@@ -393,12 +564,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 			}
 		}
 	case spinner.TickMsg:
-		// Streaming content contains time-based caret/glow styling too, so it
-		// needs animation frames even while no new tokens arrive.
-		s := m.GetAgentState(m.Focused.ID())
-		if s.State == StateThinking || s.State == StateStreaming {
-			m.updateViewport()
-		}
+		// Only the status animation changes; transcript rows remain cached.
 		forwardToViewport = false
 	default:
 		forwardToViewport = true
@@ -456,6 +622,50 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		focusedState := m.GetAgentState(m.Focused.ID())
+
+		// Theme selector view key handling
+		if m.Mode == ViewThemes {
+			switch msg.String() {
+			case "up", "k":
+				if len(m.ThemeEntries) > 0 {
+					m.ThemeIndex = max(0, m.ThemeIndex-1)
+					m.updateViewport()
+				}
+				return m, nil
+			case "down", "j":
+				if len(m.ThemeEntries) > 0 {
+					m.ThemeIndex = min(len(m.ThemeEntries)-1, m.ThemeIndex+1)
+					m.updateViewport()
+				}
+				return m, nil
+			case "enter":
+				if info := m.FindThemeByIndex(m.ThemeIndex); info != nil {
+					if err := m.ApplyTheme(info); err != nil {
+						m.ToastMessage = "theme apply failed: " + err.Error()
+						m.ToastExpireTime = time.Now().UnixMilli() + 4000
+					} else {
+						m.ToastMessage = "theme applied: " + info.ThemeName
+						m.ToastExpireTime = time.Now().UnixMilli() + 3000
+						if m.AppConfig != nil {
+							m.AppConfig.Theme = info.ID
+							_ = config.SaveConfig(m.AppConfig)
+						}
+					}
+					clearCmd := tea.Tick(4*time.Second, func(t time.Time) tea.Msg {
+						return clearToastMsg{}
+					})
+					m.Mode = ViewChat
+					m.updateViewport()
+					return m, clearCmd
+				}
+				return m, nil
+			case "esc", "q":
+				m.Mode = ViewChat
+				m.updateViewport()
+				return m, nil
+			}
+			return m, nil
+		}
 
 		// Model picker view key handling
 		if m.Mode == ViewModelPicker {
@@ -596,7 +806,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 
 					// Place the selected user message into the input box
 					m.Input.Reset()
-					m.Input.SetValue("> " + entry.Content)
+					m.Input.SetValue(entry.Content)
 					m.Input.CursorEnd()
 
 					// Remove the selected user message and all subsequent messages from chat history
@@ -776,10 +986,14 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			return m.interruptFocusedAgent()
 
 		case "enter":
-			if m.ShowFilePicker {
+			if m.ShowFilePicker || m.RunningPluginAction != "" {
 				return m, nil
 			}
-			input := strings.TrimPrefix(m.Input.Value(), "> ")
+			m.ShowAutocomplete = false
+			m.AutocompleteItems = nil
+			m.AutocompleteIndex = 0
+
+			input := m.Input.Value()
 			if strings.TrimSpace(input) == "" {
 				return m, nil
 			}
@@ -815,7 +1029,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 					c := exec.Command(editor, tempFile.Name())
 
 					m.Input.Reset()
-					m.Input.SetValue("> ")
+					m.Input.SetValue("")
 					m.ShowAutocomplete = false
 					m.AutocompleteItems = nil
 					m.AutocompleteIndex = 0
@@ -841,7 +1055,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			if cmd == "/help" {
 				m.Input.Reset()
-				m.Input.SetValue("> ")
+				m.Input.SetValue("")
 				m.Mode = ViewHelp
 				focusedState.RenderedHistory = nil
 				m.updateLayout()
@@ -871,7 +1085,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			if cmd == "/model" {
 				m.Input.Reset()
-				m.Input.SetValue("> ")
+				m.Input.SetValue("")
 				if m.hasActiveAgent() {
 					m.ToastMessage = "Models can be changed when all agents are idle"
 					m.ToastWarning = true
@@ -923,7 +1137,10 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			if cmd == "/new" {
 				m.Input.Reset()
-				m.Input.SetValue("> ")
+				m.Input.SetValue("")
+				m.ShowAutocomplete = false
+				m.AutocompleteItems = nil
+				m.AutocompleteIndex = 0
 				if err := m.Root.Reset(); err != nil {
 					m.Err = fmt.Errorf("failed to start new conversation: %w", err)
 					return m, nil
@@ -931,6 +1148,9 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				m.Focused = m.Root
 				m.Pastes = make(map[string]string)
 				for _, state := range m.AgentStates {
+					state.Transcript = transcriptState{generation: state.Transcript.generation + 1}
+					state.StreamingState = common.ContentEvent{}
+					state.State = StateIdle
 					state.RenderedHistory = nil
 					state.CumulativeTokenCount = 0
 					state.CachedHistoryLen = 0
@@ -938,7 +1158,8 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 					state.LastTotalContent = ""
 				}
 				m.LastFocusedID = ""
-				m.updateViewport()
+				m.Viewport.GotoTop()
+				m.updateLayout()
 				m.ToastMessage = "new conversation started"
 				m.ToastWarning = false
 				m.ToastExpireTime = time.Now().UnixMilli() + 3000
@@ -949,7 +1170,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			if cmd == "/log" {
 				m.Input.Reset()
-				m.Input.SetValue("> ")
+				m.Input.SetValue("")
 				entries, err := git.LogCommits(m.CWD, 30)
 				if err != nil {
 					m.Err = err
@@ -964,14 +1185,17 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			if cmd == "/rewind" {
 				m.Input.Reset()
-				m.Input.SetValue("> ")
+				m.Input.SetValue("")
 				history := m.Focused.History()
 				var entries []RewindEntry
 				for idx, msg := range history {
 					if msg.Role == "user" {
-						content := msg.Content.UIString()
+						content := strings.TrimSpace(msg.Content.UIString())
 						if content == "" {
-							content = msg.Content.String()
+							content = strings.TrimSpace(msg.Content.String())
+						}
+						if content == "" && len(msg.AttachedFiles) == 0 {
+							continue
 						}
 						entries = append(entries, RewindEntry{
 							Index:   idx,
@@ -995,77 +1219,139 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				m.updateViewport()
 				return m, nil
 			}
-
-			// Preflight context check
-			maxTokens := m.Focused.MaxTokens()
-			if focusedState.State == StateIdle && maxTokens > 0 && !focusedState.ContextWarningShown {
-				// Use 10% safety margin (90% threshold)
-				threshold := 0.9
-				if float64(focusedState.CumulativeTokenCount) >= float64(maxTokens)*threshold {
-					focusedState.State = StateContextWarning
-					focusedState.ContextWarningShown = true
+			// /themes [name] - list available plugin themes, or apply one.
+			// "/themes" alone opens the picker; "/themes <name>" applies by
+			// bare name or by namespaced ID. The "name" branch lives below.
+			if cmd == "/themes" {
+				m.Input.Reset()
+				m.Input.SetValue("")
+				if len(m.ThemeEntries) == 0 {
+					m.ToastMessage = "no plugin themes installed"
+					m.ToastExpireTime = time.Now().UnixMilli() + 3000
+					clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+						return clearToastMsg{}
+					})
+					m.updateViewport()
+					return m, clearCmd
+				}
+				// Default the cursor to the currently active theme (or 0).
+				m.ThemeIndex = 0
+				for i, t := range m.ThemeEntries {
+					if t.ID == m.SelectedTheme || (t.ID == "default" && (m.SelectedTheme == "" || m.SelectedTheme == "default")) {
+						m.ThemeIndex = i
+						break
+					}
+				}
+				m.Mode = ViewThemes
+				m.updateViewport()
+				return m, nil
+			}
+			if strings.HasPrefix(cmd, "/themes ") {
+				// User supplied a name; resolve and apply inline.
+				name := strings.TrimSpace(strings.TrimPrefix(cmd, "/themes "))
+				m.Input.Reset()
+				m.Input.SetValue("")
+				if name == "" {
+					m.Mode = ViewThemes
 					m.updateViewport()
 					return m, nil
 				}
-			}
-
-			// Re-validate attachments in case the model changed since file selection
-			if len(m.AttachedFiles) > 0 && !m.Focused.SupportsVision() {
-				var filtered []string
-				for _, f := range m.AttachedFiles {
-					data, err := os.ReadFile(f)
-					if err != nil {
-						continue
-					}
-					mimeType := http.DetectContentType(data)
-					if !strings.HasPrefix(mimeType, "image/") {
-						filtered = append(filtered, f)
+				info := m.FindTheme(name)
+				if info == nil {
+					m.ToastMessage = "theme not found: " + name
+					m.ToastExpireTime = time.Now().UnixMilli() + 3000
+					clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+						return clearToastMsg{}
+					})
+					m.updateViewport()
+					return m, clearCmd
+				}
+				if err := m.ApplyTheme(info); err != nil {
+					m.ToastMessage = "theme apply failed: " + err.Error()
+					m.ToastExpireTime = time.Now().UnixMilli() + 4000
+				} else {
+					m.ToastMessage = "theme applied: " + info.ThemeName
+					m.ToastExpireTime = time.Now().UnixMilli() + 3000
+					if m.AppConfig != nil {
+						m.AppConfig.Theme = info.ID
+						_ = config.SaveConfig(m.AppConfig)
 					}
 				}
-				if len(filtered) != len(m.AttachedFiles) {
-					m.AttachedFiles = filtered
-					focusedState.StatusText = "Images dropped: model no longer supports vision"
-					return m, nil
+				clearCmd := tea.Tick(4*time.Second, func(t time.Time) tea.Msg {
+					return clearToastMsg{}
+				})
+				m.updateViewport()
+				return m, clearCmd
+			}
+
+			// Plugin command handler dispatch.
+			//
+			// If the input matches a registered plugin command AND a
+			// CommandHandler is wired (see cmd/late/main.go), run the
+			// handler ASYNCHRONOUSLY against the trailing args — a slow
+			// plugin script must not freeze input and rendering. The
+			// handler may:
+			//   - return handled=true with non-empty output → toast
+			//     "executed <name>: <first line>"; run ends here.
+			//   - return handled=true with empty output  → silent toast.
+			//   - return handled=true with err != nil    → error toast.
+			//   - return handled=false                   → fall through to
+			//     the legacy "dispatch as a plain prompt" path below
+			//     (handled in pluginCommandResultMsg).
+			if isPluginCmd(cmd, m.PluginCommands) && m.CommandHandler != nil {
+				parts := strings.Fields(cmd)
+				if len(parts) > 0 {
+					name := parts[0]
+					args := parts[1:]
+
+					// Record in input history immediately
+					if len(m.InputHistory) == 0 || m.InputHistory[len(m.InputHistory)-1] != cmd {
+						m.InputHistory = append(m.InputHistory, cmd)
+					}
+					m.HistoryIndex = -1
+					m.HistoryWorking = ""
+
+					// Clear input box and dismiss autocomplete
+					m.Input.Reset()
+					m.Input.SetValue("")
+					m.ShowAutocomplete = false
+					m.AutocompleteItems = nil
+
+					// Mark plugin command as running (displays animated ghost text & blocks input)
+					m.RunningPluginAction = name
+					m.RunningPluginActionVisibleAfter = time.Time{}
+
+					return m, func() tea.Msg {
+						output, handled, hErr := m.CommandHandler(context.Background(), name, args)
+						return pluginCommandResultMsg{
+							cmd:     cmd,
+							name:    name,
+							output:  output,
+							handled: handled,
+							err:     hErr,
+						}
+					}
 				}
 			}
 
-			// Replace pasted placeholders with original content. Use a
-			// single left-to-right pass so a paste whose content contains
-			// another paste's placeholder token is never corrupted.
-			expandedInput := expandPastes(input, m.Pastes)
-
-			if err := m.Focused.Submit(expandedInput, m.AttachedFiles); err != nil {
-				m.Err = err
-				return m, nil
+			// Plugin-provided slash commands — check if the input is a registered plugin command
+			if isPluginCmd(cmd, m.PluginCommands) {
+				// Plugin commands without a handler are dispatched as regular
+				// user prompts to the agent. The plugin's registered skills,
+				// tools, and MCP servers handle the semantics.
+				// Fall through to normal submission below.
 			}
 
-			// Save to input history (avoid consecutive duplicates)
-			if len(m.InputHistory) == 0 || m.InputHistory[len(m.InputHistory)-1] != expandedInput {
-				m.InputHistory = append(m.InputHistory, expandedInput)
-			}
-			m.Pastes = make(map[string]string)
-			m.HistoryIndex = -1
-			m.HistoryWorking = ""
-
-			m.Input.Reset()
-			m.Input.SetValue("> ")
-			m.AttachedFiles = nil // Clear attachments after submit
-
-			// Only update state to thinking if it was idle, else let it stay in its current busy state
-			if focusedState.State == StateIdle || focusedState.State == StateContextWarning {
-				focusedState.State = StateThinking
-				focusedState.ContextWarningShown = false // Reset after successful submission
-			}
-			// Token count will be calculated in ContentEvent handler
-			m.updateViewport()
-			return m, nil
+			// Run the full submit pipeline (preflight context warning,
+			// attachment re-validation, paste expansion, plugin message
+			// hooks, history, and orchestrator submission).
+			return m.submitMessage(input)
 
 		case "alt+enter":
 			m.Input.InsertString("\n")
 			return m, nil
 
 		case "shift+home":
-			m.restoreFullHistoryForScroll()
 			m.Viewport.GotoTop()
 			m.updateViewport()
 			return m, nil
@@ -1076,7 +1362,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 
 		case "home":
-			if strings.TrimPrefix(m.Input.Value(), "> ") == "" {
+			if m.Input.Value() == "" {
 				m.Viewport.GotoTop()
 				m.updateViewport()
 				return m, nil
@@ -1084,7 +1370,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 
 		case "end":
-			if strings.TrimPrefix(m.Input.Value(), "> ") == "" {
+			if m.Input.Value() == "" {
 				m.Viewport.GotoBottom()
 				m.updateViewport()
 				return m, nil
@@ -1126,7 +1412,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 
 		case "y", "Y":
-			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil && strings.TrimPrefix(m.Input.Value(), "> ") == "" {
+			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil && m.Input.Value() == "" {
 				focusedState.PendingConfirm.ResultCh <- "y"
 				focusedState.PendingConfirm = nil
 				focusedState.State = StateThinking
@@ -1135,7 +1421,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 
 		case "n", "N":
-			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil && strings.TrimPrefix(m.Input.Value(), "> ") == "" {
+			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil && m.Input.Value() == "" {
 				focusedState.PendingConfirm.ResultCh <- "n"
 				focusedState.PendingConfirm = nil
 				focusedState.State = StateThinking
@@ -1144,7 +1430,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 
 		case "s", "S", "p", "P", "g", "G":
-			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil && strings.TrimPrefix(m.Input.Value(), "> ") == "" {
+			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil && m.Input.Value() == "" {
 				focusedState.PendingConfirm.ResultCh <- msg.String()
 				focusedState.PendingConfirm = nil
 				focusedState.State = StateThinking
@@ -1154,9 +1440,36 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 
 		}
 
+	case McpStatusMsg:
+		s := m.GetAgentState(m.Root.ID())
+		if msg.Text == "" {
+			s.StatusText = ""
+			return m, nil
+		}
+		s.StatusText = msg.Text
+		m.ToastMessage = msg.Text
+		m.ToastWarning = msg.Warning
+		m.ToastExpireTime = time.Now().UnixMilli() + 3000
+		return m, func() tea.Msg { return clearToastMsg{} }
+
+	case BootstrapStatusMsg:
+		m.BootstrapStatus = msg.Text
+		if msg.RefreshView {
+			m.updateViewport()
+		}
+		if !msg.Active {
+			m.ToastMessage = msg.Text
+			m.ToastWarning = msg.Warning
+			m.ToastExpireTime = time.Now().UnixMilli() + 3000
+			m.BootstrapStatus = ""
+			return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+				return clearToastMsg{}
+			})
+		}
+		return m, nil
+
 	case OrchestratorEventMsg:
 		s := m.GetAgentState(msg.Event.OrchestratorID())
-		now := time.Now().UnixMilli()
 
 		switch event := msg.Event.(type) {
 		case common.ContentEvent:
@@ -1165,33 +1478,37 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				s.State = StateStreaming
 			}
 			s.Usage = event.Usage
-			// Update token count: use real usage if available, otherwise estimate
+			// Keep the previous count during deltas without provider usage.
+			// Local tokenization runs only after the message is saved to history.
 			if event.Usage.TotalTokens > 0 {
 				s.CumulativeTokenCount = event.Usage.TotalTokens
 				s.LastRealTokenCount = event.Usage.TotalTokens
 				s.CachedHistoryLen = len(m.Focused.History())
-			} else {
+			} else if event.Completed {
 				orch := m.FindOrchestrator(event.ID)
 				if orch == nil {
 					orch = m.Focused
 				}
 				history := orch.History()
-				if len(history) != s.CachedHistoryLen {
-					s.CachedHistoryTokens = common.CalculateHistoryTokens(history, orch.SystemPrompt(), orch.ToolDefinitions())
-					s.CachedHistoryLen = len(history)
-				}
-				s.CumulativeTokenCount = s.CachedHistoryTokens + common.EstimateEventTokens(event)
+				s.CachedHistoryTokens = common.CalculateHistoryTokens(history, orch.SystemPrompt(), orch.ToolDefinitions())
+				s.CachedHistoryLen = len(history)
+				s.CumulativeTokenCount = s.CachedHistoryTokens
 			}
 
-			// Throttle viewport updates to ~33 FPS during streaming
+			if event.Completed {
+				s.Transcript.generation++
+				s.Transcript.busy = false
+			}
+			s.Transcript.dirty = true
+			// Presentation is coalesced by the frame clock.
 			if event.ID == m.Focused.ID() {
-				if now-s.LastRenderTime > 30 {
-					m.updateViewport()
-				}
+				m.updateViewport()
 			}
 		case common.StatusEvent:
 			switch event.Status {
 			case "thinking":
+				s.Transcript.generation++
+				s.Transcript.busy = false
 				if s.State != StateConfirmTool {
 					s.State = StateThinking
 				}
@@ -1236,6 +1553,8 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			s.StatusText = "Subagent spawned"
 			m.updateViewport()
 		case common.StopRequestedEvent:
+			s.Transcript.generation++
+			s.Transcript.busy = false
 			s.PendingStop = false
 			s.State = StateIdle
 			s.StatusText = "Stopped"
@@ -1261,6 +1580,125 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// submitMessage runs the full "user pressed Enter" pipeline for a message:
+// preflight context warning, attachment re-validation, paste expansion,
+// plugin message hooks (onMessageSend), input history, and orchestrator
+// submission. Returns the model without submitting when the context is
+// exhausted or the input was otherwise rejected.
+func (m Model) submitMessage(input string) (Model, tea.Cmd) {
+	focusedState := m.GetAgentState(m.Focused.ID())
+
+	// Preflight context check
+	maxTokens := m.Focused.MaxTokens()
+	if focusedState.State == StateIdle && maxTokens > 0 && !focusedState.ContextWarningShown {
+		// Use 10% safety margin (90% threshold)
+		threshold := 0.9
+		if float64(focusedState.CumulativeTokenCount) >= float64(maxTokens)*threshold {
+			focusedState.State = StateContextWarning
+			focusedState.ContextWarningShown = true
+			m.updateViewport()
+			return m, nil
+		}
+	}
+
+	// Re-validate attachments in case the model changed since file selection
+	if len(m.AttachedFiles) > 0 && !m.Focused.SupportsVision() {
+		var filtered []string
+		for _, f := range m.AttachedFiles {
+			data, err := os.ReadFile(f)
+			if err != nil {
+				continue
+			}
+			mimeType := http.DetectContentType(data)
+			if !strings.HasPrefix(mimeType, "image/") {
+				filtered = append(filtered, f)
+			}
+		}
+		if len(filtered) != len(m.AttachedFiles) {
+			m.AttachedFiles = filtered
+			focusedState.StatusText = "Images dropped: model no longer supports vision"
+			return m, nil
+		}
+	}
+
+	// Replace pasted placeholders with original content. Use a
+	// single left-to-right pass so a paste whose content contains
+	// another paste's placeholder token is never corrupted.
+	expandedInput := expandPastes(input, m.Pastes)
+
+	if m.MessageHook == nil {
+		// No plugin onMessageSend hooks registered — submit synchronously,
+		// unchanged from before hooks existed.
+		if err := m.Focused.Submit(expandedInput, m.AttachedFiles); err != nil {
+			m.Err = err
+			return m, nil
+		}
+		return m.finishSubmit(m.Focused, expandedInput), nil
+	}
+
+	// A plugin registered onMessageSend hooks: each one runs an external
+	// script, bounded by a 15s timeout apiece (internal/plugin/hooks.go).
+	// Run them off the Bubble Tea update loop (Update() must return before
+	// the program can process the next message or repaint) so a slow or
+	// misbehaving hook can't freeze the Bubble Tea update loop. Snapshot and
+	// clear the editor immediately, then lock it. The running indicator is
+	// delayed so fast hooks do not flash it. If the eventual Submit fails, the
+	// result handler restores this exact draft and its files.
+	target := m.Focused
+	attachedFiles := append([]string(nil), m.AttachedFiles...)
+	hook := m.MessageHook
+	m.Input.Reset()
+	m.Input.SetValue("")
+	m.AttachedFiles = nil
+	m.ShowAutocomplete = false
+	m.AutocompleteItems = nil
+	m.RunningPluginAction = "message hooks"
+	m.RunningPluginActionVisibleAfter = time.Now().Add(messageHookIndicatorDelay)
+	m.updateViewport()
+	return m, func() tea.Msg {
+		return messageHookResultMsg{
+			target:        target,
+			attachedFiles: attachedFiles,
+			draft:         input,
+			input:         expandedInput,
+			submitted:     applyMessageHook(hook, expandedInput),
+		}
+	}
+}
+
+// finishSubmit performs the bookkeeping that follows a successful
+// target.Submit call: input-history append (deduped), paste/history-nav
+// reset, input box clear, and the idle/context-warning -> thinking state
+// transition. Shared by submitMessage's synchronous (no onMessageSend
+// hooks) and async (messageHookResultMsg) paths so both leave the model
+// in the same state. target is passed explicitly (rather than read from
+// m.Focused) because the async path must target whichever agent was
+// focused when Enter was pressed, even if focus has since changed.
+func (m Model) finishSubmit(target common.Orchestrator, expandedInput string) Model {
+	focusedState := m.GetAgentState(target.ID())
+
+	// Save to input history (avoid consecutive duplicates)
+	if len(m.InputHistory) == 0 || m.InputHistory[len(m.InputHistory)-1] != expandedInput {
+		m.InputHistory = append(m.InputHistory, expandedInput)
+	}
+	m.Pastes = make(map[string]string)
+	m.HistoryIndex = -1
+	m.HistoryWorking = ""
+
+	m.Input.Reset()
+	m.Input.SetValue("")
+	m.AttachedFiles = nil // Clear attachments after submit
+
+	// Only update state to thinking if it was idle, else let it stay in its current busy state
+	if focusedState.State == StateIdle || focusedState.State == StateContextWarning {
+		focusedState.State = StateThinking
+		focusedState.ContextWarningShown = false // Reset after successful submission
+	}
+	// Token count will be calculated in ContentEvent handler
+	m.updateViewport()
+	return m
 }
 
 func (m *Model) updateLayout() {
@@ -1290,8 +1728,8 @@ func (m *Model) updateLayout() {
 	}
 
 	// Reserve space for autocomplete dropdown
-	if m.ShowAutocomplete && len(m.AutocompleteItems) > 0 {
-		autoH := min(len(m.AutocompleteItems), 6) + 2 // items + border
+	autoH := m.autocompleteHeight()
+	if autoH > 0 {
 		vHeight -= autoH
 	}
 
@@ -1315,7 +1753,7 @@ func (m *Model) updateLayout() {
 // updateAutocomplete checks if the input looks like a slash command and updates
 // the autocomplete dropdown items.
 func (m *Model) updateAutocomplete() {
-	input := strings.TrimPrefix(m.Input.Value(), "> ")
+	input := m.Input.Value()
 
 	// Only show autocomplete when input starts with "/" and has no space yet
 	if strings.HasPrefix(input, "/") && !strings.Contains(input, " ") {
@@ -1326,11 +1764,28 @@ func (m *Model) updateAutocomplete() {
 				matches = append(matches, cmd)
 			}
 		}
+		// Plugin-provided commands (deduplicated against built-in commands)
+		builtinSet := make(map[string]bool, len(AvailableCommands))
+		for _, c := range AvailableCommands {
+			builtinSet[strings.ToLower(c.Name)] = true
+		}
+		for _, cmd := range m.PluginCommands {
+			if builtinSet[strings.ToLower(cmd)] {
+				continue // skip plugin commands that shadow built-in commands
+			}
+			if strings.HasPrefix(strings.ToLower(cmd), prefix) {
+				matches = append(matches, CommandDef{Name: cmd})
+			}
+		}
 		if len(matches) > 0 {
+			sort.Slice(matches, func(i, j int) bool {
+				return strings.ToLower(matches[i].Name) < strings.ToLower(matches[j].Name)
+			})
 			m.ShowAutocomplete = true
 			m.AutocompleteItems = matches
 			if m.AutocompleteIndex >= len(matches) {
 				m.AutocompleteIndex = 0
+				m.AutocompleteOffset = 0
 			}
 			return
 		}
@@ -1339,18 +1794,20 @@ func (m *Model) updateAutocomplete() {
 	m.ShowAutocomplete = false
 	m.AutocompleteItems = nil
 	m.AutocompleteIndex = 0
+	m.AutocompleteOffset = 0
 }
 
 // acceptAutocomplete replaces the current input with the selected command.
 func (m Model) acceptAutocomplete() Model {
 	if m.AutocompleteIndex >= 0 && m.AutocompleteIndex < len(m.AutocompleteItems) {
 		selected := m.AutocompleteItems[m.AutocompleteIndex].Name
-		m.Input.SetValue("> " + selected + " ")
+		m.Input.SetValue(selected + " ")
 		m.Input.CursorEnd()
 	}
 	m.ShowAutocomplete = false
 	m.AutocompleteItems = nil
 	m.AutocompleteIndex = 0
+	m.AutocompleteOffset = 0
 	return m
 }
 
@@ -1362,7 +1819,7 @@ func (m Model) isAtExactInputStart() bool {
 	if info.RowOffset != 0 {
 		return false
 	}
-	return m.Input.Column() <= 2
+	return m.Input.Column() == 0
 }
 
 func (m Model) isAtExactInputEnd() bool {
@@ -1397,7 +1854,7 @@ func (m Model) isAtBottomRow() bool {
 // When first entering history browsing, the current input is saved as the "working"
 // buffer so it can be restored when the user navigates past the newest entry.
 func (m Model) navigateHistory(dir int) Model {
-	currentInput := strings.TrimPrefix(m.Input.Value(), "> ")
+	currentInput := m.Input.Value()
 	historyLen := len(m.InputHistory)
 
 	if historyLen == 0 {
@@ -1409,7 +1866,7 @@ func (m Model) navigateHistory(dir int) Model {
 		if dir < 0 {
 			// First press of ↑: go to the newest (last) entry
 			m.HistoryIndex = historyLen - 1
-			m.Input.SetValue("> " + m.InputHistory[m.HistoryIndex])
+			m.Input.SetValue(m.InputHistory[m.HistoryIndex])
 			m.Input.CursorEnd()
 			return m
 		}
@@ -1426,13 +1883,13 @@ func (m Model) navigateHistory(dir int) Model {
 	if newIndex >= historyLen {
 		// Past the newest entry: restore working buffer
 		m.HistoryIndex = -1
-		m.Input.SetValue("> " + m.HistoryWorking)
+		m.Input.SetValue(m.HistoryWorking)
 		m.Input.CursorEnd()
 		return m
 	}
 
 	m.HistoryIndex = newIndex
-	m.Input.SetValue("> " + m.InputHistory[newIndex])
+	m.Input.SetValue(m.InputHistory[newIndex])
 	m.Input.CursorEnd()
 	return m
 }
@@ -1567,9 +2024,44 @@ func isBinary(data []byte) bool {
 			}
 		}
 	}
-	if float64(control)/float64(limit) > 0.10 {
-		return true
-	}
+	return float64(control)/float64(limit) > 0.10
+}
 
+// isPluginCmd checks whether the given input is a registered plugin command.
+// The command name is matched on the first whitespace-separated field, so
+// positional arguments are supported ("/lint file.go" matches "/lint").
+func isPluginCmd(input string, pluginCmds []string) bool {
+	input = strings.TrimSpace(input)
+	fields := strings.Fields(input)
+	if len(fields) == 0 {
+		return false
+	}
+	cmd := fields[0]
+	for _, pc := range pluginCmds {
+		if cmd == pc {
+			return true
+		}
+	}
 	return false
+}
+
+// SetPluginCommands replaces the model's PluginCommands slice with the provided list.
+// This is called from main.go after plugin discovery to register dynamic slash commands.
+func (m *Model) SetPluginCommands(commands []string) {
+	m.PluginCommands = make([]string, len(commands))
+	copy(m.PluginCommands, commands)
+}
+
+// ListedPluginCommands returns the list of plugin-provided slash commands
+// currently registered. Renamed from `PluginCommands()` to avoid shadowing
+// the same-named field on the Model struct (Go would resolve the bare
+// identifier inside the method body to the method itself, breaking
+// `len(m.PluginCommands)` callers in update.go/view.go).
+func (m *Model) ListedPluginCommands() []string {
+	if len(m.PluginCommands) == 0 {
+		return nil
+	}
+	result := make([]string, len(m.PluginCommands))
+	copy(result, m.PluginCommands)
+	return result
 }

@@ -15,13 +15,16 @@ import (
 
 // Session manages the chat state and interacts with the LLM client.
 type Session struct {
-	clientMu     sync.RWMutex
-	client       *client.Client
-	HistoryPath  string
-	History      []client.ChatMessage
-	systemPrompt string
-	useTools     bool
-	Registry     *tool.Registry
+	clientMu              sync.RWMutex
+	client                *client.Client
+	HistoryPath           string
+	History               []client.ChatMessage
+	systemPrompt          string
+	useTools              bool
+	skipMetadata          bool // when true, no top-level .meta.json sidecar is written (subagents)
+	subagentSeq           int
+	saveSubagentHistories *bool
+	Registry              *tool.Registry
 }
 
 func New(c *client.Client, historyPath string, history []client.ChatMessage, systemPrompt string, useTools bool) *Session {
@@ -33,6 +36,48 @@ func New(c *client.Client, historyPath string, history []client.ChatMessage, sys
 		useTools:     useTools,
 		Registry:     tool.NewRegistry(),
 	}
+}
+
+// NewSubagentSession creates a session for a subagent. History is persisted
+// to historyPath when non-empty (in-memory otherwise), but the session never
+// writes a top-level .meta.json sidecar, keeping the shared sessions
+// directory free of subagent entries.
+func NewSubagentSession(c *client.Client, historyPath string, history []client.ChatMessage, systemPrompt string) *Session {
+	s := New(c, historyPath, history, systemPrompt, true)
+	s.skipMetadata = true
+	return s
+}
+
+// SetSubagentMetadata initializes root-session state that must survive resume.
+func (s *Session) SetSubagentMetadata(seq int, saveHistories *bool) {
+	s.subagentSeq = seq
+	if saveHistories == nil {
+		s.saveSubagentHistories = nil
+		return
+	}
+	value := *saveHistories
+	s.saveSubagentHistories = &value
+}
+
+// SubagentSeq returns the next sequence number reserved for a child session.
+func (s *Session) SubagentSeq() int {
+	return s.subagentSeq
+}
+
+// UpdateSubagentSeq durably advances the next child sequence before a child
+// history path is created. In-memory and subagent sessions retain their
+// existing behavior because neither writes root session metadata.
+func (s *Session) UpdateSubagentSeq(seq int) error {
+	previous := s.subagentSeq
+	s.subagentSeq = seq
+	if s.skipMetadata || s.HistoryPath == "" {
+		return nil
+	}
+	if err := s.UpdateSessionMetadata(); err != nil {
+		s.subagentSeq = previous
+		return err
+	}
+	return nil
 }
 
 // ExecuteTool executes a tool call and returns the response as a string.
@@ -271,18 +316,23 @@ func (s *Session) GenerateSessionMeta() SessionMeta {
 	id = strings.TrimSuffix(id, ".json")
 
 	return SessionMeta{
-		ID:             id,
-		Title:          title,
-		CreatedAt:      time.Now(),
-		LastUpdated:    time.Now(),
-		HistoryPath:    s.HistoryPath,
-		LastUserPrompt: lastPrompt,
-		MessageCount:   len(s.History),
+		ID:                    id,
+		Title:                 title,
+		CreatedAt:             time.Now(),
+		LastUpdated:           time.Now(),
+		HistoryPath:           s.HistoryPath,
+		LastUserPrompt:        lastPrompt,
+		MessageCount:          len(s.History),
+		SubagentSeq:           s.subagentSeq,
+		SaveSubagentHistories: s.saveSubagentHistories,
 	}
 }
 
 // UpdateSessionMetadata updates the session metadata file
 func (s *Session) UpdateSessionMetadata() error {
+	if s.skipMetadata {
+		return nil
+	}
 	meta := s.GenerateSessionMeta()
 	return SaveSessionMeta(meta)
 }
@@ -326,7 +376,7 @@ func (s *Session) saveAndNotify() error {
 		return nil
 	}
 	if s.HistoryPath == "" {
-		return nil // Skip saving if no path provided (e.g., subagents)
+		return nil // Skip saving if no path provided (e.g., in-memory sessions, subagents without history opt-in)
 	}
 	if err := SaveHistory(s.HistoryPath, s.History); err != nil {
 		return err

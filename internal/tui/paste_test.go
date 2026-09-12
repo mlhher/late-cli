@@ -12,13 +12,20 @@ import (
 )
 
 type mockOrchestrator struct {
-	submittedText string
+	submittedText   string
+	submittedImages []string
+	submitCount     int
+	submitErr       error
+	supportsVision  bool
+	history         []client.ChatMessage
 }
 
 func (m *mockOrchestrator) ID() string { return "mock" }
 func (m *mockOrchestrator) Submit(text string, images []string) error {
 	m.submittedText = text
-	return nil
+	m.submittedImages = append([]string(nil), images...)
+	m.submitCount++
+	return m.submitErr
 }
 func (m *mockOrchestrator) Execute(text string) (string, error)      { return "", nil }
 func (m *mockOrchestrator) Reset() error                             { return nil }
@@ -26,9 +33,10 @@ func (m *mockOrchestrator) Rewind(index int) error                   { return ni
 func (m *mockOrchestrator) Cancel()                                  {}
 func (m *mockOrchestrator) IsStopRequested() bool                    { return false }
 func (m *mockOrchestrator) Events() <-chan common.Event              { return nil }
-func (m *mockOrchestrator) History() []client.ChatMessage            { return nil }
+func (m *mockOrchestrator) History() []client.ChatMessage            { return m.history }
 func (m *mockOrchestrator) Context() context.Context                 { return context.Background() }
 func (m *mockOrchestrator) Middlewares() []common.ToolMiddleware     { return nil }
+func (m *mockOrchestrator) SetMiddlewares([]common.ToolMiddleware)    {}
 func (m *mockOrchestrator) Registry() *common.ToolRegistry           { return nil }
 func (m *mockOrchestrator) SystemPrompt() string                     { return "" }
 func (m *mockOrchestrator) ToolDefinitions() []client.ToolDefinition { return nil }
@@ -37,7 +45,7 @@ func (m *mockOrchestrator) Parent() common.Orchestrator              { return ni
 func (m *mockOrchestrator) SetMaxTurns(int)                          {}
 func (m *mockOrchestrator) RefreshContextSize(context.Context)       {}
 func (m *mockOrchestrator) MaxTokens() int                           { return 100 }
-func (m *mockOrchestrator) SupportsVision() bool                     { return false }
+func (m *mockOrchestrator) SupportsVision() bool                     { return m.supportsVision }
 func (m *mockOrchestrator) QueuedMessages() []string                 { return nil }
 
 type mockKey struct {
@@ -107,13 +115,21 @@ func TestStartPromptMsgSubmitsPrompt(t *testing.T) {
 		t.Fatal("expected command to submit the startup prompt")
 	}
 
-	res, _ = model.Update(cmd())
-	model = res.(Model)
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, child := range batch {
+			res, _ = model.Update(child())
+			model = res.(Model)
+		}
+	} else {
+		res, _ = model.Update(msg)
+		model = res.(Model)
+	}
 
 	if orch.submittedText != "fix the tests" {
 		t.Fatalf("expected startup prompt to be submitted, got %q", orch.submittedText)
 	}
-	if model.Input.Value() != "> " {
+	if model.Input.Value() != "" {
 		t.Fatalf("expected input to be cleared after submission, got %q", model.Input.Value())
 	}
 }
@@ -123,7 +139,7 @@ func TestPasteBinaryIgnored(t *testing.T) {
 	model := NewModel(orch, nil, nil)
 
 	// Set initial state
-	model.Input.SetValue("> hello")
+	model.Input.SetValue("hello")
 	model.lastInputLen = len(model.Input.Value())
 
 	// 1. Simulate PasteMsg of binary content

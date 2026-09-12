@@ -1,9 +1,12 @@
 package tui
 
 import (
+	"fmt"
 	"late/internal/common"
 	"late/internal/config"
+	"late/internal/git"
 	"os"
+	"time"
 
 	"charm.land/bubbles/v2/filepicker"
 	"charm.land/bubbles/v2/spinner"
@@ -16,7 +19,7 @@ import (
 
 func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *config.Config) Model {
 	ti := textarea.New()
-	ti.Placeholder = "Ask Late anything..."
+	ti.Placeholder = "Ask Late to build, refactor, search, run bash... (Type / for commands)"
 	ti.Focus()
 	ti.CharLimit = 100000 // Allow pasting large code blocks
 	ti.SetWidth(72)
@@ -25,32 +28,37 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 	ti.MaxHeight = 4
 	ti.SetHeight(1)
 	ti.ShowLineNumbers = false
-	ti.Prompt = ""    // Remove the line prompt characters
-	ti.SetValue("> ") // Set initial "fake" prompt to force background render logic on first line
+	// A real prompt gutter reserves space on every wrapped and explicit line.
+	ti.SetPromptFunc(2, func(info textarea.PromptInfo) string {
+		if info.LineNumber == 0 {
+			return "❯ "
+		}
+		return "  "
+	})
 	ti.KeyMap.InsertNewline.SetEnabled(false)
 
 	// Set opaque background for textarea content
-	bgStyle := lipgloss.NewStyle().Background(lipgloss.Color("#0E0E10")).Foreground(textColor)
+	bgStyle := lipgloss.NewStyle().Background(appBgColor).Foreground(textColor)
 	styles := ti.Styles()
 	styles.Focused.Base = bgStyle
 	styles.Focused.Text = bgStyle
-	styles.Focused.Placeholder = bgStyle.Foreground(lipgloss.Color("#4A4B50"))
+	styles.Focused.Placeholder = bgStyle.Foreground(mutedTextColor)
 	styles.Focused.CursorLine = bgStyle
-	styles.Focused.Prompt = bgStyle
+	styles.Focused.Prompt = bgStyle.Foreground(primaryColor)
 
 	styles.Blurred.Base = bgStyle
 	styles.Blurred.Text = bgStyle
-	styles.Blurred.Placeholder = bgStyle.Foreground(lipgloss.Color("#4A4B50"))
+	styles.Blurred.Placeholder = bgStyle.Foreground(mutedTextColor)
 	styles.Blurred.CursorLine = bgStyle
-	styles.Blurred.Prompt = bgStyle
+	styles.Blurred.Prompt = bgStyle.Foreground(primaryColor)
 	ti.SetStyles(styles)
 
 	// Initialize with 0, so that the first WindowSizeMsg sets correct dimensions
 	// This prevents the "50% width" issue if the default 60 is too small for a large terminal
 	vp := viewport.New(viewport.WithWidth(0), viewport.WithHeight(0))
-	vp.MouseWheelDelta = 6 // Lines per wheel tick; default 3 feels slow on chat history
+	vp.MouseWheelDelta = 2
 	// VTE-based terminals: set explicit background on the viewport so its
-	// internal padding cells don't become transparent after ANSI resets.
+	// internal padding cells and empty lines don't become transparent after ANSI resets.
 	vp.Style = lipgloss.NewStyle().Background(appBgColor)
 	// Initial welcome is set to empty; updateViewport in view.go renders
 	// the rich welcome when history is empty using renderWelcomeMessage().
@@ -78,14 +86,20 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 		Height:              24, // Default start height
 		AgentStates:         make(map[string]*AppState),
 		InspectingTool:      false,
-		Spinner:             spinner.New(spinner.WithSpinner(spinner.Dot)),
+		Spinner: spinner.New(spinner.WithSpinner(spinner.Spinner{
+			Frames: spinner.Dot.Frames,
+			FPS:    40 * time.Millisecond,
+		})),
 		InputHistory:        make([]string, 0),
 		HistoryIndex:        -1,
 		CWD:                 cwd,
 		ShowCWD:             true,
+		GitBranch:           git.CurrentBranch(cwd),
 		cachedRendererWidth: -1, // Force first creation
 		Pastes:              make(map[string]string),
 		AppConfig:           cfg,
+		SelectedTheme:       "default",
+		activeThemeStyles:   LateTheme,
 	}
 
 	fp := filepicker.New()
@@ -99,9 +113,9 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 
 	// Apply styles for visibility
 	s := filepicker.DefaultStyles()
-	s.Selected = lipgloss.NewStyle().Foreground(secondaryColor).Bold(true)
-	s.File = lipgloss.NewStyle().Foreground(textColor)
-	s.Directory = lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+	s.Selected = filePickerSelectedStyle
+	s.File = filePickerFileStyle
+	s.Directory = filePickerDirectoryStyle
 	fp.Styles = s
 
 	m.FilePicker = fp
@@ -109,17 +123,34 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 	history := root.History()
 	cumulativeTokens := 0
 	if history != nil && len(history) >= 0 {
-		cumulativeTokens = common.CalculateHistoryTokens(history, root.SystemPrompt(), root.ToolDefinitions())
+		cumulativeTokens = common.CalculateHistoryTokensFast(history, root.SystemPrompt(), root.ToolDefinitions())
 	}
 	m.AgentStates[root.ID()] = &AppState{
 		State:                initialState,
 		StatusText:           "Ready",
 		CumulativeTokenCount: cumulativeTokens,
+		CachedWidth:          -1,
 	}
 
 	return m
 }
 
+// SetSize sets initial terminal dimensions and computes the layout before launch.
+func (m *Model) SetSize(w, h int) {
+	if w <= 0 || h <= 0 {
+		return
+	}
+	m.Width = w
+	m.Height = h
+	m.updateLayout()
+}
+
+// GetRenderer returns a glamour renderer word-wrapped at width, built from
+// the active theme's style bytes (activeThemeStyles, set by ApplyTheme —
+// falls back to the bundled LateTheme when no theme has been applied).
+// Renderers are cached per-width since callers request one per rendered
+// block at that block's own width; ApplyTheme invalidates the cache via
+// ReloadTheme so the next call picks up the new theme.
 func (m *Model) GetRenderer(width int) *glamour.TermRenderer {
 	if width < 1 {
 		width = 80
@@ -127,8 +158,12 @@ func (m *Model) GetRenderer(width int) *glamour.TermRenderer {
 	if m.cachedRenderer != nil && m.cachedRendererWidth == width {
 		return m.cachedRenderer
 	}
+	styles := m.activeThemeStyles
+	if styles == nil {
+		styles = LateTheme
+	}
 	r, _ := glamour.NewTermRenderer(
-		glamour.WithStylesFromJSONBytes(LateTheme),
+		glamour.WithStylesFromJSONBytes(styles),
 		glamour.WithWordWrap(width),
 		glamour.WithPreservedNewLines(),
 	)
@@ -137,6 +172,109 @@ func (m *Model) GetRenderer(width int) *glamour.TermRenderer {
 	return r
 }
 
+// ReloadTheme swaps in a new glamour renderer (used when a plugin theme
+// is applied at startup or at runtime) and clears the per-width cache so
+// the next GetRenderer call rebuilds it with the new style JSON.
+//
+// The first cached-renderer key (m.Viewport) is left intact so the chat
+// viewport doesn't flicker; the force-flush happens when the orchestrator
+// next emits content.
+func (m *Model) ReloadTheme(renderer *glamour.TermRenderer) {
+	if renderer == nil {
+		return
+	}
+	m.Renderer = renderer
+	m.cachedRenderer = nil
+	m.cachedRendererWidth = -1
+}
+
+// SetActiveThemeStyles sets the raw glamour JSON style bytes used by GetRenderer
+// and invalidates the per-width renderer cache.
+func (m *Model) SetActiveThemeStyles(styles []byte) {
+	if len(styles) == 0 {
+		m.activeThemeStyles = LateTheme
+	} else {
+		m.activeThemeStyles = styles
+	}
+	m.cachedRenderer = nil
+	m.cachedRendererWidth = -1
+}
+
+// ApplyTheme installs a plugin-provided theme as the active renderer. It
+// rebuilds the glamour renderer with merged JSON bytes, swaps the active
+// renderer via ReloadTheme, clears per-agent render caches so the chat
+// history re-renders under the new theme, and updates SelectedTheme.
+//
+// Returns an error only when the theme JSON is malformed; the lookup
+// itself is done by the caller (so chat-mode /themes <name> can report a
+// distinct "not found" error to the user).
+func (m *Model) ApplyTheme(info *ThemeEntry) error {
+	if info == nil {
+		return fmt.Errorf("ApplyTheme: nil theme")
+	}
+	merged, err := ResolveRenderTheme(info.ID, info.Glamour)
+	if err != nil {
+		return fmt.Errorf("resolve theme %q: %w", info.ID, err)
+	}
+
+	// Build a new renderer at the current viewport width so the theme
+	// doesn't have to re-wrap on the next message. Fall back to a safe
+	// default when the viewport hasn't been sized yet.
+	width := m.Viewport.Width()
+	if width < 1 {
+		width = 80
+	}
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStylesFromJSONBytes(merged),
+		glamour.WithWordWrap(width),
+		glamour.WithPreservedNewLines(),
+	)
+	if err != nil {
+		return fmt.Errorf("build renderer for %q: %w", info.ID, err)
+	}
+
+	// activeThemeStyles is what GetRenderer rebuilds from at other widths
+	// (e.g. per-block rendering) — without this, only the fixed-width
+	// renderer above (used for the chat viewport) reflected the theme
+	// change, and markdown block rendering kept using the bundled LateTheme.
+	m.activeThemeStyles = merged
+	m.ReloadTheme(renderer)
+	m.SelectedTheme = info.ID
+
+	// Invalidate per-agent render caches so the next updateViewport call
+	// rebuilds message rendering under the new theme. Streaming chunk
+	// caches are also dropped so live responses restyle.
+	for _, s := range m.AgentStates {
+		s.RenderedHistory = nil
+		s.LastTotalContent = ""
+		s.LastStreamingContent = ""
+		s.LastChunks = nil
+		s.LastTail = ""
+		s.StreamingStyledCache = ""
+		s.StreamingChunkCount = 0
+	}
+	return nil
+}
+
+// applyMessageHook returns text after running it through hook (the
+// plugin-provided MessageHook, if any), or unchanged if hook is nil or
+// text is empty. It takes the hook function rather than a *Model so
+// submitMessage's async onMessageSend path (see messageHookResultMsg in
+// update.go) can run it inside a tea.Cmd closure without capturing the
+// whole Model.
+func applyMessageHook(hook func(string) string, text string) string {
+	if hook == nil || text == "" {
+		return text
+	}
+	out := hook(text)
+	if out == "" {
+		// Hook explicitly cleared the message — treat as a no-op rather
+		// than swallowing the user's intent silently.
+		return text
+	}
+	return out
+}
+
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.Spinner.Tick, m.FilePicker.Init())
+	return tea.Batch(textarea.Blink, m.Spinner.Tick, func() tea.Msg { return transcriptFrameMsg{} })
 }

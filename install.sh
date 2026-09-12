@@ -48,6 +48,13 @@ chmod +x "$INSTALL_DIR/late.tmp"
 # Rename atomically to avoid workspace pollution or half-written binaries
 mv "$INSTALL_DIR/late.tmp" "$INSTALL_DIR/late"
 
+if [ "$OS" = "linux" ]; then
+    echo "=> Installing late-podman..."
+    curl -sfL https://raw.githubusercontent.com/mlhher/late-cli/main/late-podman -o "$INSTALL_DIR/late-podman.tmp"
+    chmod +x "$INSTALL_DIR/late-podman.tmp"
+    mv "$INSTALL_DIR/late-podman.tmp" "$INSTALL_DIR/late-podman"
+fi
+
 echo "=> Success! Late is installed at $INSTALL_DIR/late"
 
 # Crucial friction check: Is it actually in their PATH?
@@ -61,4 +68,7 @@ if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     echo "Then restart your terminal or run: source ~/.bashrc (or ~/.zshrc)"
 else
     echo "=> Run 'late' to get started."
+    if [ "$OS" = "linux" ]; then
+        echo "=> Run 'late-podman --image IMAGE' to use a development container."
+    fi
 fi

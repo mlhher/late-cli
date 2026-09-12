@@ -12,6 +12,7 @@ This guide gets you productive in Late in under 5 minutes.
 - [Configuration](#configuration)
 - [MCP Integration](#mcp-integration)
 - [Agent Skills](#agent-skills)
+- [Plugins](#plugins)
 - [File Exclusions](#file-exclusions)
 - [Common Flags](#common-flags)
 - [Sessions](#sessions)
@@ -82,13 +83,14 @@ Type `/` into the input box to bring up a command picker. You can navigate throu
 
 | Command | Description |
 | --- | --- |
-| `/new` | Start a new session/chat. |
-| `/rewind` | Open a visual history of your messages to rewind the conversation to an earlier point. |
 | `/compose` | Open your system's default external editor (`$EDITOR`) to draft long or complex instructions. |
-| `/model` | Select the model used by the orchestrator and each subagent type. |
-| `/log` | Open the Git commit log viewer. |
 | `/help` | Show default keybindings. |
+| `/log` | Open the Git commit log viewer. |
+| `/model` | Select the model used by the orchestrator and each subagent type. |
+| `/new` | Start a new session/chat. |
 | `/quit` | Exit Late. |
+| `/rewind` | Open a visual history of your messages to rewind the conversation to an earlier point. |
+| `/themes` | Open the theme picker or switch themes (`/themes [name]`). |
 
 ### File Attachments
 
@@ -224,6 +226,64 @@ Late supports the Model Context Protocol. Add your MCP servers to one of the fol
 
 There is no further setup required. Just add your skills to the directories and they will be discovered automatically. Late also supports automatic skill reference discovery.
 
+## Plugins
+
+Plugins bundle any combination of **skills**, **slash commands**, **MCP servers**, **hooks**, **themes**, and **inline tools** into one installable unit. They are discovered automatically from:
+
+* **Global (Linux):** `~/.config/late/plugins/`
+* **Global (macOS):** `~/Library/Application Support/late/plugins/`
+* **Global (Windows):** `%APPDATA%\late\plugins\`
+* **Project:** `.late/plugins/` (overrides global plugins with the same name)
+
+### Install
+
+```bash
+# From npm
+late plugin install @late/git-helper
+
+# From a Git repo
+late plugin install https://github.com/you/late-plugin-git.git
+# shorthand: github:you/late-plugin-git
+
+# From a local path (development)
+late plugin install ./my-plugin
+
+# Project-local (per-repo)
+late plugin install --project ./my-plugin
+
+# From the marketplace (bare name → registry lookup → npm/git fallback)
+late plugin install git-helper
+```
+
+If the marketplace is unreachable, install falls back to treating the bare name as an npm package. Override the registry with `LATE_PLUGIN_REGISTRY=https://registry.example.com/v1`.
+
+### Manage
+
+```bash
+late plugin list                # show installed + their source/enabled state
+late plugin enable  <name>      # activate without removing
+late plugin disable <name>      # deactivate without removing
+late plugin remove  <name>      # uninstall
+
+# Re-fetch every npm/git plugin in place (atomic git swap, npm @latest)
+late plugin update [<name>]
+```
+
+### What a plugin can ship
+
+A `package.json` with a `"late"` field declares its surfaces:
+
+| Surface     | Example field                       | Appears as                |
+| ----------- | ----------------------------------- | ------------------------- |
+| Skills      | `"skills": ["skills/"]`             | Auto-loaded instructions  |
+| MCP servers | `"mcp": { "servers": {...} }`       | Available tools           |
+| Commands    | `"commands": ["/weather"]`          | `/weather` in the chat    |
+| Themes      | `"themes": ["themes/dark.json"]`    | Switchable from `/themes` |
+| Hooks       | `"hooks": { "onMessageSend": [...] }` | Middleware on tool/LLM    |
+| Tools       | `"tools": [{ "name": "...", ... }]` | Custom in-agent tools     |
+
+For the full manifest schema (including the older `"commands"` string array, env-var expansion in MCP configs, hook veto/mutate semantics, and a copy-pasteable reference plugin), see [`docs/plugin-sdk.md`](./plugin-sdk.md) and [`docs/plugin-example.md`](./plugin-example.md).
+
 ## File Exclusions
 
 Late's native search tool respects your project's `.gitignore` automatically, saving LLM context by excluding vendor and build directories. 
@@ -238,10 +298,58 @@ You can also create an `.llmignore` file alongside your `.gitignore` to specific
 | `--version` | Show version information |
 | `--continue` | Resume the previous session |
 | `--prompt "..."` | Start the agent immediately with the given prompt |
+| `--theme "<id>"` | Apply a plugin theme on launch (e.g. `<plugin>:<name>`); also reads `$LATE_THEME` |
 | `--gemma-thinking` | Inject thinking tokens for Gemma 4 models |
 | `--subagent-max-turns <n>` | Set max turns per subagent (default: 500) |
 | `--append-system-prompt "..."` | Append text to the system prompt (e.g. further instructions) |
 | `--enable-images` | Treat models as supporting images (for none llama.cpp servers) |
+| `--save-subagent-histories` | Persist subagent conversation histories to disk. Off by default (subagent transcripts are large); can also be enabled via `save_subagent_histories` in the config file |
+
+## Native Containerized Execution (`late-podman`)
+
+Let the agent run anything it wants inside an isolated container, fully autonomously—solving tasks from start to finish without having to babysit it.
+
+Runs on any Linux distro with Podman. Works out of the box on Silverblue and Universal Blue, with built-in SELinux support. On other systems, it only requires installing Podman (e.g. `sudo pacman -S podman` or `sudo apt install podman`).
+
+On Linux systems with rootless Podman, `late-podman` runs Late in a glibc-based
+development image and mounts the current directory at `/workspace`:
+
+```bash
+late-podman --image registry.example/my-project-dev
+```
+
+The image must contain Bash and every language or SDK required by the project.
+If no `--image` is supplied, Late automatically searches for configuration in the following order:
+1. `.devcontainer/devcontainer.json` (or `.devcontainer.json`) with `build.dockerfile`
+2. `.late/podman-image`
+3. `.devcontainer/devcontainer.json` with `image`
+4. Interactive terminal prompt
+
+Images built from a `Dockerfile` and `postCreateCommand` setups are cached automatically and only rerun when their definitions change. Use `--rebuild` to force rebuild the image and re-run setup commands.
+
+Developer-specific mounts and environment variables can be defined in untracked local override files (`.devcontainer/devcontainer.local.json` or `.late/devcontainer.json`), which are automatically merged into the container configuration.
+
+Use `-e` or `--env` to set or forward environment variables into the container (e.g. `-e KEY=value` or `-e KEY` to forward from host). Timezone (`TZ` / `/etc/localtime`), host Git identity (`user.name`, `user.email`), `safe.directory`, and running SSH agents (`SSH_AUTH_SOCK`) are forwarded automatically.
+
+Use `--exec` to prepare the container before Late starts. It is a Bash command,
+may be repeated, and Late starts only if every command succeeds:
+
+```bash
+late-podman --image fedora:latest \
+  -e CGO_ENABLED=1 \
+  --exec "dnf install -y golang nodejs npm" \
+  --exec "npm install" \
+  -- --continue
+```
+
+If your project contains a `.devcontainer/devcontainer.json`, any `postCreateCommand` is run on initial container setup, and `postStartCommand` runs on container start before `--exec` commands.
+
+Alpine and other musl-based images are unsupported. The launcher uses rootless
+Podman, does not relabel the host workspace, and does not mount the host home or
+container socket. It uses the host network so model servers listening on
+`localhost`, including loopback-only servers, remain reachable with the same
+Late configuration. Consequently, processes inside the development container
+can also reach other services listening on the host.
 
 ## Sessions
 

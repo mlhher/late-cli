@@ -31,6 +31,39 @@ func EstimateTokenCount(text string) int {
 	return len(enc.Encode(text, nil, nil))
 }
 
+// EstimateTokenCountFast estimates token count using a fast character heuristic
+// if BPE vocabulary is still loading in background.
+func EstimateTokenCountFast(text string) int {
+	if text == "" {
+		return 0
+	}
+	if enc := bpeIfReady(); enc != nil {
+		return len(enc.Encode(text, nil, nil))
+	}
+	count := int(float64(len(text)) / 3.5)
+	if count < 1 {
+		return 1
+	}
+	return count
+}
+
+// CalculateHistoryTokensFast calculates token count quickly without blocking on BPE load,
+// ensuring the initial TUI frame renders immediately with a populated token bar.
+func CalculateHistoryTokensFast(history []client.ChatMessage, systemPrompt string, tools []client.ToolDefinition) int {
+	total := EstimateTokenCountFast(systemPrompt) + 10 // System prompt + overhead
+	for _, t := range tools {
+		total += EstimateTokenCountFast(t.Function.Name) + EstimateTokenCountFast(t.Function.Description)
+		total += len(t.Function.Parameters) / 4
+	}
+	if len(tools) > 0 {
+		total += 10
+	}
+	for _, msg := range history {
+		total += EstimateTokenCountFast(msg.Content.String()) + EstimateTokenCountFast(msg.ReasoningContent) + 4
+	}
+	return total
+}
+
 // EstimateToolDefinitionTokens estimates tokens used by tool definitions.
 func EstimateToolDefinitionTokens(tools []client.ToolDefinition) int {
 	if len(tools) == 0 {

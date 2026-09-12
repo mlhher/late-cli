@@ -11,6 +11,7 @@ import (
 	"late/internal/session"
 	"late/internal/tui"
 	"os"
+	"strings"
 )
 
 // NewSubagentOrchestrator creates a new BaseOrchestrator for a subagent.
@@ -23,6 +24,8 @@ func NewSubagentOrchestrator(
 	injectCWD bool,
 	gemmaThinking bool,
 	maxTurns int,
+	parentSessionID string,
+	saveSubagentHistory bool,
 	parent common.Orchestrator,
 	messenger tui.Messenger,
 ) (common.Orchestrator, error) {
@@ -39,6 +42,11 @@ func NewSubagentOrchestrator(
 
 	if config == nil {
 		return nil, fmt.Errorf("unknown agent type: %s", agentType)
+	}
+	if saveSubagentHistory && parentSessionID != "" {
+		if _, err := session.SubagentHistoryDir(parentSessionID); err != nil {
+			return nil, fmt.Errorf("failed to resolve subagent history path: %w", err)
+		}
 	}
 
 	content, err := assets.PromptsFS.ReadFile(config.PromptFile)
@@ -60,8 +68,28 @@ func NewSubagentOrchestrator(
 		systemPrompt = "<|think|>" + systemPrompt
 	}
 
-	// 2. Setup Subagent Session (Isolated History)
-	sess := session.New(c, "", []client.ChatMessage{}, systemPrompt, true)
+	// Mint the child ID up-front so it can be embedded in the subagent history
+	// path. The parent must be a *BaseOrchestrator: its mutex-protected counter
+	// is the only ID source that cannot collide under concurrent spawns.
+	baseParent, ok := parent.(*orchestrator.BaseOrchestrator)
+	if !ok {
+		return nil, fmt.Errorf("subagent parent must be a *orchestrator.BaseOrchestrator")
+	}
+	id, err := baseParent.NextChildID(agentType)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. Setup Subagent Session (Isolated History; persisted only when opted in)
+	var subagentHistoryPath string
+	if saveSubagentHistory && parentSessionID != "" {
+		path, err := session.SubagentHistoryPath(parentSessionID, id)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve subagent history path: %w", err)
+		}
+		subagentHistoryPath = path
+	}
+	sess := session.NewSubagentSession(c, subagentHistoryPath, []client.ChatMessage{}, systemPrompt)
 
 	// Inherit all tools from parent (including MCP tools)
 	if parent != nil && parent.Registry() != nil {
@@ -92,9 +120,9 @@ func NewSubagentOrchestrator(
 	executor.RegisterTools(sess.Registry, subagentTools)
 
 	// 3. Construct Initial Context
-	initialMsg := fmt.Sprintf("Goal: %s\n\n", goal)
+	initialMsg := fmt.Sprintf("Goal: %s", goal)
 	if len(ctxFiles) > 0 {
-		initialMsg += "Context Files:\n"
+		initialMsg += "\n\nContext Files:\n"
 		for _, f := range ctxFiles {
 			content, err := os.ReadFile(f)
 			if err == nil {
@@ -102,13 +130,13 @@ func NewSubagentOrchestrator(
 			}
 		}
 	}
+	initialMsg = strings.TrimRight(initialMsg, "\r\n")
 
 	if err := sess.AddUserMessage(initialMsg); err != nil {
 		return nil, fmt.Errorf("failed to add initial message: %w", err)
 	}
 
 	// 4. Create Orchestrator
-	id := fmt.Sprintf("%s-subagent-%d", agentType, len(parent.Children()))
 	mws := parent.Middlewares()
 
 	if messenger != nil {

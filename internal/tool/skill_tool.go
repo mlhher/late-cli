@@ -21,6 +21,9 @@ type ScriptTool struct {
 }
 
 func (t ScriptTool) Name() string {
+	if strings.Contains(t.SkillName, ":") {
+		return common.NamespaceToolName("skill", t.SkillName, t.ScriptName)
+	}
 	// sanitized script name to be used as tool name
 	return fmt.Sprintf("skill_%s_%s", t.SkillName, sanitizeToolName(t.ScriptName))
 }
@@ -135,7 +138,7 @@ func (t ActivateSkillTool) Execute(ctx context.Context, args json.RawMessage) (s
 			if !entry.IsDir() {
 				scriptPath := filepath.Join(scriptsDir, entry.Name())
 				st := ScriptTool{
-					SkillName:  s.Metadata.Name,
+					SkillName:  params.Name,
 					ScriptName: entry.Name(),
 					ScriptPath: scriptPath,
 				}
@@ -146,7 +149,7 @@ func (t ActivateSkillTool) Execute(ctx context.Context, args json.RawMessage) (s
 
 	refs := skill.DiscoverSkillReferences(s)
 	var resp strings.Builder
-	resp.WriteString(fmt.Sprintf("Skill '%s' activated.\n\nInstructions:\n%s", s.Metadata.Name, s.Instructions))
+	resp.WriteString(fmt.Sprintf("Skill '%s' activated.\n\nInstructions:\n%s", params.Name, s.Instructions))
 	if len(refs) > 0 {
 		resp.WriteString("\n\n## Available References\n")
 		for _, ref := range refs {

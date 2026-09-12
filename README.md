@@ -6,8 +6,8 @@
 
 <p align="center">
   <b>Getting real world work done on consumer hardware.</b><br><br>
-  A minimal, zero-config AI coding agent.<br>
-  Enforced ephemeral subagents retain model intelligence while keeping context small.<br>
+  A zero-config AI coding agent built on empirical research.<br>
+  Enforced ephemeral subagents prevent context degradation by design.<br>
   From tiny local models up to any frontier model.<br>
 </p>
 
@@ -31,6 +31,8 @@
 > *"Late-CLI is mindblowing... I'm shocked that the token usage is so minimal, I keep expecting a big bill from DeepSeek's API."* — GitHub Discussions
 >
 > *"The same model feels smarter with Late."* — Reddit
+>
+> *"You solved local AI coding for me."* — Reddit
 >
 > **Built with Late:** Late is primarily developed inside Late itself.
 
@@ -59,13 +61,17 @@ late
 
 ## The Architectural Bottleneck
 
-**The Problem:** Standard coding agents try to do everything inside a single, shared context window. Every codebase analysis, compile error, lint failure, and even file writes and reads piles up in the KV cache. As the context fills with garbage, the model's intelligence actively degrades. You blame the model, but it's an architecture failure.
+**The Problem:** Standard coding agents try to do everything inside a single, shared context window. Every codebase analysis, compile error, lint failure, and file read piles up in the KV cache. As the context fills with garbage, the model's intelligence actively degrades. You blame the model, but it's an architecture failure.
+
+> **The 40% Collapse:** Long-context LLMs suffer up to a **~45% collapse in reasoning accuracy** once context utilization crosses 40–50%, even when all tokens are relevant ([Wang et al., 2026: Intelligence Degradation in Long-Context LLMs](https://arxiv.org/abs/2601.15300)).
 
 **The Late Solution:** Late splits the brain. It enforces a strict boundary between planning and execution and actively compartmentalizes agents' identities and objectives.
 
 <img src="assets/workflow.jpg" alt="Late Architecture: Main Orchestrator routing to ephemeral subagents with automatic context destruction">
 
-The orchestrator’s context grows only from what actually matters: your exact instructions and the definitive results. Everything the subagent did to get there is wiped from memory. **The same model feels smarter in Late because it reasons purely from signal, never noise.**
+The orchestrator’s context grows only from what actually matters: your exact instructions and the definitive results. Everything the subagent did to get there is wiped from memory.
+
+**The same model feels smarter in Late because it reasons purely from signal, never noise.**
 
 ## The Feature Matrix
 
@@ -77,6 +83,7 @@ The orchestrator’s context grows only from what actually matters: your exact i
 | **KV-Cache** | **Ruthless KV-cache management (No prompt-reprocessing)** | Brute-force dumping |
 | **System Prompt** | **~1,000 tokens (Always planning)** | 300 - 10,000+  tokens (from no workflow to over-constrained) |
 | **Dependencies** | **Zero-dependency static binary** | Python / Node.js and others |
+| **Sandboxing** | **Native rootless container (`late-podman`)** | Runs unprotected on bare metal |
 | **Setup Required** | **None (OOTB `llama-server` support)** | Mandatory OAuth / JSON / YAML / TOML |
 | **Telemetry** | **None** | Opt-out phoning home |
 | **Built For** | **10x throughput builders** | Rebuilding the same bottleneck |
@@ -103,6 +110,7 @@ export OPENAI_MODEL="model-name"
 
 ## More Features
 
+* **Native Containerized Execution (`late-podman`):** Run the agent fully autonomously inside an isolated devcontainer—solving tasks from start to finish without having to babysit it.
 * **Hybrid Model Routing:** Let your smartest model work as orchestrator, while having a middle model investigate the repo and your fastest model execute the orchestrator's implementation plan (e.g. Fable/Kimi/GPT orchestrating, Qwen3.8 researching, Gemma4 executing).
 * **Human-in-the-loop:** Safe commands will be auto-approved to maintain agent velocity. Anything deemed suspicious will be stopped by Late and will prompt you for permission. Features session, project, and global trust scopes.
 * **Exact-Match Diffs:** Strict `search`/`replace` blocks with autonomous self-healing on mismatch. Edits fail loud. We never silently corrupt your files.
