@@ -145,6 +145,7 @@ type ChatCompletionRequest struct {
 	Stop          []string         `json:"stop,omitempty"`
 	Tools         []ToolDefinition `json:"tools,omitempty"`
 	ToolChoice    any              `json:"tool_choice,omitempty"`
+	LogitBias     map[string]int   `json:"logit_bias,omitempty"`
 	ExtraBody     map[string]any   `json:"extra_body,omitempty"`
 }
 

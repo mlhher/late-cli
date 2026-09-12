@@ -1452,6 +1452,14 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 		m.ToastExpireTime = time.Now().UnixMilli() + 3000
 		return m, func() tea.Msg { return clearToastMsg{} }
 
+	case ToastMsg:
+		m.ToastMessage = msg.Text
+		m.ToastWarning = msg.Warning
+		m.ToastExpireTime = time.Now().UnixMilli() + 3000
+		return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+			return clearToastMsg{}
+		})
+
 	case BootstrapStatusMsg:
 		m.BootstrapStatus = msg.Text
 		if msg.RefreshView {
@@ -1463,6 +1471,9 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			m.ToastExpireTime = time.Now().UnixMilli() + 3000
 			m.BootstrapStatus = ""
 			return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+				if msg.NextToast != nil {
+					return *msg.NextToast
+				}
 				return clearToastMsg{}
 			})
 		}

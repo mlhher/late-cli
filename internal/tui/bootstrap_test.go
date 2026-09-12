@@ -38,3 +38,33 @@ func TestBootstrapIndicatorKeepsInputUsable(t *testing.T) {
 		t.Fatal("bootstrap completion changed the draft")
 	}
 }
+
+func TestBootstrapNextToastSequence(t *testing.T) {
+	m := NewModel(&mockOrchestrator{}, nil, nil)
+	m.SetSize(120, 30)
+
+	nextToast := &ToastMsg{Text: "Applied logit biases"}
+	updated, cmd := m.Update(BootstrapStatusMsg{
+		Text:      "Backend: llama.cpp (4096k)",
+		Active:    false,
+		NextToast: nextToast,
+	})
+	m = updated.(Model)
+	if m.ToastMessage != "Backend: llama.cpp (4096k)" {
+		t.Fatalf("expected backend message in toast, got %q", m.ToastMessage)
+	}
+	if cmd == nil {
+		t.Fatal("expected command for toast transition")
+	}
+
+	// When ToastMsg arrives, toast message updates to logit bias message
+	updated, clearCmd := m.Update(*nextToast)
+	m = updated.(Model)
+	if m.ToastMessage != "Applied logit biases" {
+		t.Fatalf("expected toast message to be 'Applied logit biases', got %q", m.ToastMessage)
+	}
+	if clearCmd == nil {
+		t.Fatal("expected clear command after logit bias toast")
+	}
+}
+
