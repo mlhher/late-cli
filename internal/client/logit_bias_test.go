@@ -67,6 +67,21 @@ func TestParseLogitBias(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:  "pairs with whole-number decimal",
+			input: "13428:-100.0",
+			want:  map[string]int{"13428": -100},
+		},
+		{
+			name:    "fractional JSON bias",
+			input:   `{"13428": -0.5}`,
+			wantErr: true,
+		},
+		{
+			name:    "fractional pair bias",
+			input:   "13428:64.5",
+			wantErr: true,
+		},
+		{
 			name:    "invalid pair format",
 			input:   "13428-100",
 			want:    nil,

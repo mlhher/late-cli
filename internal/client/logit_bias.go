@@ -126,6 +126,9 @@ func ParseLogitBias(s string) (map[string]int, error) {
 				if _, err := strconv.Atoi(k); err != nil {
 					return nil, fmt.Errorf("invalid token ID %q (must be an integer): %w", k, err)
 				}
+				if float64(int(v)) != v {
+					return nil, fmt.Errorf("invalid bias value %v for token %q (must be a whole number representable as an integer)", v, k)
+				}
 				result[k] = int(v)
 			}
 			return result, nil
@@ -160,6 +163,9 @@ func ParseLogitBias(s string) (map[string]int, error) {
 			f, ferr := strconv.ParseFloat(biasStr, 64)
 			if ferr != nil {
 				return nil, fmt.Errorf("invalid bias value %q for token %q: %w", biasStr, tokenID, err)
+			}
+			if float64(int(f)) != f {
+				return nil, fmt.Errorf("invalid bias value %q for token %q (must be a whole number representable as an integer)", biasStr, tokenID)
 			}
 			bias = int(f)
 		}
