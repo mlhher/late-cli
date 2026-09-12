@@ -64,3 +64,20 @@ func (r *ToolRegistry) All() []Tool {
 	})
 	return all
 }
+
+// TodoItem represents a single item in a todo list.
+type TodoItem struct {
+	Text string
+	Done bool
+}
+
+// TodoProvider provides a read-only snapshot of current todos.
+type TodoProvider interface {
+	GetTodos() []TodoItem
+}
+
+// ConversationResetter clears tool state that must not carry into a new
+// conversation.
+type ConversationResetter interface {
+	ResetConversationState()
+}

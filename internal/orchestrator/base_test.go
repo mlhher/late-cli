@@ -3,11 +3,13 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"encoding/json"
 	"late/internal/client"
 	"late/internal/common"
 	"late/internal/session"
 	"net/http"
 	"net/http/httptest"
+	"late/internal/tool"
 	"os"
 	"path/filepath"
 	"sync"
@@ -97,6 +99,16 @@ func TestBaseOrchestrator_ResetStartsNewConversation(t *testing.T) {
 	}
 
 	sess := session.New(nil, originalPath, history, "", false)
+	var todos []tool.Todo
+	var todoMu sync.Mutex
+	createTodos := tool.CreateTodosTool{Todos: &todos, Mu: &todoMu}
+	listTodos := tool.ListTodosTool{Todos: &todos, Mu: &todoMu}
+	sess.Registry.Register(createTodos)
+	sess.Registry.Register(listTodos)
+	ctx := context.WithValue(context.Background(), common.OrchestratorIDKey, common.MainAgentID)
+	if _, err := createTodos.Execute(ctx, json.RawMessage(`{"todos":["old conversation task"]}`)); err != nil {
+		t.Fatalf("creating todo: %v", err)
+	}
 	o := NewBaseOrchestrator("test-orch", sess, nil, 10)
 	if err := o.Reset(); err != nil {
 		t.Fatalf("Reset() error = %v", err)
@@ -111,6 +123,9 @@ func TestBaseOrchestrator_ResetStartsNewConversation(t *testing.T) {
 	}
 	if len(o.History()) != 0 {
 		t.Fatalf("new conversation history length = %d, want 0", len(o.History()))
+	}
+	if got := listTodos.GetTodos(); len(got) != 0 {
+		t.Fatalf("new conversation retained todos: %#v", got)
 	}
 	if sess.HistoryPath == originalPath {
 		t.Fatal("new conversation reused the original history path")

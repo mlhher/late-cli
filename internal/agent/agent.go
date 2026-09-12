@@ -96,7 +96,8 @@ func NewSubagentOrchestrator(
 		for _, t := range parent.Registry().All() {
 			// Skip spawn_subagent and write_implementation_plan to prevent recursion/confusion
 			name := t.Name()
-			if name == "spawn_subagent" || name == "write_implementation_plan" {
+			if name == "spawn_subagent" || name == "write_implementation_plan" ||
+				name == "create_todos" || name == "list_todos" || name == "finish_todo" {
 				continue
 			}
 			sess.Registry.Register(t)
@@ -109,6 +110,12 @@ func NewSubagentOrchestrator(
 		if enabledTools[t] { // only enable if it's also enabled globally
 			subagentTools[t] = true
 		}
+	}
+
+	// Todo tools are orchestrator-only: never register them for subagents,
+	// even if a subagent config lists them in allowed_tools.
+	for _, name := range []string{"create_todos", "list_todos", "finish_todo"} {
+		delete(subagentTools, name)
 	}
 	executor.RegisterTools(sess.Registry, subagentTools)
 

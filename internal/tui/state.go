@@ -66,6 +66,7 @@ var AvailableCommands = []CommandDef{
 	{Name: "/quit", Description: "Exit the application"},
 	{Name: "/rewind", Description: "Rewind conversation history"},
 	{Name: "/themes", Description: "List and switch themes"},
+	{Name: "/todos", Description: "Toggle live todo progress pane"},
 }
 
 // ThemeEntry is a TUI-side view of a plugin-provided theme. It contains
@@ -165,9 +166,12 @@ type Model struct {
 	Spinner spinner.Model
 
 	// File Picker
-	FilePicker     filepicker.Model
-	AttachedFiles  []string
-	ShowFilePicker bool
+	FilePicker       filepicker.Model
+	AttachedFiles    []string
+	ShowFilePicker   bool
+	ShowTodoPane     bool
+	TodoPaneFocused  bool
+	TodoScrollOffset int
 
 	// Double-click copy & Toast tracking
 	LastClickX      int

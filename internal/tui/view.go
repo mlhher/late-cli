@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"late/internal/common"
 
@@ -15,7 +16,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/rivo/uniseg"
 )
+
+const todoPaneWidth = 44
 
 func (m Model) View() tea.View {
 	if m.screenReady {
@@ -35,6 +39,11 @@ func (m Model) buildScreen() tea.View {
 		vStr = m.transcriptView()
 	} else {
 		vStr = m.Viewport.View()
+	}
+
+	if m.ShowTodoPane && !m.ShowFilePicker && m.Mode == ViewChat && m.Width >= 85 {
+		todoView := m.todoPaneView(m.Viewport.Height())
+		vStr = lipgloss.JoinHorizontal(lipgloss.Top, vStr, todoView)
 	}
 
 	iStr := m.inputView()
@@ -1478,5 +1487,181 @@ func (m *Model) renderActivityAt(text string, width int, now time.Time) string {
 	remaining := max(1, width-2-lipgloss.Width(marker)-1)
 	glow := m.renderAnimatedTagAt(text, style, remaining, true, now)
 	row := "  " + marker + " " + glow
-	return ansi.Truncate(row, max(1, width), "")
+	truncated := ansi.Truncate(row, max(1, width), "")
+	rw := ansi.StringWidth(truncated)
+	if rw < width {
+		truncated += lipgloss.NewStyle().Background(appBgColor).Render(strings.Repeat(" ", width-rw))
+	}
+	return truncated
+}
+
+func wrapTodoText(text string, maxLen int) []string {
+	if maxLen <= 0 {
+		return []string{""}
+	}
+	var lines []string
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return []string{""}
+	}
+	current := ""
+	for _, word := range words {
+		for lipgloss.Width(word) > maxLen {
+			if current != "" {
+				lines = append(lines, current)
+				current = ""
+			}
+			chunk, rest := splitTodoWord(word, maxLen)
+			lines = append(lines, chunk)
+			word = rest
+		}
+		if current == "" {
+			current = word
+		} else if lipgloss.Width(current)+1+lipgloss.Width(word) <= maxLen {
+			current += " " + word
+		} else {
+			lines = append(lines, current)
+			current = word
+		}
+	}
+	if current != "" {
+		lines = append(lines, current)
+	}
+	return lines
+}
+
+func splitTodoWord(word string, maxWidth int) (string, string) {
+	graphemes := uniseg.NewGraphemes(word)
+	width := 0
+	byteEnd := 0
+	for graphemes.Next() {
+		cluster := graphemes.Str()
+		clusterWidth := lipgloss.Width(cluster)
+		if width > 0 && width+clusterWidth > maxWidth {
+			break
+		}
+		width += clusterWidth
+		_, byteEnd = graphemes.Positions()
+		if width >= maxWidth {
+			break
+		}
+	}
+	if byteEnd == 0 {
+		_, size := utf8.DecodeRuneInString(word)
+		byteEnd = size
+	}
+	return word[:byteEnd], word[byteEnd:]
+}
+
+func (m Model) todoItems() []common.TodoItem {
+	// Always show the MAIN agent's todos. Subagents have no todo tools in
+	// their registries, so reading from the focused agent makes the list
+	// appear to reset whenever focus moves to a subagent.
+	if m.Root != nil {
+		if reg := m.Root.Registry(); reg != nil {
+			if provider, ok := reg.Get("list_todos").(common.TodoProvider); ok {
+				return provider.GetTodos()
+			}
+		}
+	}
+	return nil
+}
+
+func todoContentLines(todos []common.TodoItem, innerWidth int) []string {
+	var lines []string
+	for i, td := range todos {
+		icon := "○"
+		itemStyle := lipgloss.NewStyle().Foreground(textColor)
+		if td.Done {
+			icon = "✓"
+			itemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#549B68"))
+		}
+
+		prefix := fmt.Sprintf(" %2d  %s  ", i+1, icon)
+		textWidth := max(5, innerWidth-lipgloss.Width(prefix)-1)
+		wrapped := wrapTodoText(td.Text, textWidth)
+		for lineIndex, line := range wrapped {
+			if lineIndex == 0 {
+				lines = append(lines, prefix+itemStyle.Render(line))
+			} else {
+				lines = append(lines, strings.Repeat(" ", lipgloss.Width(prefix))+itemStyle.Render(line))
+			}
+		}
+	}
+	return lines
+}
+
+func (m Model) todoMaxScrollOffset(height int) int {
+	return todoMaxScrollOffsetFor(m.todoItems(), height)
+}
+
+func todoMaxScrollOffsetFor(todos []common.TodoItem, height int) int {
+	visibleHeight := max(1, height-2)
+	return max(0, len(todoContentLines(todos, todoPaneWidth-1))-visibleHeight)
+}
+
+func (m Model) todoPaneView(height int) string {
+	innerWidth := todoPaneWidth - 1 // 1 left border
+	innerHeight := height           // No top or bottom border
+	if innerHeight < 1 {
+		innerHeight = 1
+	}
+
+	todos := m.todoItems()
+
+	var lines []string
+	focusMarker := ""
+	if m.TodoPaneFocused {
+		focusMarker = "  • focused"
+	}
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#7D56F4")).
+		Render("  Todos" + focusMarker)
+	lines = append(lines, title)
+
+	if len(todos) == 0 {
+		emptyMsg := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#4A4B50")).
+			Italic(true).
+			Render("  No todos created yet.\n  Waiting for plan…")
+		lines = append(lines, strings.Split(emptyMsg, "\n")...)
+	} else {
+		content := todoContentLines(todos, innerWidth)
+		visibleHeight := max(1, innerHeight-2)
+		maxOffset := max(0, len(content)-visibleHeight)
+		offset := min(max(0, m.TodoScrollOffset), maxOffset)
+		end := min(len(content), offset+visibleHeight)
+		lines = append(lines, content[offset:end]...)
+
+		help := "click or Ctrl+T to scroll"
+		if m.TodoPaneFocused {
+			help = "↑/↓ · PgUp/PgDn · Esc"
+		}
+		if len(content) > visibleHeight {
+			help = fmt.Sprintf("%d–%d/%d · %s", offset+1, end, len(content), help)
+		}
+		lines = append(lines, lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#67686E")).
+			Render("  "+help))
+	}
+
+	// Pad or truncate lines to the exact pane height.
+	for len(lines) < innerHeight {
+		lines = append(lines, "")
+	}
+	if len(lines) > innerHeight {
+		lines = lines[:innerHeight]
+	}
+
+	content := strings.Join(lines, "\n")
+	boxStyle := lipgloss.NewStyle().
+		Width(innerWidth).
+		Height(innerHeight).
+		MaxHeight(innerHeight).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.Color("#232329")).
+		Background(appBgColor)
+
+	return boxStyle.Render(content)
 }

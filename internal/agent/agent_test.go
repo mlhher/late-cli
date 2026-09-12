@@ -187,7 +187,6 @@ func TestNewSubagentOrchestratorID(t *testing.T) {
 		t.Errorf("Expected child ID to contain 'coder', got %s", child.ID())
 	}
 }
-
 // TestNewSubagentOrchestrator_ConcurrentSpawn is the FR2 regression test:
 // concurrent spawns against a shared parent must never mint duplicate child IDs.
 func TestNewSubagentOrchestrator_ConcurrentSpawn(t *testing.T) {
@@ -536,3 +535,59 @@ func TestNewSubagentOrchestrator_ResumedParentUsesNextHistoryPath(t *testing.T) 
 		t.Error("resumed child creation overwrote the original child history")
 	}
 }
+
+// TestSubagentRegistryHasNoTodoTools verifies that a spawned subagent NEVER
+// receives todo tools in its registry, even when enabledTools includes them.
+func TestSubagentRegistryHasNoTodoTools(t *testing.T) {
+	cfg := client.Config{BaseURL: "http://localhost:8080"}
+	c := client.NewClient(cfg)
+
+	mockSession := session.New(c, "/tmp/mock-session.json", []client.ChatMessage{}, "mock system prompt", true)
+	parent := orchestrator.NewBaseOrchestrator("parent", mockSession, nil, 100)
+
+	enabledTools := map[string]bool{
+		"read_file":    true,
+		"create_todos": true,
+		"list_todos":   true,
+		"finish_todo":  true,
+	}
+
+	child, err := NewSubagentOrchestrator(
+		c,
+		"test goal",
+		[]string{},
+		"coder",
+		enabledTools,
+		false,
+		false,
+		100,
+		"",
+		false,
+		parent,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create subagent orchestrator: %v", err)
+	}
+
+	childBase, ok := child.(*orchestrator.BaseOrchestrator)
+	if !ok {
+		t.Fatalf("Expected BaseOrchestrator, got %T", child)
+	}
+
+	sess := childBase.Session()
+
+	if sess.Registry.Get("create_todos") != nil {
+		t.Fatalf("expected subagent registry to NOT contain create_todos")
+	}
+	if sess.Registry.Get("list_todos") != nil {
+		t.Fatalf("expected subagent registry to NOT contain list_todos")
+	}
+	if sess.Registry.Get("finish_todo") != nil {
+		t.Fatalf("expected subagent registry to NOT contain finish_todo")
+	}
+	if sess.Registry.Get("read_file") == nil {
+		t.Fatalf("expected subagent registry to contain read_file")
+	}
+}
+

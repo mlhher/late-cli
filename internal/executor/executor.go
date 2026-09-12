@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
+
 	"late/internal/client"
 	"late/internal/common"
 	"late/internal/pathutil"
@@ -140,6 +142,21 @@ func RegisterTools(reg *tool.Registry, enabledTools map[string]bool) {
 	}
 	if enabledTools["target_edit"] {
 		reg.Register(tool.NewTargetEditTool())
+	}
+
+	// Register Todo planning tools (orchestrator-only, not inherited by subagents)
+	if enabledTools["create_todos"] || enabledTools["list_todos"] || enabledTools["finish_todo"] {
+		var todos []tool.Todo
+		var mu sync.Mutex
+		if enabledTools["create_todos"] {
+			reg.Register(tool.CreateTodosTool{Todos: &todos, Mu: &mu})
+		}
+		if enabledTools["list_todos"] {
+			reg.Register(tool.ListTodosTool{Todos: &todos, Mu: &mu})
+		}
+		if enabledTools["finish_todo"] {
+			reg.Register(tool.FinishTodoTool{Todos: &todos, Mu: &mu})
+		}
 	}
 
 	// Register Skills

@@ -462,7 +462,15 @@ func (o *BaseOrchestrator) Parent() common.Orchestrator {
 func (o *BaseOrchestrator) Reset() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return o.sess.StartNewConversation()
+	if err := o.sess.StartNewConversation(); err != nil {
+		return err
+	}
+	for _, registeredTool := range o.sess.Registry.All() {
+		if resetter, ok := registeredTool.(common.ConversationResetter); ok {
+			resetter.ResetConversationState()
+		}
+	}
+	return nil
 }
 
 func (o *BaseOrchestrator) Rewind(index int) error {

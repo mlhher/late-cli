@@ -396,6 +396,9 @@ func main() {
 		mainTools[k] = v
 	}
 	mainTools["write_implementation_plan"] = true
+	mainTools["create_todos"] = true
+	mainTools["list_todos"] = true
+	mainTools["finish_todo"] = true
 	mainTools["write_file"] = false
 	mainTools["target_edit"] = false
 
@@ -487,7 +490,7 @@ func main() {
 
 	// Create root orchestrator
 	// We'll add middlewares later once the program is started
-	rootAgent := orchestrator.NewBaseOrchestrator("main", sess, nil, 0)
+	rootAgent := orchestrator.NewBaseOrchestrator(common.MainAgentID, sess, nil, 0)
 
 	model := tui.NewModel(rootAgent, renderer, appConfig)
 	model.SetActiveThemeStyles(themeBytes)

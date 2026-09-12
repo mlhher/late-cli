@@ -189,6 +189,10 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 			m.updateLayout()
 			return m, nil
 		}
+		if msg.String() == "ctrl+t" && m.ShowTodoPane && m.Mode == ViewChat {
+			m.TodoPaneFocused = !m.TodoPaneFocused
+			return m, nil
+		}
 	}
 	if _, ok := msg.(tea.PasteMsg); ok && m.RunningPluginAction != "" {
 		return m, nil
@@ -209,6 +213,61 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 			}
 		}
 		m.updateLayout()
+	}
+
+	// The todo pane has its own focus so its navigation keys never interfere
+	// with typing in the chat input.
+	if m.ShowTodoPane && m.Mode == ViewChat {
+		if keyMsg, ok := msg.(tea.KeyMsg); ok && m.TodoPaneFocused {
+			pageSize := max(1, m.Viewport.Height()-3)
+			maxOffset := m.todoMaxScrollOffset(m.Viewport.Height())
+			switch keyMsg.String() {
+			case "esc", "ctrl+t":
+				m.TodoPaneFocused = false
+				return m, nil
+			case "up", "k":
+				m.TodoScrollOffset = max(0, m.TodoScrollOffset-1)
+				return m, nil
+			case "down", "j":
+				m.TodoScrollOffset = min(maxOffset, m.TodoScrollOffset+1)
+				return m, nil
+			case "pgup":
+				m.TodoScrollOffset = max(0, m.TodoScrollOffset-pageSize)
+				return m, nil
+			case "pgdown":
+				m.TodoScrollOffset = min(maxOffset, m.TodoScrollOffset+pageSize)
+				return m, nil
+			case "home", "g":
+				m.TodoScrollOffset = 0
+				return m, nil
+			case "end", "G":
+				m.TodoScrollOffset = maxOffset
+				return m, nil
+			}
+		}
+
+		if wheelMsg, ok := msg.(tea.MouseWheelMsg); ok {
+			mouse := wheelMsg.Mouse()
+			if mouse.X >= m.Width-todoPaneWidth && mouse.Y >= 0 && mouse.Y < m.Viewport.Height() {
+				maxOffset := m.todoMaxScrollOffset(m.Viewport.Height())
+				if mouse.Button == tea.MouseWheelUp {
+					m.TodoScrollOffset = max(0, m.TodoScrollOffset-3)
+				} else if mouse.Button == tea.MouseWheelDown {
+					m.TodoScrollOffset = min(maxOffset, m.TodoScrollOffset+3)
+				}
+				return m, nil
+			}
+		}
+
+		if clickMsg, ok := msg.(tea.MouseClickMsg); ok {
+			mouse := clickMsg.Mouse()
+			if mouse.Button == tea.MouseLeft &&
+				mouse.X >= m.Width-todoPaneWidth &&
+				mouse.Y >= 0 && mouse.Y < m.Viewport.Height() {
+				m.TodoPaneFocused = true
+				return m, nil
+			}
+		}
 	}
 
 	// Internal Messages
@@ -1002,6 +1061,28 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				m.updateLayout()
 				return m, nil
 			}
+			if cmd == "/todos" {
+				m.Input.Reset()
+				m.Input.SetValue("> ")
+				if m.Width < 85 {
+					m.ToastMessage = "Terminal too narrow for side pane (need >= 85 cols)"
+					m.ToastWarning = true
+					m.ToastExpireTime = time.Now().UnixMilli() + 3000
+					clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+						return clearToastMsg{}
+					})
+					m.updateViewport()
+					return m, clearCmd
+				}
+				m.ShowTodoPane = !m.ShowTodoPane
+				m.TodoPaneFocused = false
+				m.TodoScrollOffset = 0
+				for _, s := range m.AgentStates {
+					s.RenderedHistory = nil
+				}
+				m.updateLayout()
+				return m, nil
+			}
 			if cmd == "/model" {
 				m.Input.Reset()
 				m.Input.SetValue("")
@@ -1626,9 +1707,21 @@ func (m *Model) updateLayout() {
 	}
 
 	availableWidth := m.Width
-	m.Input.SetWidth(availableWidth - 2)
+	if m.ShowTodoPane && m.Width >= 85 {
+		availableWidth = m.Width - todoPaneWidth
+	} else if m.ShowTodoPane && m.Width < 85 {
+		m.ShowTodoPane = false
+		m.TodoPaneFocused = false
+	}
+	m.Input.SetWidth(m.Width - 2)
 
+	oldWidth := m.Viewport.Width()
 	m.Viewport.SetWidth(availableWidth)
+	if oldWidth != availableWidth {
+		for _, s := range m.AgentStates {
+			s.RenderedHistory = nil
+		}
+	}
 	vHeight := m.Height - (m.Input.Height() + 1) - StatusBarHeight - AppPadding
 	if m.Mode == ViewModelPicker {
 		vHeight = m.Height - 3 - StatusBarHeight - AppPadding
@@ -1644,6 +1737,7 @@ func (m *Model) updateLayout() {
 		vHeight = 1
 	}
 	m.Viewport.SetHeight(vHeight)
+	m.TodoScrollOffset = min(m.TodoScrollOffset, m.todoMaxScrollOffset(vHeight))
 
 	// Ensure file picker also respects the layout height to prevent pushing the status bar off-screen
 	// We subtract StatusBarHeight. If we have a 2-line picker status bar, we subtract 3.

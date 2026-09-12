@@ -345,3 +345,32 @@ func TestRegisterTools_Planning(t *testing.T) {
 		t.Error("bash should be registered in planning mode")
 	}
 }
+
+func TestRegisterTools_TodoTools(t *testing.T) {
+	c := client.NewClient(client.Config{BaseURL: "http://localhost:0"})
+	histPath := filepath.Join(t.TempDir(), "history.json")
+	sess := session.New(c, histPath, nil, "", false)
+
+	enabledTools := map[string]bool{
+		"create_todos": true,
+		"list_todos":   true,
+		"finish_todo":  true,
+	}
+	RegisterTools(sess.Registry, enabledTools)
+
+	for _, name := range []string{"create_todos", "list_todos", "finish_todo"} {
+		if sess.Registry.Get(name) == nil {
+			t.Errorf("expected tool '%s' to be registered", name)
+		}
+	}
+
+	// Verify disabled tools are not registered
+	sessDisabled := session.New(c, histPath, nil, "", false)
+	RegisterTools(sessDisabled.Registry, map[string]bool{})
+	for _, name := range []string{"create_todos", "list_todos", "finish_todo"} {
+		if sessDisabled.Registry.Get(name) != nil {
+			t.Errorf("expected tool '%s' not to be registered when disabled", name)
+		}
+	}
+}
+

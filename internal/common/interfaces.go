@@ -114,6 +114,10 @@ const (
 	ToolApprovalKey     contextKey = "tool_approval"
 )
 
+// MainAgentID is the orchestrator ID of the root/main agent.
+// Subagents use IDs of the form "<type>-subagent-<n>".
+const MainAgentID = "main"
+
 // GetInputProvider returns the InputProvider from the context.
 func GetInputProvider(ctx context.Context) InputProvider {
 	if p, ok := ctx.Value(InputProviderKey).(InputProvider); ok {
