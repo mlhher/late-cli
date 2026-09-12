@@ -406,12 +406,19 @@ type McpStatusMsg struct {
 	Warning bool
 }
 
+// ToastMsg carries a temporary toast notification into the TUI update loop.
+type ToastMsg struct {
+	Text    string
+	Warning bool
+}
+
 // BootstrapStatusMsg carries startup progress into the TUI update loop.
 type BootstrapStatusMsg struct {
 	Text        string
 	Warning     bool
 	Active      bool
 	RefreshView bool
+	NextToast   *ToastMsg
 }
 
 // FindOrchestrator recursively searches for an orchestrator by ID.

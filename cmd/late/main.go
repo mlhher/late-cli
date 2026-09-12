@@ -95,6 +95,9 @@ func main() {
 	showCWDReq := flag.Bool("show-cwd", true, "Show current working directory in status bar")
 	themeReq := flag.String("theme", "", "Plugin theme id ('<plugin>:<name>'); falls back to $LATE_THEME")
 	promptReq := flag.String("prompt", "", "Start the agent immediately with the given prompt")
+	logitBiasReq := flag.String("logit-bias", "", "Token-bias mappings as raw JSON or key-value pairs (e.g., TOKEN_ID:BIAS,TOKEN_ID:BIAS)")
+	suppressThinkingWordsReq := flag.Bool("suppress-thinking-words", false, "Apply standard anti-overthinking bias map (dynamically resolved via /tokenize)")
+	subagentLogitBiasReq := flag.String("subagent-logit-bias", "", "Token-bias mappings for subagents as raw JSON or key-value pairs (e.g., TOKEN_ID:BIAS,TOKEN_ID:BIAS)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of late:\n")
@@ -337,6 +340,27 @@ func main() {
 		}
 	}
 
+	// Parse explicit user logit bias overrides if provided
+	var explicitUserLogitBias map[string]int
+	if *logitBiasReq != "" {
+		parsed, err := client.ParseLogitBias(*logitBiasReq)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing --logit-bias: %v\n", err)
+			os.Exit(1)
+		}
+		explicitUserLogitBias = parsed
+	}
+
+	var explicitSubagentLogitBias map[string]int
+	if *subagentLogitBiasReq != "" {
+		parsed, err := client.ParseLogitBias(*subagentLogitBiasReq)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing --subagent-logit-bias: %v\n", err)
+			os.Exit(1)
+		}
+		explicitSubagentLogitBias = parsed
+	}
+
 	// Resolve subagent history persistence opt-in
 	// (explicit CLI flag > saved session preference > config file).
 	saveSubagentHistoriesCLI := false
@@ -358,6 +382,7 @@ func main() {
 		APIKey:       resolvedOpenAIConfig.APIKey,
 		Model:        resolvedOpenAIConfig.Model,
 		EnableImages: *enableImagesReq,
+		LogitBias:    explicitUserLogitBias,
 		AppVersion:   common.Version,
 	}
 	if appConfig != nil {
@@ -367,13 +392,20 @@ func main() {
 			resolvedClientConfig.Model = setting.Model
 		}
 	}
+	resolvedSubagentConfig := appconfig.ResolveSubagentSettings(appConfig, resolvedOpenAIConfig)
+
+	// Validate --suppress-thinking-words: only allowed in homogeneous setups
+	if err := validateSuppressThinkingWords(*suppressThinkingWordsReq, resolvedClientConfig.Model, resolvedSubagentConfig.Model, appConfig); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: --suppress-thinking-words is currently only supported when orchestrator and subagents use the same model: %v\n", err)
+		os.Exit(1)
+	}
+
 	c := client.NewClient(resolvedClientConfig)
 
 	// Initialize Subagent Client
-	resolvedSubagentConfig := appconfig.ResolveSubagentSettings(appConfig, resolvedOpenAIConfig)
-
 	subagentClient := c
-	if resolvedSubagentConfig.BaseURL != resolvedClientConfig.BaseURL ||
+	if len(explicitSubagentLogitBias) > 0 || len(explicitUserLogitBias) > 0 ||
+		resolvedSubagentConfig.BaseURL != resolvedClientConfig.BaseURL ||
 		resolvedSubagentConfig.APIKey != resolvedClientConfig.APIKey ||
 		resolvedSubagentConfig.Model != resolvedClientConfig.Model {
 		subagentClient = client.NewClient(client.Config{
@@ -381,6 +413,7 @@ func main() {
 			APIKey:       resolvedSubagentConfig.APIKey,
 			Model:        resolvedSubagentConfig.Model,
 			EnableImages: *enableImagesReq,
+			LogitBias:    explicitSubagentLogitBias,
 			AppVersion:   common.Version,
 		})
 	}
@@ -498,7 +531,13 @@ func main() {
 		return func() tea.Msg {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			sess.SetClient(newModelClient(ctx, setting, *enableImagesReq))
+			// Either both biases or none should be sent: only pass logit biases
+			// if the switched model matches the configured orchestrator model.
+			var bias map[string]int
+			if setting.Model == resolvedClientConfig.Model {
+				bias = c.LogitBias()
+			}
+			sess.SetClient(newModelClient(ctx, setting, *enableImagesReq, bias))
 			return nil
 		}
 	}
@@ -624,7 +663,7 @@ func main() {
 
 		// Wait only in this background goroutine: the TUI remains usable while
 		// connections and discovery finish, but --prompt needs their results.
-		runBootstrap(p, mcpClient, config, c, subagentClient, sess, enabledTools, pluginManager, toolSync)
+		runBootstrap(p, mcpClient, config, c, subagentClient, sess, enabledTools, pluginManager, toolSync, *suppressThinkingWordsReq, explicitUserLogitBias, explicitSubagentLogitBias)
 
 		if *promptReq != "" {
 			p.Send(tui.StartPromptMsg(*promptReq))
@@ -636,11 +675,16 @@ func main() {
 			var currentSubagentClient *client.Client
 			if appConfig != nil {
 				if setting, ok := appConfig.GetModelForAgent(agentType); ok {
+					var biasForSubagent map[string]int
+					if setting.Model == resolvedSubagentConfig.Model {
+						biasForSubagent = subagentClient.LogitBias()
+					}
 					currentSubagentClient = client.NewClient(client.Config{
 						BaseURL:      setting.URL,
 						APIKey:       setting.Key,
 						Model:        setting.Model,
 						EnableImages: *enableImagesReq,
+						LogitBias:    biasForSubagent,
 						AppVersion:   common.Version,
 					})
 					currentSubagentClient.DiscoverBackend(ctx)
@@ -691,16 +735,34 @@ func deriveEffectiveSessionID(historyPath string) string {
 	}
 	return id
 }
-func newModelClient(ctx context.Context, setting appconfig.ModelSetting, enableImages bool) *client.Client {
+func newModelClient(ctx context.Context, setting appconfig.ModelSetting, enableImages bool, logitBias map[string]int) *client.Client {
 	c := client.NewClient(client.Config{
 		BaseURL:      setting.URL,
 		APIKey:       setting.Key,
 		Model:        setting.Model,
 		EnableImages: enableImages,
+		LogitBias:    logitBias,
 		AppVersion:   common.Version,
 	})
 	c.DiscoverBackend(ctx)
 	return c
+}
+
+func validateSuppressThinkingWords(suppressThinkingWords bool, orchestratorModel, subagentModel string, appConfig *appconfig.Config) error {
+	if !suppressThinkingWords {
+		return nil
+	}
+	if orchestratorModel != subagentModel {
+		return fmt.Errorf("orchestrator and subagents use different models (%q vs %q)", orchestratorModel, subagentModel)
+	}
+	if appConfig != nil {
+		for _, sub := range assets.GetSubagents() {
+			if setting, ok := appConfig.GetModelForAgent(sub.Name); ok && setting.Model != orchestratorModel {
+				return fmt.Errorf("subagent %q uses a different model (%q vs %q)", sub.Name, setting.Model, orchestratorModel)
+			}
+		}
+	}
+	return nil
 }
 
 // buildMiddlewares assembles the tool-call middleware chain for rootAgent and subagents.
@@ -1158,24 +1220,31 @@ func ForwardOrchestratorEvents(p *tea.Program, o common.Orchestrator) {
 // runBootstrap runs startup work (MCP connections and LLM backend discovery)
 // concurrently in the background so the TUI renders immediately. It streams live
 // animated status updates into the UI and completes when all tasks finish.
-func runBootstrap(p *tea.Program, mcpClient *mcp.Client, config *mcp.MCPConfig, c *client.Client, subagentClient *client.Client, sess *session.Session, enabledTools map[string]bool, pluginManager *plugin.PluginManager, toolSync *pluginToolSync) {
+func runBootstrap(p *tea.Program, mcpClient *mcp.Client, config *mcp.MCPConfig, c *client.Client, subagentClient *client.Client, sess *session.Session, enabledTools map[string]bool, pluginManager *plugin.PluginManager, toolSync *pluginToolSync, suppressThinkingWords bool, explicitUserLogitBias, explicitSubagentLogitBias map[string]int) {
 	var (
-		wg        sync.WaitGroup
-		mu        sync.Mutex
-		connected int
-		failed    []string
+		wg             sync.WaitGroup
+		mu             sync.Mutex
+		connected      int
+		failed         []string
+		logitBiasToast *tui.ToastMsg
 	)
+
+	sendMsg := func(msg tea.Msg) {
+		if p != nil {
+			p.Send(msg)
+		}
+	}
 
 	hasMCP := config != nil && len(config.McpServers) > 0
 
 	// Initial notification inside TUI
 	if hasMCP {
-		p.Send(tui.BootstrapStatusMsg{
+		sendMsg(tui.BootstrapStatusMsg{
 			Text:   "Connecting MCP servers & discovering backend...",
 			Active: true,
 		})
 	} else {
-		p.Send(tui.BootstrapStatusMsg{
+		sendMsg(tui.BootstrapStatusMsg{
 			Text:   "Discovering model backend...",
 			Active: true,
 		})
@@ -1191,7 +1260,7 @@ func runBootstrap(p *tea.Program, mcpClient *mcp.Client, config *mcp.MCPConfig, 
 				defer mu.Unlock()
 				if r.Err != nil {
 					failed = append(failed, r.Name)
-					p.Send(tui.BootstrapStatusMsg{
+					sendMsg(tui.BootstrapStatusMsg{
 						Text:    fmt.Sprintf("MCP %s failed: %v", r.Name, r.Err),
 						Warning: true,
 						Active:  true,
@@ -1208,7 +1277,7 @@ func runBootstrap(p *tea.Program, mcpClient *mcp.Client, config *mcp.MCPConfig, 
 					toolSync.refresh(p, mcpClient, pluginManager, enabledTools)
 				}
 				connected++
-				p.Send(tui.BootstrapStatusMsg{
+				sendMsg(tui.BootstrapStatusMsg{
 					Text:   fmt.Sprintf("MCP: %s connected", r.Name),
 					Active: true,
 				})
@@ -1226,11 +1295,50 @@ func runBootstrap(p *tea.Program, mcpClient *mcp.Client, config *mcp.MCPConfig, 
 		if ctxSize > 0 {
 			ctxText = fmt.Sprintf(" (%dk ctx)", ctxSize/1024)
 		}
-		p.Send(tui.BootstrapStatusMsg{
+		sendMsg(tui.BootstrapStatusMsg{
 			Text:        fmt.Sprintf("Backend: %s%s", b, ctxText),
 			Active:      true,
 			RefreshView: true,
 		})
+
+		if suppressThinkingWords {
+			if c.IsLlamaCPP() {
+				resolveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				resolved, err := client.ResolveThinkingBiases(resolveCtx, c.BaseURL(), c.APIKey(), c.HTTPClient())
+				if err != nil {
+					mu.Lock()
+					logitBiasToast = &tui.ToastMsg{
+						Text:    "Logit bias failed: tokenize error",
+						Warning: true,
+					}
+					mu.Unlock()
+				} else {
+					c.SetLogitBias(client.MergeLogitBiases(resolved, explicitUserLogitBias))
+					if subagentClient != c {
+						subagentClient.SetLogitBias(client.MergeLogitBiases(resolved, explicitSubagentLogitBias))
+					}
+					mu.Lock()
+					logitBiasToast = &tui.ToastMsg{
+						Text: "Applied logit biases",
+					}
+					mu.Unlock()
+				}
+			} else {
+				mu.Lock()
+				logitBiasToast = &tui.ToastMsg{
+					Text:    "Logit bias failed: not llama.cpp",
+					Warning: true,
+				}
+				mu.Unlock()
+			}
+		} else if len(explicitUserLogitBias) > 0 || len(explicitSubagentLogitBias) > 0 {
+			mu.Lock()
+			logitBiasToast = &tui.ToastMsg{
+				Text: "Applied logit biases",
+			}
+			mu.Unlock()
+		}
 	}()
 
 	// Task 3: Subagent LLM Backend Discovery (if distinct client)
@@ -1281,10 +1389,11 @@ func runBootstrap(p *tea.Program, mcpClient *mcp.Client, config *mcp.MCPConfig, 
 		summary = strings.Join(parts, " • ")
 	}
 
-	p.Send(tui.BootstrapStatusMsg{
+	sendMsg(tui.BootstrapStatusMsg{
 		Text:        summary,
 		Warning:     warn,
 		Active:      false,
 		RefreshView: true,
+		NextToast:   logitBiasToast,
 	})
 }

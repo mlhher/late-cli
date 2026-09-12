@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +11,7 @@ import (
 
 	"late/internal/agent"
 	"late/internal/client"
+	appconfig "late/internal/config"
 	"late/internal/orchestrator"
 	"late/internal/plugin"
 	"late/internal/session"
@@ -201,6 +205,81 @@ func TestDeriveEffectiveSessionID(t *testing.T) {
 	}
 }
 
+func TestValidateSuppressThinkingWords(t *testing.T) {
+	tests := []struct {
+		name                  string
+		suppressThinkingWords bool
+		orchestratorModel     string
+		subagentModel         string
+		appConfig             *appconfig.Config
+		wantErr               bool
+	}{
+		{
+			name:                  "flag disabled with different models is allowed",
+			suppressThinkingWords: false,
+			orchestratorModel:     "model-a",
+			subagentModel:         "model-b",
+			appConfig:             nil,
+			wantErr:               false,
+		},
+		{
+			name:                  "flag enabled with same model and no config is allowed",
+			suppressThinkingWords: true,
+			orchestratorModel:     "model-a",
+			subagentModel:         "model-a",
+			appConfig:             nil,
+			wantErr:               false,
+		},
+		{
+			name:                  "flag enabled with different default subagent model fails",
+			suppressThinkingWords: true,
+			orchestratorModel:     "model-a",
+			subagentModel:         "model-b",
+			appConfig:             nil,
+			wantErr:               true,
+		},
+		{
+			name:                  "flag enabled with differing per-agent model fails",
+			suppressThinkingWords: true,
+			orchestratorModel:     "model-a",
+			subagentModel:         "model-a",
+			appConfig: &appconfig.Config{
+				Models: []appconfig.ModelSetting{
+					{ID: "coder-model", Model: "model-c"},
+				},
+				AgentModels: map[string]string{
+					"coder": "coder-model",
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name:                  "flag enabled with matching per-agent model succeeds",
+			suppressThinkingWords: true,
+			orchestratorModel:     "model-a",
+			subagentModel:         "model-a",
+			appConfig: &appconfig.Config{
+				Models: []appconfig.ModelSetting{
+					{ID: "coder-model", Model: "model-a"},
+				},
+				AgentModels: map[string]string{
+					"coder": "coder-model",
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateSuppressThinkingWords(tt.suppressThinkingWords, tt.orchestratorModel, tt.subagentModel, tt.appConfig)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateSuppressThinkingWords() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestBuildMiddlewares_SubagentInheritsPluginHooks(t *testing.T) {
 	c := client.NewClient(client.Config{BaseURL: "http://localhost:8080"})
 	parentSess := session.New(c, "", nil, "parent prompt", false)
@@ -243,3 +322,73 @@ func TestBuildMiddlewares_SubagentInheritsPluginHooks(t *testing.T) {
 	}
 }
 
+func TestRunBootstrap_DynamicLogitBias(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/props":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"default_generation_settings": map[string]any{
+					"n_ctx": 4096,
+				},
+			})
+		case "/tokenize":
+			var req struct {
+				Content string `json:"content"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if req.Content == " Wait" {
+				json.NewEncoder(w).Encode(map[string]any{"tokens": []int{13428}})
+			} else {
+				json.NewEncoder(w).Encode(map[string]any{"tokens": []int{100, 200}})
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	explicitUser := map[string]int{"999": 50}
+	explicitSub := map[string]int{"888": -50}
+
+	c := client.NewClient(client.Config{
+		BaseURL:   ts.URL,
+		LogitBias: explicitUser,
+	})
+	subagentClient := client.NewClient(client.Config{
+		BaseURL:   ts.URL,
+		LogitBias: explicitSub,
+	})
+
+	sess := session.New(c, "", nil, "prompt", false)
+
+	// Run bootstrap with suppressThinkingWords enabled
+	runBootstrap(nil, nil, nil, c, subagentClient, sess, nil, nil, nil, true, explicitUser, explicitSub)
+
+	if !c.IsLlamaCPP() {
+		t.Fatalf("expected c to be detected as llama.cpp")
+	}
+
+	cBiases := c.LogitBias()
+	if cBiases["13428"] != -100 {
+		t.Errorf("expected dynamic thinking bias 13428: -100 in c, got %v", cBiases["13428"])
+	}
+	if cBiases["999"] != 50 {
+		t.Errorf("expected explicit user bias 999: 50 in c, got %v", cBiases["999"])
+	}
+
+	subBiases := subagentClient.LogitBias()
+	if subBiases["13428"] != -100 {
+		t.Errorf("expected dynamic thinking bias 13428: -100 in subagentClient, got %v", subBiases["13428"])
+	}
+	if subBiases["888"] != -50 {
+		t.Errorf("expected explicit subagent bias 888: -50 in subagentClient, got %v", subBiases["888"])
+	}
+	if _, ok := subBiases["999"]; ok {
+		t.Errorf("user bias 999 bled into subagentClient: %v", subBiases)
+	}
+}
