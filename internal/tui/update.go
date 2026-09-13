@@ -85,6 +85,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyReleaseMsg:
 			return m, nil
 		case tea.KeyPressMsg:
+			if m.ShowTodoPane && m.TodoPaneFocused {
+				break // Let the todo pane handle its navigation keys below.
+			}
 			switch event.String() {
 			case "pgup":
 				m.scrollTranscript(-max(1, m.Viewport.Height()-2), 0)
@@ -109,6 +112,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case tea.MouseWheelMsg:
+			mouse := event.Mouse()
+			if m.ShowTodoPane && mouse.X >= m.Width-todoPaneWidth && mouse.Y >= 0 && mouse.Y < m.Viewport.Height() {
+				break // Route wheel events over the pane to its scroll handler.
+			}
 			if event.Mouse().Y >= 0 && event.Mouse().Y < m.Viewport.Height() {
 				switch event.Mouse().Button {
 				case tea.MouseWheelUp:
