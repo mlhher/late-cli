@@ -8,7 +8,39 @@ permissions:
   contents: write
 
 jobs:
+  quality-checks:
+    name: Quality and Security Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache: true
+
+      - name: Run Tests
+        run: |
+          go test -v -race ./...
+          ./test/late-podman-test.sh
+
+      - name: Run Go Vet
+        run: go vet ./...
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.2
+
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: '1.27'
+          go-package: ./...
+
   build-and-release:
+    needs: quality-checks
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -32,7 +64,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.27'
 
       - name: Build Binary
         env:

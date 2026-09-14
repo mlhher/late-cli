@@ -52,7 +52,7 @@ func (t SkillReadReferenceTool) CallString(args json.RawMessage) string {
 		SkillName string `json:"skill_name"`
 		FilePath  string `json:"file_path"`
 	}
-	json.Unmarshal(args, &params)
+	_ = json.Unmarshal(args, &params)
 	return fmt.Sprintf("Reading skill reference: %s/%s", params.SkillName, params.FilePath)
 }
 

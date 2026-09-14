@@ -235,7 +235,7 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 		o.mu.Unlock()
 
 		for _, msg := range msgs {
-			o.sess.AddMessage(msg)
+			_ = o.sess.AddMessage(msg)
 		}
 
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
@@ -305,7 +305,7 @@ func (o *BaseOrchestrator) run() {
 			o.mu.Unlock()
 
 			for _, msg := range msgs {
-				o.sess.AddMessage(msg)
+				_ = o.sess.AddMessage(msg)
 			}
 
 			o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}

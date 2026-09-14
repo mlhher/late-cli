@@ -1,0 +1,33 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  settings:
+    staticcheck:
+      checks:
+        - "all"
+        - "-ST1*"
+        - "-QF1*"
+        - "-SA1019"
+        - "-SA9003"
+  exclusions:
+    presets:
+      - common-false-positives
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - unused
+          - staticcheck
+      - path: internal/tool/(allowlist_parse|permissions)\.go
+        linters:
+          - unused

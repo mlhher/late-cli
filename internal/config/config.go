@@ -185,11 +185,7 @@ func ResolveSubagentSettings(cfg *Config, openAI OpenAISettings) SubagentSetting
 }
 
 func ResolveSubagentSettingsWithEnv(cfg *Config, openAI OpenAISettings, lookup EnvLookup) SubagentSettings {
-	resolved := SubagentSettings{
-		BaseURL: openAI.BaseURL,
-		APIKey:  openAI.APIKey,
-		Model:   openAI.Model,
-	}
+	resolved := SubagentSettings(openAI)
 
 	if cfg != nil {
 		// Check legacy fields first

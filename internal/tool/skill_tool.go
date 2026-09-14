@@ -165,7 +165,7 @@ func (t ActivateSkillTool) CallString(args json.RawMessage) string {
 	var params struct {
 		Name string `json:"name"`
 	}
-	json.Unmarshal(args, &params)
+	_ = json.Unmarshal(args, &params)
 	return fmt.Sprintf("Activating skill '%s'", params.Name)
 }
 

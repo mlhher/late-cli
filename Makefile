@@ -1,4 +1,4 @@
-.PHONY: build test test-podman clean install run help
+.PHONY: build test test-podman vet lint vulncheck check clean install run help
 
 # Project variables
 BINARY_NAME=late
@@ -21,6 +21,20 @@ test: ## Run tests for the entire project
 
 test-podman: ## Test the Podman launcher without requiring Podman
 	@./test/late-podman-test.sh
+
+vet: ## Catch suspicious Go code
+	@echo "Running go vet..."
+	@go vet ./...
+
+lint: ## Run linter (golangci-lint)
+	@echo "Running golangci-lint..."
+	@golangci-lint run ./...
+
+vulncheck: ## Run vulnerability scanner (govulncheck)
+	@echo "Running govulncheck..."
+	@govulncheck ./...
+
+check: test vet lint vulncheck ## Run all quality and security checks
 
 clean: ## Remove build artifacts
 	@echo "Cleaning..."

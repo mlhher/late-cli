@@ -422,7 +422,7 @@ func NewStdioTransportWithStderr(ctx context.Context, command string, args []str
 		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 	go func() {
-		io.Copy(stderr, serr)
+		_, _ = io.Copy(stderr, serr)
 	}()
 
 	return &mcp.CommandTransport{

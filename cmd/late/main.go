@@ -928,7 +928,7 @@ func handleSessionCommand(args []string) sessionCommandResult {
 		// Parse flags for list command
 		fs := flag.NewFlagSet("list", flag.ContinueOnError)
 		verbosePtr := fs.Bool("v", false, "Verbose output")
-		fs.Parse(args[1:])
+		_ = fs.Parse(args[1:])
 		verbose = *verbosePtr
 		commandArgs = fs.Args()
 	case "load", "delete":
@@ -1081,21 +1081,7 @@ func handleWorktreeCommand(args []string) bool {
 		if len(args) >= 3 {
 			branch = args[2]
 		}
-		if branch == "" {
-			// Get current branch
-			cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-			output, err := cmd.Output()
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error getting current branch: %v\n", err)
-				return true
-			}
-			branch = strings.TrimSpace(string(output))
-		}
-		if err := git.CreateWorktree(path, branch); err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating worktree: %v\n", err)
-			return true
-		}
-		fmt.Printf("Created worktree at %s (branch: %s)\n", path, branch)
+		handleWorktreeCreate(path, branch)
 		return true
 	case "remove":
 		if len(args) < 2 {
@@ -1103,20 +1089,10 @@ func handleWorktreeCommand(args []string) bool {
 			fmt.Println("Usage: late worktree remove <path>")
 			return true
 		}
-		path := args[1]
-		if err := git.RemoveWorktree(path); err != nil {
-			fmt.Fprintf(os.Stderr, "Error removing worktree: %v\n", err)
-			return true
-		}
-		fmt.Printf("Removed worktree at %s\n", path)
+		handleWorktreeRemove(args[1])
 		return true
 	case "active":
-		path, err := git.GetActiveWorktree()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error getting active worktree: %v\n", err)
-			return true
-		}
-		fmt.Println(path)
+		handleWorktreeActive()
 		return true
 	default:
 		fmt.Printf("Unknown worktree command: %s\n", args[0])
@@ -1199,12 +1175,7 @@ func handleWorktreeActive() {
 		os.Exit(1)
 	}
 
-	// Check if this is the main worktree (path is empty or indicates main)
-	if path == "" || path == "." {
-		fmt.Println("Currently in main worktree")
-	} else {
-		fmt.Printf("Currently in worktree: %s\n", path)
-	}
+	fmt.Println(path)
 }
 
 // ForwardOrchestratorEvents is a helper that recursively forwards all events from an orchestrator

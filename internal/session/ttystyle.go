@@ -65,7 +65,7 @@ func formatSessionDisplayVerbose(meta SessionMeta) string {
 
 // FormatCompactID formats just the session ID without the .json suffix
 func FormatCompactID(id string) string {
-	return colorID(fmt.Sprintf("%s", strings.TrimSuffix(id, ".json")))
+	return colorID(strings.TrimSuffix(id, ".json"))
 }
 
 // FormatResumePrompt formats the resume prompt with appropriate styling
