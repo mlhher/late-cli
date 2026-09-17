@@ -85,6 +85,7 @@ func main() {
 	enableSubagentsReq := flag.Bool("enable-subagents", true, "Enable subagent usage")
 	gemmaThinkingReq := flag.Bool("gemma-thinking", false, "Prepend <|think|> token to system prompt for Gemma 4 models")
 	subagentMaxTurns := flag.Int("subagent-max-turns", 500, "Maximum number of turns for subagents (default: 500)")
+	maxAsyncSubagentsReq := flag.Int("max-async-subagents", 0, "Maximum number of concurrent subagents (default: 2, or from config)")
 	saveSubagentHistoriesReq := flag.Bool("save-subagent-histories", false, "Persist subagent conversation histories to disk (default: off)")
 	enableSqzReq := flag.Bool("enable-sqz", false, "Enable sqz context compression (if available)")
 	appendSystemPromptReq := flag.String("append-system-prompt", "", "Append text to the system prompt after processing")
@@ -170,6 +171,13 @@ func main() {
 		}
 	}
 
+	// Load App configuration
+	appConfig, err := appconfig.LoadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to load app config: %v\n", err)
+	}
+	maxAsyncSubagents := appconfig.ResolveMaxAsyncSubagents(appConfig, *maxAsyncSubagentsReq)
+
 	// Plugin command handler — dispatches before TUI startup
 	var pluginManager *plugin.PluginManager
 	cwd, _ := os.Getwd()
@@ -212,6 +220,10 @@ func main() {
 		content, _ := assets.PromptsFS.ReadFile("prompts/instruction-orchestrator.md")
 		systemPrompt = string(content)
 	}
+
+	systemPrompt = common.ReplacePlaceholders(systemPrompt, map[string]string{
+		"${{MAX_ASYNC_SUBAGENTS}}": fmt.Sprintf("%d", maxAsyncSubagents),
+	})
 
 	if *injectCWDReq {
 		cwd, err := os.Getwd()
@@ -328,11 +340,7 @@ func main() {
 			}
 		}
 	}
-	// Load App configuration
-	appConfig, err := appconfig.LoadConfig()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Failed to load app config: %v\n", err)
-	}
+
 	enabledTools := make(map[string]bool)
 	if appConfig != nil {
 		for toolName, enabled := range appConfig.EnabledTools {
@@ -718,6 +726,13 @@ func main() {
 		sess.Registry.Register(tool.SpawnSubagentTool{
 			Runner: runner,
 		})
+
+		if enabledTools["batch_spawn_subagents"] {
+			sess.Registry.Register(tool.BatchSpawnSubagentsTool{
+				Runner:        runner,
+				MaxConcurrent: maxAsyncSubagents,
+			})
+		}
 	}
 
 	if _, err := p.Run(); err != nil {

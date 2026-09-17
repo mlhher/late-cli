@@ -13,6 +13,7 @@ type SubagentConfig struct {
 	Description  string   `json:"description"`
 	PromptFile   string   `json:"prompt_file"`
 	AllowedTools []string `json:"allowed_tools"`
+	Async        bool     `json:"async,omitempty"`
 }
 
 func GetSubagents() []SubagentConfig {

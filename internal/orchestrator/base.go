@@ -54,7 +54,7 @@ func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.
 		middlewares: middlewares,
 		eventCh:     make(chan common.Event, 100),
 		ctx:         context.Background(),
-		stopCh:      make(chan struct{}),
+		stopCh:      make(chan struct{}, 1),
 		maxTurns:    maxTurns,
 		childSeq:    childSeq,
 	}
@@ -392,10 +392,16 @@ func (o *BaseOrchestrator) Events() <-chan common.Event {
 
 func (o *BaseOrchestrator) Cancel() {
 	o.mu.Lock()
-	defer o.mu.Unlock()
-
 	if o.cancel != nil {
 		o.cancel()
+	}
+
+	children := make([]common.Orchestrator, len(o.children))
+	copy(children, o.children)
+	o.mu.Unlock()
+
+	for _, child := range children {
+		child.Cancel()
 	}
 
 	select {
@@ -506,6 +512,9 @@ func (o *BaseOrchestrator) NextChildID(agentType string) (string, error) {
 func (o *BaseOrchestrator) AddChild(child common.Orchestrator) {
 	o.mu.Lock()
 	o.children = append(o.children, child)
+	if bChild, ok := child.(*BaseOrchestrator); ok {
+		bChild.parent = o
+	}
 	o.mu.Unlock()
 
 	o.eventCh <- common.ChildAddedEvent{

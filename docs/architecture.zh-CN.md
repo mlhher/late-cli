@@ -27,7 +27,7 @@ Late 将规划与执行分离：**主编排器（Lead Orchestrator）**仅保留
   - 不能直接编辑文件（在物理层面上未注册 `write_file` 和 `target_edit` 工具）。
   - 拦截破坏性的 shell 操作（包括输出重定向 `>`）。
   - 被要求不得直接进行大范围的代码库扫描；将探索发现的任务委托给研究员（Researcher）。
-- **子智能体调度：** 通过 `spawn_subagent` 将原子化的实现步骤分发给专门的工作智能体。
+- **子智能体调度：** 通过 `spawn_subagent`（顺序执行）或 `batch_spawn_subagents`（并发批量执行）将原子化的实现步骤分发给专门的工作智能体。
 
 ### 研究员 (Researcher)
 - **角色：** 只读的代码库探索者和代码上下文研究员。
@@ -51,7 +51,7 @@ Late 将规划与执行分离：**主编排器（Lead Orchestrator）**仅保留
 2. **上下文探索（可选）：** 对于非简单的任务，编排器会调用 `spawn_subagent`（类型：`researcher`）来检查代码库并报告约束条件、相关文件和代码模式。
 3. **计划制定：** 编排器综合调查结果，并通过 `write_implementation_plan` 将正式的计划写入 `./implementation_plan.md`。
 4. **里程碑追踪：** 编排器使用 `create_todos` 注册原子化的阶段任务。
-5. **工作委托：** （获得批准后）编排器调用 `spawn_subagent`（类型：`coder`）来执行单个原子步骤。
+5. **工作委托：** （获得批准后）编排器调用 `spawn_subagent`（类型：`coder`）来执行单个原子步骤，或使用 `batch_spawn_subagents` 并发执行互不依赖的独立步骤。
 6. **隔离执行：** 程序员在私有上下文中检查指定文件、应用修改并运行验证命令。
 7. **结构化交接：** 程序员返回所做更改、测试结果或阻塞问题的结构化摘要。其临时上下文随后被销毁。
 8. **验证与推进：** 编排器评估结果，通过 `finish_todo` 将任务标记为完成，然后继续下一步。
@@ -74,7 +74,7 @@ Late 将规划与执行分离：**主编排器（Lead Orchestrator）**仅保留
 
 - **物理工具命名空间裁剪：**
   - 写入工具（`write_file`、`target_edit`）不会注册在编排器的工具注册表中。
-  - 在构建子智能体注册表时，规划和委托工具（`spawn_subagent`、`write_implementation_plan`、`create_todos`、`list_todos`、`finish_todo`）会被省略。
+  - 在构建子智能体注册表时，规划和委托工具（`spawn_subagent`、`batch_spawn_subagents`、`write_implementation_plan`、`create_todos`、`list_todos`、`finish_todo`）会被省略。
 - **Shell 级别的强制执行：**
   - Shell 命令会经过 AST 和策略引擎的处理。阻止 Shell 输出重定向（`>`），以防止编排器通过 shell 脚本变相写入文件。
   - 搜索命令（`grep`、`find`、`rg`）会被拦截，并指引使用能够感知 `.gitignore` 的原生搜索工具。

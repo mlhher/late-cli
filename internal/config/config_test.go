@@ -701,3 +701,61 @@ func TestSaveConfigAtomicallyReplacesFile(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveMaxAsyncSubagents(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *Config
+		flagVal int
+		env     map[string]string
+		want    int
+	}{
+		{
+			name:    "flag takes highest priority",
+			cfg:     &Config{MaxAsyncSubagents: 4},
+			flagVal: 6,
+			env:     map[string]string{"LATE_MAX_ASYNC_SUBAGENTS": "8"},
+			want:    6,
+		},
+		{
+			name:    "env takes priority over config when flag is 0",
+			cfg:     &Config{MaxAsyncSubagents: 4},
+			flagVal: 0,
+			env:     map[string]string{"LATE_MAX_ASYNC_SUBAGENTS": "8"},
+			want:    8,
+		},
+		{
+			name:    "config used when flag is 0 and env is empty",
+			cfg:     &Config{MaxAsyncSubagents: 4},
+			flagVal: 0,
+			env:     map[string]string{},
+			want:    4,
+		},
+		{
+			name:    "default used when nothing is set",
+			cfg:     nil,
+			flagVal: 0,
+			env:     map[string]string{},
+			want:    DefaultMaxAsyncSubagents,
+		},
+		{
+			name:    "invalid env value falls back to config",
+			cfg:     &Config{MaxAsyncSubagents: 5},
+			flagVal: 0,
+			env:     map[string]string{"LATE_MAX_ASYNC_SUBAGENTS": "not-a-number"},
+			want:    5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResolveMaxAsyncSubagentsWithEnv(tt.cfg, tt.flagVal, func(key string) (string, bool) {
+				val, ok := tt.env[key]
+				return val, ok
+			})
+			if got != tt.want {
+				t.Fatalf("ResolveMaxAsyncSubagentsWithEnv() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
