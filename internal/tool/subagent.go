@@ -18,7 +18,7 @@ type SpawnSubagentTool struct {
 
 func (t SpawnSubagentTool) Name() string { return "spawn_subagent" }
 func (t SpawnSubagentTool) Description() string {
-	return "Spawn a specialist subagent to perform a complex task. Use this when you need to isolate a task, such as researching a topic or writing a specific module."
+	return "Spawn a specialist subagent to perform a complex task. Use this when you need to isolate a task, such as researching a topic or writing a specific module. Note that this spawns only one subagent synchronously. To spawn multiple subagents at once use 'batch_spawn_subagents' instead."
 }
 func (t SpawnSubagentTool) Parameters() json.RawMessage {
 	configs := assets.GetSubagents()
