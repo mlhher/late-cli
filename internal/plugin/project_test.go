@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 )
+
 // writeBarePlugin creates a minimal plugin directory with a native-Late
 // package.json at the given path and returns the directory. It is
 // intentionally a different name from the rich
@@ -463,10 +464,10 @@ func TestHasProjectDir_Methods(t *testing.T) {
 
 func TestParseProjectFlag(t *testing.T) {
 	tests := []struct {
-		name      string
-		args      []string
-		wantProj  bool
-		wantRest  string
+		name     string
+		args     []string
+		wantProj bool
+		wantRest string
 	}{
 		{
 			name:     "no flag, has source",
@@ -530,7 +531,6 @@ func TestParseProjectFlag(t *testing.T) {
 		})
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // PluginPathInDir
@@ -686,22 +686,12 @@ func writeSkillPlugin(t *testing.T, dir, pluginName, skillName string) {
 func TestHandlePluginRemove_PurgesStaleSkillSymlink(t *testing.T) {
 	globalDir := t.TempDir()
 	sourceDir := t.TempDir()
-	xdgRoot := t.TempDir()
+	_, skillsDir := sandboxUserConfig(t)
 
-	// Sandbox `lateSkillsDir()` so the test cannot damage the user's real
-	// `~/.config/late/skills` if our internal invariants drift. Go's
-	// `os.UserConfigDir()` honors `XDG_CONFIG_HOME` on every Unix-like
-	// target (Linux, macOS, BSD) per the freedesktop spec; pinning only
-	// this variable is sufficient and avoids sideways effects on
-	// `os.UserHomeDir()`/`isSuspiciousPluginPath` that overriding HOME
-	// would introduce.
-	t.Setenv("XDG_CONFIG_HOME", xdgRoot)
-	skillsDir := filepath.Join(xdgRoot, "late", "skills")
-	if err := os.MkdirAll(skillsDir, 0755); err != nil {
-		t.Fatalf("mkdir skills dir: %v", err)
-	}
+	// Guard: lateSkillsDir() must resolve inside the sandbox — this is the
+	// invariant that keeps the test off the developer's real user config.
 	if resolved, _ := lateSkillsDir(); resolved != skillsDir {
-		t.Fatalf("lateSkillsDir() = %q, want %q (XDG/HOME override misconfigured)", resolved, skillsDir)
+		t.Fatalf("lateSkillsDir() = %q, want %q (user-config sandbox ineffective)", resolved, skillsDir)
 	}
 
 	writeSkillPlugin(t, sourceDir, "skills-plugin", "my-skill")
@@ -741,14 +731,7 @@ func TestHandlePluginRemove_PreservesSiblingSkillSymlink(t *testing.T) {
 	globalDir := t.TempDir()
 	srcA := t.TempDir()
 	srcB := t.TempDir()
-	xdgRoot := t.TempDir()
-
-	// Same sandboxing strategy as the single-plugin self-clean test.
-	t.Setenv("XDG_CONFIG_HOME", xdgRoot)
-	skillsDir := filepath.Join(xdgRoot, "late", "skills")
-	if err := os.MkdirAll(skillsDir, 0755); err != nil {
-		t.Fatalf("mkdir skills dir: %v", err)
-	}
+	_, skillsDir := sandboxUserConfig(t)
 
 	// Two distinct plugins, intentionally both declaring a skill with the
 	// same basename to maximize the chance a bogus "name only" keep key

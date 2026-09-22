@@ -417,5 +417,3 @@ func TestFindFilesTool_GlobstarIntegration(t *testing.T) {
 		t.Errorf("expected no-match with recursive hint, got:\n%s", resZzz)
 	}
 }
-
-

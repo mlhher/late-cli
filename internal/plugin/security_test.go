@@ -107,7 +107,6 @@ func TestConcurrentSetProjectDirAndRead(t *testing.T) {
 	wg.Wait()
 }
 
-
 // ---------------------------------------------------------------------------
 // Installer (#6)
 // ---------------------------------------------------------------------------
@@ -501,11 +500,12 @@ func TestSavePluginMeta_PersistsEnabledField(t *testing.T) {
 // global plugin state override file instead (see state.go), and
 // LoadPluginMeta applies it back on the next discovery.
 func TestSavePluginMeta_LocalPluginPersistsDisabledAcrossReload(t *testing.T) {
-	xdgRoot := t.TempDir()
-	// Sandbox pluginStatePath() (~/.config/late/plugins.json) so this test
-	// cannot touch the real user's config — see the identical rationale in
-	// TestHandlePluginRemove_PurgesStaleSkillSymlink.
-	t.Setenv("XDG_CONFIG_HOME", xdgRoot)
+	// Sandbox pluginStatePath() (~/.config/late/plugins.json on Linux,
+	// ~/Library/Application Support/late on macOS) so this test cannot
+	// touch the real user's config: os.UserConfigDir() ignores
+	// XDG_CONFIG_HOME on darwin, so sandboxing requires overriding HOME
+	// too (see sandboxUserConfig).
+	sandboxUserConfig(t)
 
 	globalDir := t.TempDir()
 	sourceDir := t.TempDir()
@@ -559,8 +559,9 @@ func TestSavePluginMeta_LocalPluginPersistsDisabledAcrossReload(t *testing.T) {
 // clear its override entry, so relinking a different plugin under the
 // same name later doesn't silently inherit a stale disabled state.
 func TestRemovePlugin_ClearsLocalDisabledOverride(t *testing.T) {
-	xdgRoot := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", xdgRoot)
+	// Sandboxed user config so the disabled-override state file is a
+	// throwaway (see sandboxUserConfig for the darwin/XDG rationale).
+	sandboxUserConfig(t)
 
 	globalDir := t.TempDir()
 	sourceDir := t.TempDir()
@@ -619,5 +620,3 @@ func mkPlugin(t *testing.T, dir, name string) {
 		t.Fatalf("write: %v", err)
 	}
 }
-
-

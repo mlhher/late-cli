@@ -803,4 +803,3 @@ func TestBashTool_WrapError(t *testing.T) {
 		t.Errorf("Expected wrapped non-cd error to match %q, got %q", expectedOtherStr, wrappedOtherErr.Error())
 	}
 }
-

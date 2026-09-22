@@ -1,9 +1,11 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -699,6 +701,141 @@ func TestSaveConfigAtomicallyReplacesFile(t *testing.T) {
 		if filepath.Ext(entry.Name()) == ".tmp" {
 			t.Fatalf("temporary config was not cleaned up: %s", entry.Name())
 		}
+	}
+}
+
+func TestResolvePermissionMode(t *testing.T) {
+	tests := []struct {
+		name             string
+		cfg              *Config
+		askFlag          bool
+		unsupervisedFlag bool
+		wantMode         string
+		// wantWarning nil: warning must be empty; non-nil: warning must
+		// contain each substring.
+		wantWarning     []string
+		wantErr         bool
+		wantErrContains string
+	}{
+		{
+			name:     "no flags, empty config, nil cfg",
+			cfg:      nil,
+			wantMode: PermissionModeAskForUserApproval,
+		},
+		{
+			name:     "no flags, empty config value",
+			cfg:      &Config{PermissionMode: ""},
+			wantMode: PermissionModeAskForUserApproval,
+		},
+		{
+			name:     "ask flag alone",
+			askFlag:  true,
+			wantMode: PermissionModeAskForUserApproval,
+		},
+		{
+			name:             "unsupervised flag alone",
+			unsupervisedFlag: true,
+			wantMode:         PermissionModeUnsupervised,
+		},
+		{
+			name:     "ask flag overrides unsupervised config",
+			cfg:      &Config{PermissionMode: PermissionModeUnsupervised},
+			askFlag:  true,
+			wantMode: PermissionModeAskForUserApproval,
+		},
+		{
+			name:             "unsupervised flag overrides ask config",
+			cfg:              &Config{PermissionMode: PermissionModeAskForUserApproval},
+			unsupervisedFlag: true,
+			wantMode:         PermissionModeUnsupervised,
+		},
+		{
+			name:     "config value: ask-for-user-approval respected",
+			cfg:      &Config{PermissionMode: PermissionModeAskForUserApproval},
+			wantMode: PermissionModeAskForUserApproval,
+		},
+		{
+			name:     "config value: i-promise-i-have-backups-and-will-not-file-issues respected",
+			cfg:      &Config{PermissionMode: PermissionModeUnsupervised},
+			wantMode: PermissionModeUnsupervised,
+		},
+		{
+			name:        "invalid config value falls back to default with warning",
+			cfg:         &Config{PermissionMode: "yolo"},
+			wantMode:    PermissionModeAskForUserApproval,
+			wantWarning: []string{"invalid", "yolo"},
+		},
+		{
+			name:             "two flags set is an error",
+			askFlag:          true,
+			unsupervisedFlag: true,
+			wantErr:          true,
+			wantErrContains:  "mutually exclusive",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mode, warning, err := ResolvePermissionMode(tt.cfg, tt.askFlag, tt.unsupervisedFlag)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("ResolvePermissionMode() expected an error, got nil")
+				}
+				if tt.wantErrContains != "" && !strings.Contains(err.Error(), tt.wantErrContains) {
+					t.Fatalf("ResolvePermissionMode() error = %q, want it to contain %q", err.Error(), tt.wantErrContains)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolvePermissionMode() error = %v, want nil", err)
+			}
+			if mode != tt.wantMode {
+				t.Fatalf("ResolvePermissionMode() mode = %q, want %q", mode, tt.wantMode)
+			}
+			if len(tt.wantWarning) == 0 {
+				if warning != "" {
+					t.Fatalf("ResolvePermissionMode() warning = %q, want empty", warning)
+				}
+				return
+			}
+			if warning == "" {
+				t.Fatal("ResolvePermissionMode() warning is empty, want a warning")
+			}
+			for _, substring := range tt.wantWarning {
+				if !strings.Contains(warning, substring) {
+					t.Fatalf("ResolvePermissionMode() warning = %q, want it to contain %q", warning, substring)
+				}
+			}
+		})
+	}
+}
+
+func TestConfig_PermissionModeJSONRoundTrip(t *testing.T) {
+	original := Config{PermissionMode: PermissionModeUnsupervised}
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var decoded Config
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if decoded.PermissionMode != PermissionModeUnsupervised {
+		t.Fatalf("PermissionMode after round trip = %q, want %q", decoded.PermissionMode, PermissionModeUnsupervised)
+	}
+
+	emptyData, err := json.Marshal(Config{})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(emptyData, &raw); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if _, ok := raw["permission-mode"]; ok {
+		t.Fatalf("empty config should not marshal a permission-mode key, got %s", emptyData)
 	}
 }
 

@@ -322,7 +322,12 @@ func TestHandleCommand_ConcurrentWithWriters(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(20 * time.Second):
+	// 60s watchdog: 3x the 20s budget that tripped once under heavy machine
+	// load (back-to-back -race suites) even though the code under test was
+	// not deadlocked. On a real nested-RLock regression the loop never
+	// completes, so the watchdog still fails the test instead of hanging
+	// the suite. Iterations and assertions unchanged.
+	case <-time.After(60 * time.Second):
 		t.Fatal("HandleCommand deadlocked against queued writers (nested RLock?)")
 	}
 }

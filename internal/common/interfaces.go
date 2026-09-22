@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"late/internal/client"
+	"time"
 )
 
 // ToolRunner defines the functional signature for executing a single tool call.
@@ -91,6 +92,27 @@ type MessageQueuedEvent struct {
 
 func (e MessageQueuedEvent) OrchestratorID() string { return e.ID }
 
+// RetryEvent reports that an LLM stream attempt failed and will be
+// automatically retried after Delay. Emitted by the executor retry loop.
+type RetryEvent struct {
+	ID          string
+	Attempt     int           // 1-based attempt number that just failed
+	MaxAttempts int           // max retries configured (not counting the initial attempt)
+	Delay       time.Duration // backoff before the next attempt
+	Err         error         // the underlying stream error
+}
+
+func (e RetryEvent) OrchestratorID() string { return e.ID }
+
+// RecoveryEvent is sent when a stream attempt that previously failed and was
+// being retried finally succeeds — i.e. the retry actually produced a
+// response. Emitted by the executor's retry loop exactly once per recovery.
+type RecoveryEvent struct {
+	ID string
+}
+
+func (e RecoveryEvent) OrchestratorID() string { return e.ID }
+
 // PromptRequest defines a generic requirement for user input.
 type PromptRequest struct {
 	ID          string
@@ -108,10 +130,12 @@ type InputProvider interface {
 type contextKey string
 
 const (
-	InputProviderKey    contextKey = "input_provider"
-	OrchestratorIDKey   contextKey = "orchestrator_id"
-	SkipConfirmationKey contextKey = "skip_confirmation"
-	ToolApprovalKey     contextKey = "tool_approval"
+	InputProviderKey     contextKey = "input_provider"
+	OrchestratorIDKey    contextKey = "orchestrator_id"
+	SkipConfirmationKey  contextKey = "skip_confirmation"
+	ToolApprovalKey      contextKey = "tool_approval"
+	MaxStreamRetriesKey  contextKey = "max_stream_retries"
+	MaxBadBodyRetriesKey contextKey = "max_bad_body_retries"
 )
 
 // MainAgentID is the orchestrator ID of the root/main agent.

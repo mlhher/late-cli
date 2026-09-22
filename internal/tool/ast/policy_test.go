@@ -61,11 +61,11 @@ func TestPolicyEngine_Decide_SoftSignals(t *testing.T) {
 func TestPolicyEngine_Decide_DeletionOverridesAllowlist(t *testing.T) {
 	pe := &PolicyEngine{
 		AllowedCommands: map[string]map[string]bool{
-			"rm": {"-rf": true},
+			"rm":          {"-rf": true},
 			"remove-item": {"-recurse": true},
 		},
 	}
-	
+
 	commands := []string{"rm", "rmdir", "unlink", "remove-item", "del", "erase", "rd", "ri"}
 	for _, cmd := range commands {
 		t.Run(cmd, func(t *testing.T) {
@@ -76,7 +76,7 @@ func TestPolicyEngine_Decide_DeletionOverridesAllowlist(t *testing.T) {
 			} else if cmd == "remove-item" {
 				ir.CommandArgs = map[string][]string{"remove-item": {"-recurse"}}
 			}
-			
+
 			d := pe.Decide(ir)
 			if !d.NeedsConfirmation {
 				t.Errorf("expected NeedsConfirmation for %v even if allowlisted", cmd)

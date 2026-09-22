@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"late/internal/client"
 	"late/internal/common"
@@ -271,10 +272,50 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 				Usage:            accCopy.Usage,
 			}
 		},
+		func(ev common.RetryEvent) {
+			// The retry starts a fresh stream; reset the shared accumulator so
+			// the failed attempt's partial deltas do not prefix the retry's
+			// output in the TUI (the executor's local accumulator is already
+			// per-attempt; this one is per-turn).
+			o.mu.Lock()
+			o.acc.Reset()
+			o.mu.Unlock()
+
+			ev.ID = o.id // Route to this agent's AppState even if ctx lost the ID
+			// Non-blocking emit: a slow or stalled TUI must never delay the
+			// retry backoff loop. The buffered(100) eventCh may be full if the
+			// consumer lags; dropping a retry notice is acceptable, blocking
+			// the agent is not.
+			select {
+			case o.eventCh <- ev:
+			default:
+			}
+		},
+		func() {
+			// A retried attempt produced a response: emit the dedicated
+			// recovery event so the UI can toast immediately instead of
+			// guessing on the next turn's thinking event. Non-blocking:
+			// a dropped recovery notice is acceptable, blocking the
+			// agent is not.
+			select {
+			case o.eventCh <- common.RecoveryEvent{ID: o.id}:
+			default:
+			}
+		},
 		o.middlewares,
 	)
 
 	if err != nil {
+		// Canceled runs follow the stop path, not the error path (no error
+		// box): a stop can surface here as the underlying stream error, e.g.
+		// when the retry backoff sleep is interrupted by ctx.Done(). We check
+		// ctx.Err() instead of IsStopRequested() because IsStopRequested()
+		// consumes the one-shot stopCh token. Emitting "closed" mirrors how a
+		// mid-stream cancel (nil error) is routed below.
+		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+			o.eventCh <- common.StatusEvent{ID: o.id, Status: "closed"}
+			return res, err
+		}
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: err}
 	} else {
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "closed"}
@@ -344,6 +385,36 @@ func (o *BaseOrchestrator) run() {
 					Usage:            accCopy.Usage,
 				}
 			},
+			func(ev common.RetryEvent) {
+				// The retry starts a fresh stream; reset the shared accumulator
+				// so the failed attempt's partial deltas do not prefix the
+				// retry's output in the TUI (the executor's local accumulator
+				// is already per-attempt; this one is per-turn).
+				o.mu.Lock()
+				o.acc.Reset()
+				o.mu.Unlock()
+
+				ev.ID = o.id // Route to this agent's AppState even if ctx lost the ID
+				// Non-blocking emit: a slow or stalled TUI must never delay the
+				// retry backoff loop. The buffered(100) eventCh may be full if
+				// the consumer lags; dropping a retry notice is acceptable,
+				// blocking the agent is not.
+				select {
+				case o.eventCh <- ev:
+				default:
+				}
+			},
+			func() {
+				// A retried attempt produced a response: emit the dedicated
+				// recovery event so the UI can toast immediately instead of
+				// guessing on the next turn's thinking event. Non-blocking:
+				// a dropped recovery notice is acceptable, blocking the
+				// agent is not.
+				select {
+				case o.eventCh <- common.RecoveryEvent{ID: o.id}:
+				default:
+				}
+			},
 			o.middlewares,
 		)
 
@@ -357,6 +428,20 @@ func (o *BaseOrchestrator) run() {
 		o.mu.Unlock()
 
 		if err != nil {
+			// Canceled runs follow the stop path, not the error path (no error
+			// box): a stop can surface here as the underlying stream error,
+			// e.g. when the retry backoff sleep is interrupted by ctx.Done().
+			// We check ctx.Err() instead of IsStopRequested() because
+			// IsStopRequested() consumes the one-shot stopCh token that the
+			// StopRequestedEvent emission at the end of run() depends on.
+			// Emitting "idle" mirrors how a mid-stream cancel (nil error) is
+			// routed, so the TUI resolves out of its "Stopping..." state; if
+			// the stopCh token landed, the StopRequestedEvent below still
+			// turns it into "Stopped".
+			if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+				o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"}
+				break
+			}
 			// If the error is about unsupported image input, roll back the user message
 			// so it doesn't poison the context for future requests.
 			errStr := err.Error()
@@ -368,6 +453,26 @@ func (o *BaseOrchestrator) run() {
 					o.sess.History = o.sess.History[:len(o.sess.History)-1]
 				}
 				o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: fmt.Errorf("image_unsupported")}
+			} else if isBadRequestStatusError(err) {
+				// The API rejected the request body even after the executor's bad-body
+				// retries. Roll the turn back so the session returns to its pre-submit
+				// state: the user can edit and resend instead of every retry rebuilding
+				// the same rejected request. Persisted via PopLastUserMessage (unlike
+				// the image rollback above, this must survive a restart).
+				var se *client.StatusError
+				if errors.As(err, &se) {
+					rolled, saveErr := o.sess.PopLastUserMessage()
+					msg := fmt.Sprintf("API rejected the request (400) after retries: %s — ", se.Body)
+					switch {
+					case rolled && saveErr == nil:
+						msg += "your last message was rolled back; edit it and resend"
+					case rolled:
+						msg += "your last message was rolled back in memory, but saving the rollback to disk failed"
+					default:
+						msg += "nothing was rolled back (the turn had no unanswered user message); use /rewind if history needs repair"
+					}
+					o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: errors.New(msg)}
+				}
 			} else {
 				o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: err}
 			}
@@ -384,6 +489,13 @@ func (o *BaseOrchestrator) run() {
 	if o.IsStopRequested() {
 		o.eventCh <- common.StopRequestedEvent{ID: o.id}
 	}
+}
+
+// isBadRequestStatusError reports whether err carries an HTTP 400 from the
+// LLM API, even through the executor's "stream error: ..." wrapping.
+func isBadRequestStatusError(err error) bool {
+	var se *client.StatusError
+	return errors.As(err, &se) && se.StatusCode == http.StatusBadRequest
 }
 
 func (o *BaseOrchestrator) Events() <-chan common.Event {

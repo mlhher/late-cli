@@ -88,6 +88,14 @@ type RenderBlock struct {
 	EndLine      int
 }
 
+// Retry failure-class verbs, stored in AppState.RetryVerb by the
+// common.RetryEvent branch (the same verb the retry status line computes) so
+// the recovery toast can match the class of the failure that was retried.
+const (
+	retryVerbConnectionLost = "connection lost"
+	retryVerbRejectedByAPI  = "request rejected by the API"
+)
+
 // RewindEntry represents a user message that can be rewound to.
 type RewindEntry struct {
 	Index   int
@@ -134,6 +142,14 @@ type AppState struct {
 
 	ContextWarningShown bool // Whether the preflight context warning has been shown for the current input
 	Error               error
+
+	// RetryVerb records the failure class of the retry an agent is in:
+	// retryVerbConnectionLost ("connection lost") for infra failures or
+	// retryVerbRejectedByAPI ("request rejected by the API") for HTTP 400s.
+	// It is set by common.RetryEvent and cleared by the next "thinking"
+	// status as a silent safety net; recovery is announced separately by
+	// the dedicated RecoveryEvent. Empty means the agent is not retrying.
+	RetryVerb string
 }
 
 type Model struct {

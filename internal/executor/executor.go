@@ -3,8 +3,10 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"late/internal/client"
 	"late/internal/common"
@@ -232,6 +234,9 @@ func ConsumeStream(
 // RunLoop handles the core, blocking event loop for autonomous agents.
 // It forces the sequence: inference stream -> verifiable accumulation -> history commit -> safe tool execution.
 // If the deterministic tool extraction yields zero calls, the loop securely collapses and returns execution control.
+// onRetry fires per failed stream attempt that will be retried; onRecover
+// fires exactly once per turn whose retries ended in a successful stream
+// (i.e. the retry actually produced a response).
 
 func RunLoop(
 	ctx context.Context,
@@ -241,19 +246,146 @@ func RunLoop(
 	onStartTurn func(),
 	onEndTurn func(),
 	onStreamChunk func(common.StreamResult),
+	onRetry func(event common.RetryEvent),
+	onRecover func(),
 	middlewares []common.ToolMiddleware,
 ) (string, error) {
 	var lastContent string
+
+	// Retry budgets for failing LLM stream calls, resolved once per run.
+	// Two independent tiers: infrastructure failures (transport errors,
+	// 408/429/5xx) draw from the classic maxRetries budget, while HTTP 400
+	// bad-body rejections draw from the much smaller, dedicated badBodyBudget.
+	maxRetries := maxStreamRetriesFromContext(ctx)
+	badBodyBudget := maxBadBodyRetriesFromContext(ctx)
+
+	// A global disable (--max-stream-retries=0 / negative, or the ctx key)
+	// must silence BOTH tiers: the bad-body tier has its own default
+	// budget, which would otherwise keep retrying HTTP 400s despite the
+	// advertised "retries disabled" contract. An explicit bad-body budget
+	// still applies whenever the global budget is positive.
+	if maxRetries <= 0 {
+		badBodyBudget = 0
+	}
 
 	for i := 0; maxTurns <= 0 || i < maxTurns; i++ {
 		if onStartTurn != nil {
 			onStartTurn()
 		}
 
-		streamCh, errCh := sess.StartStream(ctx, extraBody)
-		acc, err := ConsumeStream(ctx, streamCh, errCh, onStreamChunk)
-		if err != nil {
-			return "", err
+		// Inner attempt loop around the stream call only: retries never
+		// consume a turn (the turn counter above is untouched). Each attempt
+		// starts a fresh stream and ConsumeStream builds a fresh accumulator;
+		// a failed attempt commits nothing to history. Failures tier into two
+		// independent retry budgets: infrastructure failures (transport
+		// errors, 408/429/5xx) share the classic maxRetries budget, while
+		// HTTP 400 body-parse rejections get their own small dedicated
+		// badBodyBudget, because strict OpenAI-compatible gateways often fail
+		// transiently while reading the request body. The two budgets use
+		// independent counters, so 400 retries never consume infrastructure
+		// retry budget and vice versa.
+		var acc *StreamAccumulator
+		var err error
+		infraAttempts, badBodyAttempts := 0, 0
+		for {
+			// Pre-attempt guard (retries only): if the context died while we
+			// were waiting in a previous backoff (both select cases below can
+			// be ready and the timer may win), do not call StartStream with a
+			// dead ctx. Handle it as a cancel, not a new attempt.
+			if infraAttempts+badBodyAttempts > 0 && ctx.Err() != nil {
+				return "", err
+			}
+
+			streamCh, errCh := sess.StartStream(ctx, extraBody)
+			acc, err = ConsumeStream(ctx, streamCh, errCh, onStreamChunk)
+			if err == nil {
+				break
+			}
+
+			// Terminal per tier: budget exhausted for this failure's class or
+			// a non-retryable failure. Propagates byte-identically to the
+			// pre-retry behavior.
+			//
+			// Server-requested Retry-After: both retry tiers can carry a
+			// *client.StatusError (429/408/5xx in the infra tier, 400 in the
+			// bad-body tier), so the error chain is inspected once here and
+			// the requested delay — 0 when absent or invalid — is combined
+			// with the local jittered backoff below. effectiveRetryDelay
+			// guarantees the wait is never shorter than the server asked
+			// (capped at retryAfterCeiling) and the existing timer select
+			// keeps it cancelable.
+			var retryAfter time.Duration
+			var se *client.StatusError
+			if errors.As(err, &se) {
+				retryAfter = se.RetryAfter
+			}
+			var delay time.Duration
+			switch classifyStreamError(err) {
+			case retryClassNone:
+				// Non-retryable failure, same as before.
+				return "", err
+			case retryClassInfra:
+				if infraAttempts >= maxRetries {
+					return "", err
+				}
+				infraAttempts++
+				delay = effectiveRetryDelay(streamRetryDelay(infraAttempts), retryAfter)
+				if onRetry != nil {
+					onRetry(common.RetryEvent{
+						ID:          common.GetOrchestratorID(ctx),
+						Attempt:     infraAttempts,
+						MaxAttempts: maxRetries,
+						// Effective delay: max(local jittered backoff,
+						// server-requested Retry-After, capped).
+						Delay: delay,
+						Err:   err,
+					})
+				}
+			case retryClassBadBody:
+				if badBodyAttempts >= badBodyBudget {
+					return "", err
+				}
+				badBodyAttempts++
+				delay = effectiveRetryDelay(streamRetryDelay(badBodyAttempts), retryAfter)
+				if onRetry != nil {
+					onRetry(common.RetryEvent{
+						ID:          common.GetOrchestratorID(ctx),
+						Attempt:     badBodyAttempts,
+						MaxAttempts: badBodyBudget,
+						// Effective delay, same combination as the infra tier.
+						Delay: delay,
+						Err:   err,
+					})
+				}
+			}
+
+			timer := time.NewTimer(delay)
+			select {
+			case <-timer.C:
+				// Backoff elapsed: loop around for a fresh StartStream and a
+				// fresh accumulator via ConsumeStream.
+			case <-ctx.Done():
+				timer.Stop()
+				// CANCEL SEMANTICS: a stop during the backoff sleep must land
+				// on the same path as a mid-stream cancel (TUI "Stopped", no
+				// error box). Returning the underlying stream error is safe
+				// because BaseOrchestrator's error branch checks ctx.Err()
+				// and routes canceled runs to the stop path instead of
+				// emitting StatusEvent{error}.
+				return "", err
+			}
+		}
+
+		// The attempt loop above exits only via break-on-success or an early
+		// return, so reaching here means an attempt finally produced a
+		// response. If at least one retry happened in this turn, signal
+		// recovery exactly once: the turn-start callback fired before the
+		// retries, so no thinking event will announce it.
+		if (infraAttempts+badBodyAttempts) > 0 && onRecover != nil {
+			// The retried attempt actually produced a response: signal
+			// recovery now (the turn-start callback fired before the
+			// retries, so no thinking event will announce it).
+			onRecover()
 		}
 
 		if acc.FinishReason == "length" {

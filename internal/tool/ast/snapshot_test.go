@@ -20,7 +20,7 @@ var unixCorpus = []snapshotEntry{
 	{"ls -rt", false, false},
 	{"date", false, false},
 	{"echo 'hello world'", false, false},
-	{"echo $HOME", false, false},         // expansion
+	{"echo $HOME", false, false},        // expansion
 	{"cd /tmp", true, true},             // cd blocked
 	{"ls > out.txt", true, true},        // redirect blocked
 	{"echo foo >> bar.txt", true, true}, // redirect blocked

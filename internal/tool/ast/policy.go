@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 )
+
 // tier2Commands is the set of commands that have mandatory subcommands.
 // The AST adapters should emit compound command keys (e.g. "git log", "go mod")
 // for these commands to maintain fine-grained allow-list granularity.

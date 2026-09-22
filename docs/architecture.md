@@ -119,9 +119,28 @@ Unlike systems where subagent delegation is merely prompt-recommended or optiona
 
 ---
 
+## Stream Retry Policy
+
+Late wraps each LLM stream call in two independent retry tiers, each with its own budget and counter:
+
+- **Infrastructure tier:** Covers transport errors (connection refused/reset, timeouts, mid-body disconnects) and HTTP 408/429/5xx. Budgeted via `-max-stream-retries` / `LATE_MAX_STREAM_RETRIES` (default: 10; `0` or a negative value disables stream retrying). Precedence is CLI flag > environment variable > built-in default.
+- **Mid-stream interruptions:** Mid-body transport failures arrive after the server has already accepted the request (HTTP 200) — HTTP/2 RST_STREAM / INTERNAL_ERROR (classic error text: `stream error: stream ID N; INTERNAL_ERROR; received from peer`), GOAWAY, connection resets, and truncated bodies — so the client wraps them in a typed `StreamInterruptedError`, which is retried from the infrastructure budget. The single exception is an SSE line exceeding the 1 MB scanner cap (`bufio.ErrTooLong`), which fails fast because retrying cannot shrink the line.
+- **Bad-body tier:** Covers HTTP 400 only, with a dedicated small budget (3 attempts, `DefaultMaxBadBodyRetries`; not yet flag-configurable). Strict OpenAI-compatible gateways (e.g. z.ai/GLM) frequently fail transiently while reading the request body ("read body failed"), which a few quick retries resolve; genuinely malformed requests still terminate after this small bounded budget. A global disable (`-max-stream-retries 0` or negative) silences both tiers — including this one — so a globally disabled run never retries HTTP 400s either.
+- **Backoff:** Exponential — 500 ms base doubling per attempt, capped at 30 s, with full jitter (uniform over `[0, cap]`). A server `Retry-After` header is honored as a backoff floor — the combined wait is never shorter than the server requested — capped at 5 minutes so a hostile or buggy server cannot hang an interactive session; the wait remains cancelable throughout.
+- **Fail-fast errors:** Errors that retrying cannot help are never retried: TLS certificate/trust failures (untrusted authority, hostname mismatch, invalid or expired chains), non-TLS bytes on a TLS connection, unsupported URL schemes, HTTP-on-HTTPS, context cancellation, and permanent client errors (401/403/404). Unknown errors also fail fast, exactly like the pre-retry behavior.
+- **Independent counters:** 400 retries never consume the infrastructure budget, and vice versa.
+- **Retry status and recovery:** While an attempt is being retried, the status line reads `retry N/M after Xs backoff` — a statement of the backoff applied before the next attempt, rendered once and never updated, so it does not imply a live countdown. A dedicated `RecoveryEvent` announces recovery the moment a retried attempt succeeds — exactly once per retried turn — instead of waiting for the next turn's "thinking" status.
+
+When retries are exhausted, two guarantees keep the session usable:
+
+- **History sanitization:** Per request, histories interrupted mid-tool-run are repaired — dangling assistant `tool_calls` receive synthesized tool results. Only the outgoing request copy is repaired; the saved history is untouched.
+- **Terminal 400 rollback:** If the API still rejects the request body after bad-body retries, the last user message is rolled back, with the rollback persisted in all cases — including when the rollback empties the history (the stale history file is removed from disk; the `.meta.json` sidecar is kept so `--continue` scoping still finds the session) — returning the session to its pre-submit state instead of leaving it blocked.
+
+---
+
 ## Persistence
 
-- **Root Session History:** Orchestrator conversation history is persisted to disk under `<sessionsDir>/<sessionID>.json` alongside a `.meta.json` sidecar for state resumption.
+- **Root Session History:** Orchestrator conversation history is persisted to disk under `<sessionsDir>/<sessionID>.json` alongside a `.meta.json` sidecar for state resumption. The sidecar records the project directory where the session was started (`working_dir`), which `--continue-project` uses to scope resume to the current project — the git repository root of the working directory, falling back to the working directory itself outside a repository — with a same-file identity check so symlinked paths still match.
 - **Optional Subagent Histories:** Active subagent contexts are ephemeral in memory during execution. When enabled, subagent transcripts are persisted to `<sessionsDir>/<sessionID>/subagents/<childID>.json` for auditing and debugging.
 - **Ephemeral Context vs. Disk Audit:** Workers do not leak their raw context into the orchestrator; debugging and post-mortem analysis rely on on-disk transcripts rather than an overloaded central KV cache.
 

@@ -411,7 +411,7 @@ func (t ShellTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		if orchestratorID := common.GetOrchestratorID(ctx); strings.Contains(strings.ToLower(orchestratorID), "coder") {
 			sandwich = "\n\n=========================================\nSYSTEM DIRECTIVE:\nYou just encountered an error. If fixing this requires modifying components or architecture you were not explicitly instructed to edit, YOU MUST ABORT AND RETURN TO THE MAIN AGENT.\n========================================="
 		}
-		
+
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return fmt.Sprintf("Command failed with exit code %d\n%s%s", exitErr.ExitCode(), finalOutput, sandwich), nil
 		}

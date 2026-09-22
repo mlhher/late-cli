@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,7 +72,8 @@ func TestToolEnabled_BareNameFallback(t *testing.T) {
 
 // writeTestSession creates a flat session in the injected sessions directory:
 // <dir>/<id>.json (history) and <dir>/<id>.meta.json. It returns both paths.
-func writeTestSession(t *testing.T, sessionsDir, id string) (metaPath, historyPath string) {
+// An optional workingDir argument records the session's working directory.
+func writeTestSession(t *testing.T, sessionsDir, id string, workingDir ...string) (metaPath, historyPath string) {
 	t.Helper()
 
 	historyPath = filepath.Join(sessionsDir, id+".json")
@@ -80,14 +83,18 @@ func writeTestSession(t *testing.T, sessionsDir, id string) (metaPath, historyPa
 		t.Fatalf("SaveHistory(%s): %v", id, err)
 	}
 
-	if err := session.SaveSessionMeta(session.SessionMeta{
+	meta := session.SessionMeta{
 		ID:           id,
 		Title:        "Test session " + id,
 		CreatedAt:    time.Now(),
 		LastUpdated:  time.Now(),
 		HistoryPath:  historyPath,
 		MessageCount: 1,
-	}); err != nil {
+	}
+	if len(workingDir) > 0 {
+		meta.WorkingDir = workingDir[0]
+	}
+	if err := session.SaveSessionMeta(meta); err != nil {
 		t.Fatalf("SaveSessionMeta(%s): %v", id, err)
 	}
 
@@ -157,6 +164,72 @@ func TestHandleSessionDelete_LegacyFlatSession(t *testing.T) {
 
 	assertFileGone(t, metaC)
 	assertFileGone(t, historyC)
+}
+
+// TestResolveContinueSession_ReturnsGlobalLatest guards the --continue
+// resolution rule: pick the most recently updated session overall, regardless
+// of which project directory it was started in — even when the working
+// directory belongs to a different project. Project-scoped resume is
+// --continue-project's job.
+func TestResolveContinueSession_ReturnsGlobalLatest(t *testing.T) {
+	tmp := injectSessionDir(t)
+
+	// os.Getwd needs real directories, so the "projects" live inside the temp area.
+	projA := filepath.Join(tmp, "proj-a")
+	projB := filepath.Join(tmp, "proj-b")
+	if err := os.MkdirAll(projA, 0700); err != nil {
+		t.Fatalf("creating proj-a: %v", err)
+	}
+	if err := os.MkdirAll(projB, 0700); err != nil {
+		t.Fatalf("creating proj-b: %v", err)
+	}
+
+	_, metaA1 := writeTestSession(t, tmp, "session-20250101-100000", projA)
+	_, metaA2 := writeTestSession(t, tmp, "session-20250102-100000", projA)
+	_, metaB1 := writeTestSession(t, tmp, "session-20250103-100000", projB)
+
+	// The helper writes all three back-to-back; pin the meta mtimes so the
+	// ordering is deterministic. The /proj-b session is the global newest.
+	base := time.Now().Add(-time.Hour)
+	for i, metaPath := range []string{metaA1, metaA2, metaB1} {
+		at := base.Add(time.Duration(i) * time.Hour)
+		if err := os.Chtimes(metaPath, at, at); err != nil {
+			t.Fatalf("Chtimes(%s): %v", metaPath, err)
+		}
+	}
+
+	// Run from proj-a even though the newest session belongs to proj-b:
+	// --continue must ignore the current directory entirely.
+	t.Chdir(projA)
+
+	meta, err := resolveContinueSession()
+	if err != nil {
+		t.Fatalf("resolveContinueSession(): %v", err)
+	}
+	if meta == nil {
+		t.Fatal("resolveContinueSession() returned nil, want the globally newest session")
+	}
+	if meta.ID != "session-20250103-100000" {
+		t.Errorf("resolveContinueSession() = %q, want session-20250103-100000 (globally newest session, regardless of directory)", meta.ID)
+	}
+}
+
+// TestResolveContinueSession_NoMatchReturnsNil guards the empty case: with no
+// saved sessions at all, --continue resolves to (nil, nil) rather than an
+// error.
+func TestResolveContinueSession_NoMatchReturnsNil(t *testing.T) {
+	injectSessionDir(t)
+
+	empty := t.TempDir()
+	t.Chdir(empty)
+
+	meta, err := resolveContinueSession()
+	if err != nil {
+		t.Fatalf("resolveContinueSession(): %v", err)
+	}
+	if meta != nil {
+		t.Fatalf("resolveContinueSession() = %+v, want nil when no sessions exist", meta)
+	}
 }
 
 func TestDeriveEffectiveSessionID(t *testing.T) {
@@ -390,5 +463,26 @@ func TestRunBootstrap_DynamicLogitBias(t *testing.T) {
 	}
 	if _, ok := subBiases["999"]; ok {
 		t.Errorf("user bias 999 bled into subagentClient: %v", subBiases)
+	}
+}
+
+// TestPermissionFlagUsageRendersWithoutValueName guards the -h output of
+// -ask-for-user-approval: its usage string must contain no back-quoted word,
+// because flag.UnquoteUsage turns the first back-quoted word into the flag's
+// value name and PrintDefaults would then render the boolean flag as taking
+// an argument (e.g. "-ask-for-user-approval something"), wrongly implying the
+// value is passed on the CLI.
+func TestPermissionFlagUsageRendersWithoutValueName(t *testing.T) {
+	// -ask-for-user-approval's usage string is the package-level
+	// askForUserApprovalUsage const, single-sourced with the flag
+	// registration in main().
+	fs := flag.NewFlagSet("usage-test", flag.ContinueOnError)
+	fs.Bool("ask-for-user-approval", false, askForUserApprovalUsage)
+	if strings.ContainsRune(askForUserApprovalUsage, '`') {
+		t.Fatalf("ask-for-user-approval usage must not contain backquotes (flag.UnquoteUsage would render the quoted word as the flag's value name): %q", askForUserApprovalUsage)
+	}
+	name, _ := flag.UnquoteUsage(fs.Lookup("ask-for-user-approval"))
+	if name != "" {
+		t.Errorf("expected no rendered value name for this boolean flag, got %q (help would show -ask-for-user-approval %s)", name, name)
 	}
 }

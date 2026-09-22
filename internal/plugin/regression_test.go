@@ -66,8 +66,8 @@ func TestRegisterPluginSkills_DoesNotLeakAcrossProjects(t *testing.T) {
 }
 
 func TestRegisterPluginSkills_PreservesSameNamedSkills(t *testing.T) {
-	configDir, pluginsDir := t.TempDir(), t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configDir)
+	pluginsDir := t.TempDir()
+	_, skillsDir := sandboxUserConfig(t)
 	t.Chdir(t.TempDir())
 	writeDeploySkillPlugin(t, pluginsDir, "alpha")
 	writeDeploySkillPlugin(t, pluginsDir, "beta")
@@ -75,7 +75,7 @@ func TestRegisterPluginSkills_PreservesSameNamedSkills(t *testing.T) {
 	if err := pm.Discover(); err != nil {
 		t.Fatal(err)
 	}
-	if err := pm.RegisterPluginSkills(filepath.Join(configDir, "late", "skills")); err != nil {
+	if err := pm.RegisterPluginSkills(skillsDir); err != nil {
 		t.Fatal(err)
 	}
 	reg := common.NewToolRegistry()

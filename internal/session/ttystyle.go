@@ -52,10 +52,17 @@ func formatSessionDisplayVerbose(meta SessionMeta) string {
 	lines := []string{
 		colorID(fmt.Sprintf("ID: %s", strings.TrimSuffix(meta.ID, ".json"))),
 		fmt.Sprintf("    Title:   %s", meta.Title),
+	}
+	// Project directory is only shown for sessions that recorded it
+	// (legacy sessions have an empty WorkingDir).
+	if meta.WorkingDir != "" {
+		lines = append(lines, fmt.Sprintf("    Project: %s", meta.WorkingDir))
+	}
+	lines = append(lines,
 		fmt.Sprintf("    Created: %s", meta.CreatedAt.Format("2006-01-02 15:04:05")),
 		fmt.Sprintf("    Updated: %s", meta.LastUpdated.Format("2006-01-02 15:04:05")),
 		fmt.Sprintf("    Msg #:   %d", meta.MessageCount),
-	}
+	)
 	if meta.LastUserPrompt != "" {
 		last := truncateUTF8(meta.LastUserPrompt, 50)
 		lines = append(lines, fmt.Sprintf("    Last:    %s", last))

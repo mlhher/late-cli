@@ -22,6 +22,7 @@ type SessionMeta struct {
 	MessageCount          int       `json:"message_count"`
 	SubagentSeq           int       `json:"subagent_seq"`
 	SaveSubagentHistories *bool     `json:"save_subagent_histories,omitempty"`
+	WorkingDir            string    `json:"working_dir,omitempty"` // Absolute path of the project directory where the session was started
 }
 
 // SessionDir returns the directory where session metadata and histories are stored
@@ -158,8 +159,12 @@ func ListSessions() ([]SessionMeta, error) {
 	return metas, nil
 }
 
-// GetLatestSession returns the metadata of the latest session (most recently updated).
-// If no sessions exist, it returns nil, nil.
+// GetLatestSession returns the metadata of the latest session (most recently
+// updated), regardless of which project directory sessions were started in.
+// Each sidecar is loaded by its exact enumerated path, so a sidecar that
+// disappears or fails to load is merely skipped and the scan never falls back
+// to a different session with a matching ID prefix. If no sessions exist, it
+// returns nil, nil.
 func GetLatestSession() (*SessionMeta, error) {
 	sessionsDir, err := SessionDir()
 	if err != nil {
@@ -174,23 +179,113 @@ func GetLatestSession() (*SessionMeta, error) {
 		return nil, fmt.Errorf("failed to read sessions directory: %w", err)
 	}
 
-	var latestEntry os.DirEntry
+	var latest *SessionMeta
 	var latestModTime time.Time
 	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".meta.json") {
-			if info, err := entry.Info(); err == nil {
-				if latestEntry == nil || info.ModTime().After(latestModTime) {
-					latestEntry = entry
-					latestModTime = info.ModTime()
-				}
-			}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".meta.json") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		meta, err := loadEnumeratedMeta(filepath.Join(sessionsDir, entry.Name()))
+		if err != nil || meta == nil {
+			continue
+		}
+		if latest == nil || info.ModTime().After(latestModTime) {
+			latest = meta
+			latestModTime = info.ModTime()
 		}
 	}
+	return latest, nil
+}
 
-	if latestEntry == nil {
-		return nil, nil
+// loadEnumeratedMeta loads one enumerated sidecar by its exact path. It is a
+// package-level variable so tests can simulate sidecars that vanish or turn
+// unreadable between enumeration (os.ReadDir + entry.Info()) and load — the
+// race window that historically produced a (nil, nil) result and a startup
+// panic. Production always uses loadMetaFile.
+var loadEnumeratedMeta = loadMetaFile
+
+// GetLatestSessionForDir returns the metadata of the most recently updated
+// session that was started in dir, matched against the working_dir recorded
+// in each session's metadata. Sessions created before working_dir was
+// recorded (empty WorkingDir) are ignored. If no matching session exists,
+// it returns nil, nil.
+//
+// Each enumerated .meta.json sidecar is loaded by its exact path rather than
+// through LoadSessionMeta, whose ID-prefix fallback could silently return a
+// different session sharing the ID prefix; a sidecar that fails to load or
+// yields no metadata is skipped (defensively including a nil meta, although
+// loadMetaFile never returns (nil, nil)).
+//
+// Directory matching takes a lexical fast path (filepath.Clean equality) and
+// then compares directory identity with os.Stat + os.SameFile when both paths
+// exist, so a session recorded under a real directory is still found when the
+// same directory is addressed through a symlink. SameFile also covers
+// case-variant aliases on case-insensitive filesystems, so paths are never
+// lowercased or case-folded here. When either directory is missing the
+// identity check is unavailable and the lexical result stands.
+func GetLatestSessionForDir(dir string) (*SessionMeta, error) {
+	sessionsDir, err := SessionDir()
+	if err != nil {
+		return nil, err
 	}
 
-	id := strings.TrimSuffix(latestEntry.Name(), ".meta.json")
-	return LoadSessionMeta(id)
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read sessions directory: %w", err)
+	}
+
+	want := filepath.Clean(dir)
+	var latest *SessionMeta
+	var latestModTime time.Time
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".meta.json") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		// Load the exact enumerated file: no ID-prefix re-resolution.
+		meta, err := loadEnumeratedMeta(filepath.Join(sessionsDir, entry.Name()))
+		if err != nil || meta == nil {
+			continue
+		}
+		if meta.WorkingDir == "" || !sameProjectDir(meta.WorkingDir, want) {
+			continue
+		}
+		if latest == nil || info.ModTime().After(latestModTime) {
+			latest = meta
+			latestModTime = info.ModTime()
+		}
+	}
+	return latest, nil
+}
+
+// sameProjectDir reports whether a session's recorded project directory and a
+// wanted directory refer to the same directory. The lexical comparison is the
+// fast path; when it misses and both paths exist, identity is compared via
+// os.SameFile (os.Stat follows symlinks), which also matches case-variant
+// aliases on case-insensitive filesystems. If either directory does not
+// exist, only the lexical result is available. Paths are never lowercased.
+func sameProjectDir(recorded, want string) bool {
+	recorded = filepath.Clean(recorded)
+	want = filepath.Clean(want)
+	if recorded == want {
+		return true
+	}
+	wantInfo, wantErr := os.Stat(want)
+	recordedInfo, recordedErr := os.Stat(recorded)
+	if wantErr != nil || recordedErr != nil {
+		// Missing or inaccessible directory on either side: the identity
+		// check cannot run, so lexical equality (already ruled out) stands.
+		return false
+	}
+	return os.SameFile(wantInfo, recordedInfo)
 }

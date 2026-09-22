@@ -22,10 +22,53 @@ func TestRunHook_ProcessGroupKillsChildrenOnCancel(t *testing.T) {
 	body := "sleep 30 &\necho $! > " + pidFile + "\nwait"
 	writeExecutableShell(t, script, body)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	// The hook must stay alive until the script has spawned its child and
+	// written the pid file, so it is cancelled only once the pid file
+	// appears — asserting the process-group kill requires the child to
+	// exist first. The previous fixed 250ms budget for the spawn failed
+	// deterministically on hosts whose fork/exec latency exceeded it: the
+	// process group was SIGKILLed before the shell ever executed
+	// `echo $! > pidFile`, so the pid file never appeared and the test
+	// failed before the process-group assertion could run. runHook caps
+	// hook execution at hookTimeout, so extend it for this test (same
+	// pattern as the hookWaitDelay override below) and poll for the pid
+	// file instead of budgeting the spawn; on loaded hosts shell startup
+	// has been observed to take seconds.
+	oldHookTimeout := hookTimeout
+	hookTimeout = 60 * time.Second
+	t.Cleanup(func() { hookTimeout = oldHookTimeout })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	_, err := runHook(ctx, pluginDir, "group_child.sh", nil)
+	hookDone := make(chan error, 1)
+	go func() {
+		_, err := runHook(ctx, pluginDir, "group_child.sh", nil)
+		hookDone <- err
+	}()
+
+	// Deadline-based poll for the pid file instead of a fixed spawn budget.
+	// The limit is half the hook window so the poll can never race the
+	// hook's own timeout.
+	const pidFileWaitLimit = 30 * time.Second
+	pidWaitStart := time.Now()
+	for {
+		// echo's `>` opens pidFile before writing it, so break only on non-empty content — an empty read in the open->write gap would break pid parsing.
+		if b, err := os.ReadFile(pidFile); err == nil && strings.TrimSpace(string(b)) != "" {
+			break
+		}
+		if elapsed := time.Since(pidWaitStart); elapsed > pidFileWaitLimit {
+			cancel() // don't leak the hook if the pid file never appears
+			t.Fatalf("child pid file %s never appeared within %v", pidFile, elapsed)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	// The child now exists; cancelling the hook must kill the whole
+	// process group (asserted below).
+	cancel()
+
+	err := <-hookDone
 	if err == nil {
 		t.Fatal("expected hook to fail on context deadline")
 	}

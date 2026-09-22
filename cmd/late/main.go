@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,13 @@ import (
 	"charm.land/glamour/v2"
 	"golang.org/x/term"
 )
+
+// askForUserApprovalUsage is the -h description of -ask-for-user-approval.
+//
+// This string must contain no back-quoted word: flag.PrintDefaults renders
+// the first back-quoted word as the flag's value name, which would advertise
+// this boolean flag as taking an argument.
+const askForUserApprovalUsage = "Require explicit user approval before running potentially dangerous commands (default; overrides config.json permission-mode)."
 
 // pluginInlineTool adapts a plugin.InlineTool (defined in internal/plugin/tools.go)
 // into a common.Tool so the CLI's session registry can dispatch invocations to
@@ -76,53 +84,45 @@ func (p pluginInlineTool) CallString(args json.RawMessage) string {
 
 func main() {
 	// Parse flags
-	helpReq := flag.Bool("help", false, "Show help")
-	systemPromptReq := flag.String("system-prompt", "", "Set the system prompt (literal string)")
-	systemPromptFileReq := flag.String("system-prompt-file", "", "Set the system prompt from a file")
-	useToolsReq := flag.Bool("use-tools", true, "Enable tool usage (allows LLM to call tools)")
-	enableBashReq := flag.Bool("enable-bash", true, "Enable bash tool execution")
-	injectCWDReq := flag.Bool("inject-cwd", true, "Replace ${{CWD}} in system prompt with current working directory")
-	enableSubagentsReq := flag.Bool("enable-subagents", true, "Enable subagent usage")
-	gemmaThinkingReq := flag.Bool("gemma-thinking", false, "Prepend <|think|> token to system prompt for Gemma 4 models")
-	subagentMaxTurns := flag.Int("subagent-max-turns", 500, "Maximum number of turns for subagents (default: 500)")
+	helpReq := flag.Bool("help", false, "Show this help and exit.")
+	systemPromptReq := flag.String("system-prompt", "", "Replace the built-in system prompt with this text.")
+	systemPromptFileReq := flag.String("system-prompt-file", "", "Replace the built-in system prompt with a file's contents (highest priority).")
+	useToolsReq := flag.Bool("use-tools", true, "Offer tools to the main agent at all.")
+	enableBashReq := flag.Bool("enable-bash", true, "Enable the bash tool.")
+	injectCWDReq := flag.Bool("inject-cwd", true, "Replace ${{CWD}} in the system prompt with the working directory.")
+	enableSubagentsReq := flag.Bool("enable-subagents", true, "Allow the agent to spawn subagents.")
+	gemmaThinkingReq := flag.Bool("gemma-thinking", false, "Prepend the Gemma <|think|> token to the system prompt.")
+	subagentMaxTurns := flag.Int("subagent-max-turns", 500, "Maximum turns per subagent.")
+	// LATE_MAX_STREAM_RETRIES optionally overrides the default retry budget
+	// for LLM stream errors; an explicit -max-stream-retries flag wins over it.
+	maxStreamRetriesDefault := executor.DefaultMaxStreamRetries
+	if v := os.Getenv("LATE_MAX_STREAM_RETRIES"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			maxStreamRetriesDefault = parsed
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: ignoring invalid LATE_MAX_STREAM_RETRIES %q: %v\n", v, err)
+		}
+	}
+	maxStreamRetries := flag.Int("max-stream-retries", maxStreamRetriesDefault, "Retries for LLM stream errors with backoff; 0 disables. Env: LATE_MAX_STREAM_RETRIES")
+	saveSubagentHistoriesReq := flag.Bool("save-subagent-histories", false, "Persist subagent histories to disk (overrides session and config).")
+	enableSqzReq := flag.Bool("enable-sqz", false, "Compress bash tool output with the external 'sqz' binary if available.")
+	appendSystemPromptReq := flag.String("append-system-prompt", "", "Append this text to the final system prompt.")
+	versionReq := flag.Bool("version", false, "Print the version and exit.")
+	unsupervisedReq := flag.Bool("i-promise-i-have-backups-and-will-not-file-issues", false, "UNSUPPORTED: run every tool without user confirmation.")
+	askForUserApprovalReq := flag.Bool("ask-for-user-approval", false, askForUserApprovalUsage)
+	enableImagesReq := flag.Bool("enable-images", false, "Force-enable image attachments even if the backend does not advertise vision support.")
+	continueReq := flag.Bool("continue", false, "Resume the most recently updated session, regardless of which project directory it was started in.")
+	continueProjectReq := flag.Bool("continue-project", false, "Resume the most recently updated session for the current project (git repo root of the working directory, or the working directory outside a repo); mutually exclusive with -continue.")
+	showCWDReq := flag.Bool("show-cwd", true, "Show the git branch / working directory in the status bar.")
+	themeReq := flag.String("theme", "", "Plugin theme id ('plugin:name' or bare name); env: LATE_THEME.")
+	promptReq := flag.String("prompt", "", "Start the agent immediately with this prompt.")
+	logitBiasReq := flag.String("logit-bias", "", "Main-agent token bias: JSON object or comma-separated TOKEN_ID:BIAS pairs.")
+	suppressThinkingWordsReq := flag.Bool("suppress-thinking-words", false, "Bias anti-overthinking tokens (requires the same model for main agent and subagents).")
+	subagentLogitBiasReq := flag.String("subagent-logit-bias", "", "Subagent token bias: JSON object or comma-separated TOKEN_ID:BIAS pairs.")
 	maxAsyncSubagentsReq := flag.Int("max-async-subagents", 0, "Maximum number of concurrent subagents (default: 2, or from config)")
-	saveSubagentHistoriesReq := flag.Bool("save-subagent-histories", false, "Persist subagent conversation histories to disk (default: off)")
-	enableSqzReq := flag.Bool("enable-sqz", false, "Enable sqz context compression (if available)")
-	appendSystemPromptReq := flag.String("append-system-prompt", "", "Append text to the system prompt after processing")
-	versionReq := flag.Bool("version", false, "Show version")
-	unsupervisedReq := flag.Bool("i-promise-i-have-backups-and-will-not-file-issues", false, "Unsupported: Execute all tools without supervision. Do not use this, bad things will happen. You have been warned.")
-	enableImagesReq := flag.Bool("enable-images", false, "Force enable support for image attachments for unsupported servers.")
-	continueReq := flag.Bool("continue", false, "Load and start the latest session")
-	showCWDReq := flag.Bool("show-cwd", true, "Show current working directory in status bar")
-	themeReq := flag.String("theme", "", "Plugin theme id ('<plugin>:<name>'); falls back to $LATE_THEME")
-	promptReq := flag.String("prompt", "", "Start the agent immediately with the given prompt")
-	logitBiasReq := flag.String("logit-bias", "", "Token-bias mappings as raw JSON or key-value pairs (e.g., TOKEN_ID:BIAS,TOKEN_ID:BIAS)")
-	suppressThinkingWordsReq := flag.Bool("suppress-thinking-words", false, "Apply standard anti-overthinking bias map (dynamically resolved via /tokenize)")
-	subagentLogitBiasReq := flag.String("subagent-logit-bias", "", "Token-bias mappings for subagents as raw JSON or key-value pairs (e.g., TOKEN_ID:BIAS,TOKEN_ID:BIAS)")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage of late:\n")
-		fmt.Fprintf(os.Stderr, "  late [flags]\n")
-		fmt.Fprintf(os.Stderr, "  late session <command> [args]\n")
-		fmt.Fprintf(os.Stderr, "  late plugin <command> [args]\n")
-		fmt.Fprintf(os.Stderr, "  late worktree <command> [args]\n\n")
-		fmt.Fprintf(os.Stderr, "Commands:\n")
-		fmt.Fprintf(os.Stderr, "  session list [-v]      List all saved sessions (use -v for verbose/detailed view)\n")
-		fmt.Fprintf(os.Stderr, "  session load <id>      Load a session by ID\n")
-		fmt.Fprintf(os.Stderr, "  session delete <id>    Delete a session by ID\n")
-		fmt.Fprintf(os.Stderr, "  plugin list, ls                      List installed plugins\n")
-		fmt.Fprintf(os.Stderr, "  plugin install [--project] <src>     Install a plugin from npm/git/local\n")
-		fmt.Fprintf(os.Stderr, "  plugin remove [--project] <name>     Remove a plugin\n")
-		fmt.Fprintf(os.Stderr, "  plugin link [--project] <path>       Link a local plugin directory\n")
-		fmt.Fprintf(os.Stderr, "  plugin update [<name>]               Update all or a specific plugin\n")
-		fmt.Fprintf(os.Stderr, "  plugin enable <name>                 Enable a plugin\n")
-		fmt.Fprintf(os.Stderr, "  plugin disable <name>                Disable a plugin\n")
-		fmt.Fprintf(os.Stderr, "  worktree list          List all worktrees\n")
-		fmt.Fprintf(os.Stderr, "  worktree create <path> [branch]  Create a new worktree\n")
-		fmt.Fprintf(os.Stderr, "  worktree remove <path>           Remove a worktree\n")
-		fmt.Fprintf(os.Stderr, "  worktree active        Show current worktree\n\n")
-		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\n🌟 Enjoying Late? Consider leaving a star on GitHub: https://github.com/mlhher/late-cli\n")
+		writeHelp(os.Stderr, flag.CommandLine)
 	}
 	flag.Parse()
 
@@ -138,24 +138,58 @@ func main() {
 		return
 	}
 
+	// --continue and --continue-project are mutually exclusive: both select
+	// the session to resume, so asking for two is ambiguous (same rule and
+	// messaging style as the permission flags).
+	if err := validateContinueFlags(*continueReq, *continueProjectReq); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
 	var loadedHistoryPath string
 	var resumedSessionTitle string
 	var loadedSessionMeta *session.SessionMeta
 
-	if *continueReq {
-		meta, err := session.GetLatestSession()
+	switch {
+	case *continueReq:
+		// --continue: resume the most recently updated session overall,
+		// regardless of the project directory it was started in.
+		meta, err := resolveContinueSession()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error getting latest session: %v\n", err)
 			os.Exit(1)
 		}
 		if meta == nil {
 			fmt.Fprintln(os.Stderr, "No sessions found to continue.")
+			fmt.Fprintln(os.Stderr, "Use `late session list` to see saved sessions, or `late session load <id>` to resume one directly.")
 			os.Exit(1)
 		}
 		loadedHistoryPath = meta.HistoryPath
 		resumedSessionTitle = fmt.Sprintf("Resumed session: %s (%s)", meta.ID, meta.Title)
 		loadedSessionMeta = meta
-	} else if flag.NArg() > 0 && flag.Arg(0) == "session" {
+	case *continueProjectReq:
+		// --continue-project: resume the most recently updated session of
+		// the current project (git repo root of the working directory, or
+		// the working directory outside a repo). It works from inside a
+		// subdirectory because the repo root is matched, not the CWD.
+		meta, err := resolveContinueProjectSession()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error getting latest session: %v\n", err)
+			os.Exit(1)
+		}
+		if meta == nil {
+			if projectDir, dirErr := resolveContinueProjectDir(); dirErr == nil {
+				fmt.Fprintf(os.Stderr, "No sessions found to continue in project %s.\n", projectDir)
+			} else {
+				fmt.Fprintln(os.Stderr, "No sessions found to continue in the current project.")
+			}
+			fmt.Fprintln(os.Stderr, "Use `late session list` to see sessions started in other projects, or `late session load <id>` to resume one directly.")
+			os.Exit(1)
+		}
+		loadedHistoryPath = meta.HistoryPath
+		resumedSessionTitle = fmt.Sprintf("Resumed session: %s (%s)", meta.ID, meta.Title)
+		loadedSessionMeta = meta
+	case flag.NArg() > 0 && flag.Arg(0) == "session":
 		sessCmdResult := handleSessionCommand(flag.Args()[1:])
 		if sessCmdResult.ShouldExit {
 			return
@@ -383,6 +417,17 @@ func main() {
 	}
 	saveSubagentHistories := appconfig.ResolveSaveSubagentHistories(appConfig, saveSubagentHistoriesCLI, *saveSubagentHistoriesReq, storedSubagentHistoryPreference)
 
+	// Resolve the effective permission mode
+	// (explicit CLI flag > config.json permission-mode > ask-for-user-approval).
+	permissionMode, permissionModeWarning, err := appconfig.ResolvePermissionMode(appConfig, *askForUserApprovalReq, *unsupervisedReq)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if permissionModeWarning != "" {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", permissionModeWarning)
+	}
+
 	// Initialize Core Components
 	resolvedOpenAIConfig := appconfig.ResolveOpenAISettings(appConfig)
 	resolvedClientConfig := client.Config{
@@ -446,6 +491,9 @@ func main() {
 	sess := session.New(c, historyPath, history, systemPrompt, *useToolsReq)
 	if loadedSessionMeta != nil {
 		sess.SetSubagentMetadata(loadedSessionMeta.SubagentSeq, loadedSessionMeta.SaveSubagentHistories)
+		if loadedSessionMeta.WorkingDir != "" {
+			sess.SetWorkingDir(loadedSessionMeta.WorkingDir)
+		}
 	} else {
 		sess.SetSubagentMetadata(0, &saveSubagentHistories)
 	}
@@ -661,9 +709,11 @@ func main() {
 
 		// Create context with InputProvider
 		ctx := context.WithValue(context.Background(), common.InputProviderKey, tui.NewTUIInputProvider(p))
-		if *unsupervisedReq {
+		switch permissionMode {
+		case appconfig.PermissionModeUnsupervised:
 			ctx = context.WithValue(ctx, common.SkipConfirmationKey, true)
 		}
+		ctx = context.WithValue(ctx, common.MaxStreamRetriesKey, *maxStreamRetries)
 		rootAgent.SetContext(ctx)
 
 		// Set middlewares (see buildMiddlewares for ordering rationale).
@@ -920,6 +970,51 @@ type sessionCommandResult struct {
 	HistoryPath string
 	Meta        *session.SessionMeta
 	ShouldExit  bool
+}
+
+// validateContinueFlags enforces that at most one of --continue and
+// --continue-project is passed: both select the session to resume, so
+// requesting both is ambiguous. The messaging mirrors the permission-flag
+// exclusivity error.
+func validateContinueFlags(continueFlag, continueProjectFlag bool) error {
+	if continueFlag && continueProjectFlag {
+		return fmt.Errorf("continue flags are mutually exclusive; pass at most one of -continue, -continue-project")
+	}
+	return nil
+}
+
+// resolveContinueSession returns the session to resume for --continue: the
+// most recently updated session overall, regardless of which project
+// directory it was started in. It returns (nil, nil) when no sessions exist.
+func resolveContinueSession() (*session.SessionMeta, error) {
+	return session.GetLatestSession()
+}
+
+// resolveContinueProjectDir returns the project directory that scopes
+// --continue-project: the git repository root containing the current working
+// directory (so the flag also works from inside a subdirectory), or the
+// working directory itself when it is not inside a git repository.
+func resolveContinueProjectDir() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("determining current directory: %w", err)
+	}
+	if root, ok := git.RepoRoot(cwd); ok {
+		return root, nil
+	}
+	return cwd, nil
+}
+
+// resolveContinueProjectSession returns the session to resume for
+// --continue-project: the most recently updated session whose recorded
+// project directory is the current project. It returns (nil, nil) when no
+// matching session exists.
+func resolveContinueProjectSession() (*session.SessionMeta, error) {
+	projectDir, err := resolveContinueProjectDir()
+	if err != nil {
+		return nil, err
+	}
+	return session.GetLatestSessionForDir(projectDir)
 }
 
 // handleSessionCommand processes session subcommands.

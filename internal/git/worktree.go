@@ -120,6 +120,27 @@ func GetActiveWorktree() (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
+// RepoRoot returns the root directory of the git repository containing cwd,
+// resolved with `git rev-parse --show-toplevel`. The boolean result is false
+// when cwd is not inside a git repository — including when git is
+// unavailable or exits with an error — so callers can fall back to cwd
+// itself.
+func RepoRoot(cwd string) (string, bool) {
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
+	output, err := cmd.Output()
+	if err != nil {
+		return "", false
+	}
+	root := strings.TrimSpace(string(output))
+	if root == "" {
+		return "", false
+	}
+	return root, true
+}
+
 // CurrentBranch returns the current git branch name at cwd, or "" if not in a git repo.
 func CurrentBranch(cwd string) string {
 	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
