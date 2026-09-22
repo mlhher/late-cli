@@ -153,6 +153,51 @@ func TestBaseOrchestrator_ResetStartsNewConversation(t *testing.T) {
 	}
 }
 
+func TestBaseOrchestrator_AddChildSetsParentAndSendsEvent(t *testing.T) {
+	parent := NewBaseOrchestrator("parent", nil, nil, 10)
+	child := NewBaseOrchestrator("child", nil, nil, 10)
+
+	parent.AddChild(child)
+
+	if child.Parent() == nil || child.Parent().ID() != "parent" {
+		t.Fatalf("expected child parent to be 'parent', got %v", child.Parent())
+	}
+
+	select {
+	case ev := <-parent.Events():
+		added, ok := ev.(common.ChildAddedEvent)
+		if !ok {
+			t.Fatalf("expected ChildAddedEvent, got %T", ev)
+		}
+		if added.ParentID != "parent" || added.Child.ID() != "child" {
+			t.Fatalf("unexpected ChildAddedEvent: %#v", added)
+		}
+	default:
+		t.Fatal("expected ChildAddedEvent on parent eventCh")
+	}
+}
+
+func TestBaseOrchestrator_CancelPropagatesToChildren(t *testing.T) {
+	parent := NewBaseOrchestrator("parent", nil, nil, 10)
+	child1 := NewBaseOrchestrator("child1", nil, nil, 10)
+	child2 := NewBaseOrchestrator("child2", nil, nil, 10)
+
+	parent.AddChild(child1)
+	parent.AddChild(child2)
+
+	parent.Cancel()
+
+	if !parent.IsStopRequested() {
+		t.Fatal("expected parent stop to be requested")
+	}
+	if !child1.IsStopRequested() {
+		t.Fatal("expected child1 stop to be requested")
+	}
+	if !child2.IsStopRequested() {
+		t.Fatal("expected child2 stop to be requested")
+	}
+}
+
 func TestNextChildID_FormatAndMonotonic(t *testing.T) {
 	o := NewBaseOrchestrator("parent", session.New(nil, "", nil, "", false), nil, 0)
 

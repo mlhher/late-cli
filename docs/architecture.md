@@ -27,7 +27,7 @@ Late splits planning from execution: the **Lead Orchestrator** retains only high
   - Cannot directly edit files (`write_file` and `target_edit` are physically unregistered).
   - Destructive shell operations are blocked (including output redirection `>`).
   - Instructed not to perform broad direct codebase scans; delegates discovery to the Researcher.
-- **Subagent Spawning:** Dispatches atomic implementation steps to specialized workers via `spawn_subagent`.
+- **Subagent Spawning:** Dispatches atomic implementation steps to specialized workers sequentially via `spawn_subagent` or concurrently via `batch_spawn_subagents`.
 
 ### Researcher
 - **Role:** Read-only codebase explorer and contextual investigator.
@@ -51,7 +51,7 @@ Late splits planning from execution: the **Lead Orchestrator** retains only high
 2. **Context Discovery (Optional):** For non-trivial tasks, the Orchestrator invokes `spawn_subagent` (type: `researcher`) to inspect the codebase and report constraints, relevant files, and patterns.
 3. **Plan Formulation:** The Orchestrator synthesizes findings and writes a formal plan to `./implementation_plan.md` via `write_implementation_plan`.
 4. **Milestone Tracking:** The Orchestrator registers atomic phases using `create_todos`.
-5. **Worker Delegation:** (If approved:) The Orchestrator invokes `spawn_subagent` (type: `coder`) for an individual atomic step.
+5. **Worker Delegation:** (If approved:) The Orchestrator invokes `spawn_subagent` (type: `coder`) for an individual atomic step, or `batch_spawn_subagents` for concurrent execution of independent steps.
 6. **Isolated Execution:** The Coder inspects designated files, applies modifications, and runs validation commands within its private context.
 7. **Structured Handoff:** The Coder returns a structured summary of applied changes, test results, or blocking issues. Its ephemeral scratchpad is terminated.
 8. **Verification & Advancement:** The Orchestrator evaluates the result, marks the task complete via `finish_todo`, and proceeds to the next step.
@@ -74,7 +74,7 @@ Unlike systems where subagent delegation is merely prompt-recommended or optiona
 
 - **Physical Tool Namespace Pruning:**
   - Write tools (`write_file`, `target_edit`) are not registered in the Orchestrator's tool registry.
-  - Planning and delegation tools (`spawn_subagent`, `write_implementation_plan`, `create_todos`, `list_todos`, `finish_todo`) are omitted when constructing subagent registries.
+  - Planning and delegation tools (`spawn_subagent`, `batch_spawn_subagents`, `write_implementation_plan`, `create_todos`, `list_todos`, `finish_todo`) are omitted when constructing subagent registries.
 - **Shell-Level Enforcement:**
   - Shell commands pass through an AST and policy engine. Shell output redirection (`>`) is blocked, preventing orchestrator workarounds to write files via shell scripts.
   - Search commands (`grep`, `find`, `rg`) are gated with directions to use native `.gitignore`-aware search tools.

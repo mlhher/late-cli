@@ -187,6 +187,44 @@ func TestNewSubagentOrchestratorID(t *testing.T) {
 		t.Errorf("Expected child ID to contain 'coder', got %s", child.ID())
 	}
 }
+// TestNewSubagentOrchestrator_ToolExclusion verifies that batch_spawn_subagents,
+// spawn_subagent, and write_implementation_plan are excluded from the subagent registry
+func TestNewSubagentOrchestrator_ToolExclusion(t *testing.T) {
+	cfg := client.Config{BaseURL: "http://localhost:8080"}
+	c := client.NewClient(cfg)
+	mockSession := session.New(c, "/tmp/mock-session.json", []client.ChatMessage{}, "mock system prompt", true)
+	parent := orchestrator.NewBaseOrchestrator("parent", mockSession, nil, 100)
+
+	child, err := NewSubagentOrchestrator(
+		c,
+		"test goal",
+		[]string{},
+		"coder",
+		map[string]bool{"bash": true, "read_file": true},
+		false,
+		false,
+		100,
+		"",
+		false,
+		parent,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create subagent: %v", err)
+	}
+
+	reg := child.Registry()
+	if reg.Get("spawn_subagent") != nil {
+		t.Errorf("expected spawn_subagent to NOT be registered in subagent")
+	}
+	if reg.Get("batch_spawn_subagents") != nil {
+		t.Errorf("expected batch_spawn_subagents to NOT be registered in subagent")
+	}
+	if reg.Get("write_implementation_plan") != nil {
+		t.Errorf("expected write_implementation_plan to NOT be registered in subagent")
+	}
+}
+
 // TestNewSubagentOrchestrator_ConcurrentSpawn is the FR2 regression test:
 // concurrent spawns against a shared parent must never mint duplicate child IDs.
 func TestNewSubagentOrchestrator_ConcurrentSpawn(t *testing.T) {
