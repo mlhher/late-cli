@@ -86,6 +86,18 @@ type Config struct {
 	Theme       string            `json:"theme,omitempty"`
 	Models      []ModelSetting    `json:"models,omitempty"`
 	AgentModels map[string]string `json:"agent_models,omitempty"`
+
+	// ShowInfoBar toggles the single-line info footer rendered below the
+	// TUI status bar (version, model, context usage, uptime, ...). Toggled
+	// at runtime with the /infobar slash command, which persists the new
+	// value back to config.json.
+	ShowInfoBar bool `json:"show-info-bar,omitempty"`
+
+	// ShowTimestamps toggles the [HH:MM:SS] prefix rendered at the start
+	// of each transcript message block. Toggled at runtime with the
+	// /timestamps slash command, which persists the new value back to
+	// config.json.
+	ShowTimestamps bool `json:"show-timestamps,omitempty"`
 }
 
 func defaultConfig() Config {

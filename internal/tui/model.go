@@ -76,16 +76,16 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 	}
 
 	m := Model{
-		Mode:                ViewChat,
-		Root:                root,
-		Focused:             root,
-		Input:               ti,
-		Viewport:            vp,
-		Renderer:            renderer,
-		Width:               80,
-		Height:              24, // Default start height
-		AgentStates:         make(map[string]*AppState),
-		InspectingTool:      false,
+		Mode:           ViewChat,
+		Root:           root,
+		Focused:        root,
+		Input:          ti,
+		Viewport:       vp,
+		Renderer:       renderer,
+		Width:          80,
+		Height:         24, // Default start height
+		AgentStates:    make(map[string]*AppState),
+		InspectingTool: false,
 		Spinner: spinner.New(spinner.WithSpinner(spinner.Spinner{
 			Frames: spinner.Dot.Frames,
 			FPS:    40 * time.Millisecond,
@@ -100,6 +100,8 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 		AppConfig:           cfg,
 		SelectedTheme:       "default",
 		activeThemeStyles:   LateTheme,
+		ShowInfoBar:         cfg != nil && cfg.ShowInfoBar,
+		ShowTimestamps:      cfg != nil && cfg.ShowTimestamps,
 	}
 
 	fp := filepicker.New()
@@ -130,6 +132,7 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 		StatusText:           "Ready",
 		CumulativeTokenCount: cumulativeTokens,
 		CachedWidth:          -1,
+		CreatedAt:            time.Now(),
 	}
 
 	return m

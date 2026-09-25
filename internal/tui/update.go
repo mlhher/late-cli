@@ -1092,6 +1092,64 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				m.updateLayout()
 				return m, nil
 			}
+			if cmd == "/infobar" {
+				m.Input.Reset()
+				m.Input.SetValue("")
+				m.ShowInfoBar = !m.ShowInfoBar
+				m.updateLayout()
+				feedback := "info bar off"
+				if m.ShowInfoBar {
+					feedback = "info bar on"
+				}
+				// Persist best-effort, mirroring the theme-apply SaveConfig
+				// call sites; a save failure keeps the view toggle but is
+				// surfaced as status text.
+				if m.AppConfig != nil {
+					m.AppConfig.ShowInfoBar = m.ShowInfoBar
+					if err := config.SaveConfig(m.AppConfig); err != nil {
+						focusedState.StatusText = "failed to save info bar setting"
+					}
+				}
+				m.ToastMessage = feedback
+				m.ToastWarning = false
+				m.ToastExpireTime = time.Now().UnixMilli() + 3000
+				clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+					return clearToastMsg{}
+				})
+				m.updateViewport()
+				return m, clearCmd
+			}
+			if cmd == "/timestamps" {
+				m.Input.Reset()
+				m.Input.SetValue("")
+				m.ShowTimestamps = !m.ShowTimestamps
+				feedback := "timestamps off"
+				if m.ShowTimestamps {
+					feedback = "timestamps on"
+				}
+				// Persist best-effort, mirroring the /infobar SaveConfig
+				// call site; a save failure keeps the view toggle but is
+				// surfaced as status text.
+				if m.AppConfig != nil {
+					m.AppConfig.ShowTimestamps = m.ShowTimestamps
+					if err := config.SaveConfig(m.AppConfig); err != nil {
+						focusedState.StatusText = "failed to save timestamps setting"
+					}
+				}
+				// The toggle changes how every cached block renders; mark
+				// the transcript dirty. The render pass also discards the
+				// block cache whenever the timestamps flag differs from
+				// the state it was rendered with.
+				m.refreshTranscript()
+				m.ToastMessage = feedback
+				m.ToastWarning = false
+				m.ToastExpireTime = time.Now().UnixMilli() + 3000
+				clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+					return clearToastMsg{}
+				})
+				m.updateViewport()
+				return m, clearCmd
+			}
 			if cmd == "/model" {
 				m.Input.Reset()
 				m.Input.SetValue("")
@@ -1845,9 +1903,13 @@ func (m *Model) updateLayout() {
 			s.RenderedHistory = nil
 		}
 	}
-	vHeight := m.Height - (m.Input.Height() + 1) - StatusBarHeight - AppPadding
+	// Reserve one extra footer row while the info bar is shown
+	// (mirrors the StatusBarHeight reservation above).
+	infoH := m.infoBarHeight()
+
+	vHeight := m.Height - (m.Input.Height() + 1) - StatusBarHeight - AppPadding - infoH
 	if m.Mode == ViewModelPicker {
-		vHeight = m.Height - 3 - StatusBarHeight - AppPadding
+		vHeight = m.Height - 3 - StatusBarHeight - AppPadding - infoH
 	}
 
 	// Reserve space for autocomplete dropdown
@@ -1864,7 +1926,9 @@ func (m *Model) updateLayout() {
 
 	// Ensure file picker also respects the layout height to prevent pushing the status bar off-screen
 	// We subtract StatusBarHeight. If we have a 2-line picker status bar, we subtract 3.
-	fpHeight := m.Height - 3
+	// The info bar never renders while the picker is open, so infoBarHeight()
+	// contributes nothing in that mode.
+	fpHeight := m.Height - 3 - m.infoBarHeight()
 	if fpHeight < 1 {
 		fpHeight = 1
 	}

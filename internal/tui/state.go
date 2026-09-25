@@ -48,6 +48,10 @@ const (
 const (
 	StatusBarHeight = 2
 	AppPadding      = 0
+	// InfoBarHeight is the extra footer row reserved when the info bar is
+	// shown (toggled via /infobar). The info bar is a borderless single
+	// line rendered below the status bar.
+	InfoBarHeight = 1
 )
 
 // CommandDef defines a slash command and its description.
@@ -60,12 +64,14 @@ type CommandDef struct {
 var AvailableCommands = []CommandDef{
 	{Name: "/compose", Description: "Compose a message with an editor"},
 	{Name: "/help", Description: "Show help and shortcuts"},
+	{Name: "/infobar", Description: "Toggle the info bar footer"},
 	{Name: "/log", Description: "View git commit log"},
 	{Name: "/model", Description: "Select AI model for agents"},
 	{Name: "/new", Description: "Start fresh conversation"},
 	{Name: "/quit", Description: "Exit the application"},
 	{Name: "/rewind", Description: "Rewind conversation history"},
 	{Name: "/themes", Description: "List and switch themes"},
+	{Name: "/timestamps", Description: "Toggle message timestamps"},
 	{Name: "/todos", Description: "Toggle live todo progress pane"},
 }
 
@@ -143,6 +149,12 @@ type AppState struct {
 	ContextWarningShown bool // Whether the preflight context warning has been shown for the current input
 	Error               error
 
+	// CreatedAt is when this agent state was created (session start for the
+	// root agent). It backs the info bar's "up <elapsed>" segment and is
+	// deliberately not reset by /new: it measures session uptime, not
+	// conversation age.
+	CreatedAt time.Time
+
 	// RetryVerb records the failure class of the retry an agent is in:
 	// retryVerbConnectionLost ("connection lost") for infra failures or
 	// retryVerbRejectedByAPI ("request rejected by the API") for HTTP 400s.
@@ -150,6 +162,17 @@ type AppState struct {
 	// status as a silent safety net; recovery is announced separately by
 	// the dedicated RecoveryEvent. Empty means the agent is not retrying.
 	RetryVerb string
+}
+
+// SkillsInfo summarizes the agent skills discovered at startup (user +
+// project skills directories, the same source executor.RegisterTools uses to
+// build the activate_skill tool). Count is the number of skills; Tokens is
+// the estimated token footprint of their instruction bodies, computed once in
+// cmd/late/main.go with the common token estimator so the info bar can show
+// it without touching disk per frame.
+type SkillsInfo struct {
+	Count  int
+	Tokens int
 }
 
 type Model struct {
@@ -188,6 +211,19 @@ type Model struct {
 	ShowTodoPane     bool
 	TodoPaneFocused  bool
 	TodoScrollOffset int
+
+	// Info bar (toggled via /infobar, persisted as config show-info-bar).
+	// A view-level setting, not per-agent. SkillsInfo summarizes the
+	// agent skills discovered at startup so the info bar can show how much
+	// skill content is on disk without re-reading it on every frame.
+	ShowInfoBar bool
+	SkillsInfo  SkillsInfo
+
+	// Timestamps (toggled via /timestamps, persisted as config
+	// show-timestamps). A view-level setting, not per-agent: when set,
+	// every rendered transcript block that carries a message timestamp is
+	// prefixed with its [HH:MM:SS] render of the recorded receive time.
+	ShowTimestamps bool
 
 	// Double-click copy & Toast tracking
 	LastClickX      int
@@ -301,9 +337,20 @@ func (m *Model) GetAgentState(id string) *AppState {
 		State:       StateIdle,
 		StatusText:  "Ready",
 		PendingStop: false,
+		CreatedAt:   time.Now(),
 	}
 	m.AgentStates[id] = s
 	return s
+}
+
+// infoBarHeight returns the number of extra footer rows the info bar
+// occupies right now. It mirrors the status bar's own visibility rule: the
+// bar is hidden while the file picker is open, so no row is reserved.
+func (m *Model) infoBarHeight() int {
+	if m.ShowInfoBar && !m.ShowFilePicker {
+		return InfoBarHeight
+	}
+	return 0
 }
 
 func (m *Model) hasActiveAgent() bool {

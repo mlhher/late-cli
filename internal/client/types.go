@@ -27,6 +27,10 @@ type ChatMessage struct {
 	ToolCalls        []ToolCall     `json:"tool_calls,omitempty"`
 	ToolCallID       string         `json:"tool_call_id,omitempty"` // For tool responses
 	AttachedFiles    []string       `json:"-"`                      // Purely for UI display
+	// Timestamp records when the session appended the message to history
+	// (RFC3339). Optional: legacy history entries predate the field and
+	// render without a time prefix in the transcript.
+	Timestamp string `json:"timestamp,omitempty"`
 }
 
 type MessageContent struct {

@@ -38,6 +38,7 @@ type transcriptState struct {
 	generation   uint64
 	width        int
 	theme        string
+	timestamps   bool
 }
 
 type transcriptRenderedMsg struct {
@@ -50,6 +51,7 @@ type transcriptRenderedMsg struct {
 	generation   uint64
 	width        int
 	theme        string
+	timestamps   bool
 	rows         []string
 	blocks       []RenderBlock
 	cache        map[string][]string
@@ -67,6 +69,7 @@ type transcriptEntry struct {
 	content   string
 	reasoning string
 	labels    []transcriptLabel
+	timestamp string // RFC3339 receive time from the history message; empty for ephemeral/legacy entries
 }
 
 const (
@@ -246,6 +249,7 @@ func (m *Model) applyTranscript(result transcriptRenderedMsg) {
 	t.thinking, t.thinkingLine = result.thinking, result.thinkingLine
 	t.activities = result.activities
 	t.width, t.theme = result.width, result.theme
+	t.timestamps = result.timestamps
 	t.offset = min(t.offset, max(0, len(t.rows)-m.Viewport.Height()))
 	s.RenderBlocks = result.blocks
 	if result.partial {
@@ -265,7 +269,11 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 		styles = LateTheme
 	}
 	width := max(1, m.Viewport.Width())
-	if t.width != width || t.theme != string(styles) {
+	// The timestamps flag participates in the render-invalidation checks:
+	// toggling /timestamps must discard cached block rows so prefixes are
+	// added or removed on the next pass.
+	timestampsChanged := t.timestamps != m.ShowTimestamps
+	if t.width != width || t.theme != string(styles) || timestampsChanged {
 		t.dirty = true
 	}
 	if t.busy || !t.dirty {
@@ -275,10 +283,11 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 	t.dirty = false
 	id, generation := m.Focused.ID(), t.generation
 	oldCache := t.cache
-	if t.width != width || t.theme != string(styles) {
+	if t.width != width || t.theme != string(styles) || timestampsChanged {
 		oldCache = nil
 	}
 	theme := string(styles)
+	showTimestamps := m.ShowTimestamps
 	entries := make([]transcriptEntry, 0, len(m.Focused.History())+3)
 	toolWidth := toolCallWidth(width)
 	toolLabels := func(calls []client.ToolCall, active bool) []transcriptLabel {
@@ -343,7 +352,7 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 			}
 			labels = append(labels, item)
 		}
-		entry := transcriptEntry{index: i, role: msg.Role, content: content, reasoning: msg.ReasoningContent, labels: labels}
+		entry := transcriptEntry{index: i, role: msg.Role, content: content, reasoning: msg.ReasoningContent, labels: labels, timestamp: msg.Timestamp}
 		if len(msg.AttachedFiles) > 0 {
 			names := make([]string, len(msg.AttachedFiles))
 			for j, f := range msg.AttachedFiles {
@@ -405,7 +414,7 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 	answerStyle := assistantReplyStyle(width)
 	return func() tea.Msg {
 		renderer, err := glamour.NewTermRenderer(glamour.WithStylesFromJSONBytes([]byte(theme)), glamour.WithWordWrap(assistantReplyContentWidth(width)), glamour.WithPreservedNewLines())
-		result := transcriptRenderedMsg{activities: make(map[int]string), partial: partial, welcome: welcome, id: id, generation: generation, width: width, theme: theme, cache: make(map[string][]string, len(entries))}
+		result := transcriptRenderedMsg{activities: make(map[int]string), partial: partial, welcome: welcome, id: id, generation: generation, width: width, theme: theme, timestamps: showTimestamps, cache: make(map[string][]string, len(entries))}
 		markdown := func(source string) string {
 			if err != nil {
 				return source
@@ -438,10 +447,20 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 			return strings.Join(parts, "\n")
 		}
 		for _, entry := range entries {
-			key := fmt.Sprintf("%t:%d:%s:%d:%s:%d:%s:%v", entry.active, len(entry.role), entry.role, len(entry.content), entry.content, len(entry.reasoning), entry.reasoning, entry.labels)
+			key := fmt.Sprintf("%t:%d:%s:%d:%s:%d:%s:%v:%s", entry.active, len(entry.role), entry.role, len(entry.content), entry.content, len(entry.reasoning), entry.reasoning, entry.labels, entry.timestamp)
 			rows, ok := oldCache[key]
 			if !ok {
 				parts := make([]string, 0, 4)
+				// The [HH:MM:SS] prefix is rendered as its own muted row at
+				// the start of user and assistant message blocks, from the
+				// receive time the session recorded when the message was
+				// added. Legacy messages without a timestamp stay unprefixed.
+				prefix := ""
+				if showTimestamps && entry.timestamp != "" {
+					if ts, err := time.Parse(time.RFC3339, entry.timestamp); err == nil {
+						prefix = attachmentStyle.Render("[" + ts.Format("15:04:05") + "]")
+					}
+				}
 				switch entry.role {
 				case "user":
 					text := strings.TrimRight(entry.content, "\r\n")
@@ -456,9 +475,15 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 								block += "\n" + label.rendered
 							}
 						}
+						if prefix != "" {
+							parts = append(parts, prefix)
+						}
 						parts = append(parts, "\n"+userPromptStyle(width).Render(block)+"\n")
 					}
 				case "assistant":
+					if prefix != "" {
+						parts = append(parts, prefix)
+					}
 					if entry.reasoning != "" {
 						header := headerStyle.Render("· thinking")
 						if entry.active && entry.content == "" && len(entry.labels) == 0 {
