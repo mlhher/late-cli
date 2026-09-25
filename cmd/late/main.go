@@ -128,7 +128,9 @@ func main() {
 	tool.SetSqzEnabled(*enableSqzReq)
 
 	if *versionReq {
-		fmt.Printf("late %s\n", common.Version)
+		// Full one-line build identity: version + stamped commit/build
+		// date, degrading to the bare dev banner for a plain `go build`.
+		fmt.Println(common.VersionDisplay())
 		return
 	}
 

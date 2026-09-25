@@ -4,8 +4,13 @@
 BINARY_NAME=late
 VERSION?=2.0.0-rc.1
 
-# Go compiler flags
-LDFLAGS=-ldflags "-X late/internal/common.Version=${VERSION}"
+# Go compiler flags. Commit/build-number/build-date stamping: when git is
+# unavailable (tarball checkout, no repo) the commit and build number
+# degrade to "unknown" without failing the build.
+GIT_COMMIT:=$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_NUMBER:=$(shell git rev-list --count HEAD 2>/dev/null || echo unknown)
+BUILD_DATE:=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS=-ldflags "-X late/internal/common.Version=${VERSION} -X late/internal/common.BuildNumber=${BUILD_NUMBER} -X late/internal/common.Commit=${GIT_COMMIT} -X 'late/internal/common.BuildDate=${BUILD_DATE}'"
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
