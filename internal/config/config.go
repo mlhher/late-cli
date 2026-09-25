@@ -68,7 +68,9 @@ type Config struct {
 	// SaveSubagentHistories opts in to persisting subagent conversation
 	// histories under <sessions>/<session-id>/subagents/. Default false.
 	// Enable via config file or the --save-subagent-histories CLI flag.
-	SaveSubagentHistories bool `json:"save_subagent_histories,omitempty"`
+	// The value is a FlexBool, so config.json accepts the on/off synonyms
+	// ("yes", "on", 1, ...) alongside true/false.
+	SaveSubagentHistories FlexBool `json:"save_subagent_histories,omitempty"`
 
 	// PermissionMode selects how potentially dangerous commands are
 	// supervised. One of the PermissionMode* constants; empty means the
@@ -105,6 +107,23 @@ func defaultConfig() Config {
 	}
 }
 
+// LoadConfig loads and strictly parses config.json.
+//
+// Behavior contract:
+//
+//   - Missing file (fresh install): a default config is written and returned
+//     with a nil error — late starts normally.
+//   - Any content problem (JSON syntax error, unknown top-level entry,
+//     wrong-typed value, invalid enum value, invalid boolean synonym) is
+//     FATAL: a rendered *ConfigParseError naming the exact file, line, and
+//     column is returned together with a nil config, and the caller (main)
+//     must print it and exit instead of starting on fallback defaults
+//     (strict-config rules R2/R3 — no fallback-to-defaults startup).
+//   - The file existing but being unreadable, or the config directory being
+//     uncreatable, is likewise fatal (nil config, non-nil error).
+//   - A failed post-load permission hardening is NOT fatal: the config
+//     content is fully valid, so it is returned together with the
+//     permission error for the caller to surface as a warning.
 func LoadConfig() (*Config, error) {
 	lateConfigDir, err := pathutil.LateConfigDir()
 	if err != nil {
@@ -115,36 +134,42 @@ func LoadConfig() (*Config, error) {
 	content, err := os.ReadFile(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Pre-populate with a default config that enables everything
+			// Fresh install: pre-populate with a default config that
+			// enables everything. A missing file is not a config error.
 			fallback := defaultConfig()
 			defaultData, _ := json.MarshalIndent(fallback, "", "  ")
 
 			// Ensure directory exists
 			if err := os.MkdirAll(lateConfigDir, configDirPerm); err != nil {
-				return &fallback, fmt.Errorf("failed to create config directory: %w", err)
+				return nil, fmt.Errorf("failed to create config directory: %w", err)
 			}
 
 			if err := os.WriteFile(configPath, defaultData, configFilePerm); err != nil {
-				return &fallback, fmt.Errorf("failed to write default config: %w", err)
+				return nil, fmt.Errorf("failed to write default config: %w", err)
 			}
 
 			if err := ensureSecureConfigPermissions(lateConfigDir, configPath); err != nil {
+				// The default config was written successfully; a failed
+				// permission hardening must not abort the fresh install.
 				return &fallback, err
 			}
 
 			return &fallback, nil
 		}
 
-		fallback := defaultConfig()
-		return &fallback, err
+		// The file exists but cannot be read (e.g. it is a directory).
+		// Starting on fallback defaults would silently ignore every user
+		// setting, so this is fatal under the strict-config rules.
+		return nil, fmt.Errorf("failed to read %s: %w", configPath, err)
 	}
 
 	permErr := ensureSecureConfigPermissions(lateConfigDir, configPath)
 
-	var cfg Config
-	if err := json.Unmarshal(content, &cfg); err != nil {
-		fallback := defaultConfig()
-		return &fallback, err
+	cfg, err := parseConfigContent(configPath, content)
+	if err != nil {
+		// Strict config: a broken config.json never yields a fallback
+		// config. The caller must render the error and abort.
+		return nil, err
 	}
 
 	if cfg.EnabledTools == nil {
@@ -161,10 +186,12 @@ func LoadConfig() (*Config, error) {
 	}
 
 	if permErr != nil {
-		return &cfg, permErr
+		// Permission hardening failed, but the config content is fully
+		// valid: return it so the caller can warn and continue.
+		return cfg, permErr
 	}
 
-	return &cfg, nil
+	return cfg, nil
 }
 
 func ResolveOpenAISettings(cfg *Config) OpenAISettings {
@@ -251,7 +278,7 @@ func ResolveSaveSubagentHistories(cfg *Config, cliExplicit bool, cliValue bool, 
 		return *savedPreference
 	}
 	if cfg != nil {
-		return cfg.SaveSubagentHistories
+		return cfg.SaveSubagentHistories.Bool()
 	}
 	return false
 }

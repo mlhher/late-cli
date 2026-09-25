@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -215,31 +216,135 @@ func TestLoadConfig_OpenAIOnlyConfigDefaultsEnabledTools(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_MalformedFileFallsBackWithError(t *testing.T) {
-	configRoot := t.TempDir()
-	setUserConfigEnv(t, configRoot)
-	configPath := lateConfigPath(t)
+// TestLoadConfig_StrictErrorsAbort pins the strict-config startup rule: any
+// config.json content problem — JSON syntax error, unknown top-level entry,
+// wrong-typed value, invalid enum value, invalid boolean synonym — is fatal.
+// LoadConfig returns the rendered line/column error together with a NIL
+// config so main can print it and exit instead of silently starting on
+// fallback defaults.
+func TestLoadConfig_StrictErrorsAbort(t *testing.T) {
+	cases := []struct {
+		name           string
+		configContent  string
+		wantErrParts   []string
+		wantNilCfg     bool
+		wantPositioned bool
+	}{
+		{
+			name:          "valid config parses without error",
+			configContent: `{"enabled_tools":{"bash":true},"openai_model":"gpt-test"}`,
+			wantNilCfg:    false,
+		},
+		{
+			name:           "syntax error is fatal and positioned",
+			configContent:  `{"enabled_tools":{"bash":true},}`,
+			wantErrParts:   []string{"error in ", "at line 1", "column", "invalid character ','"},
+			wantNilCfg:     true,
+			wantPositioned: true,
+		},
+		{
+			name:           "unknown key names the entry and suggests the closest",
+			configContent:  `{"save_subagent_history": true}`,
+			wantErrParts:   []string{"error in ", `"save_subagent_history" is not a valid config.json entry`, `Did you mean "save_subagent_histories"?`},
+			wantNilCfg:     true,
+			wantPositioned: true,
+		},
+		{
+			name:           "wrong-typed value is fatal and positioned",
+			configContent:  `{"enabled_tools":"yes"}`,
+			wantErrParts:   []string{`"enabled_tools" must be an object, found a string`},
+			wantNilCfg:     true,
+			wantPositioned: true,
+		},
+		{
+			name:           "invalid enum value is fatal and positioned",
+			configContent:  `{"permission-mode":"yolo"}`,
+			wantErrParts:   []string{`"yolo" is not a valid permission-mode value`, "Valid values are:"},
+			wantNilCfg:     true,
+			wantPositioned: true,
+		},
+		{
+			name:           "invalid boolean synonym is fatal and positioned",
+			configContent:  `{"save_subagent_histories":"actve"}`,
+			wantErrParts:   []string{`"actve" is not a valid boolean value for "save_subagent_histories"`, "Accepted values are:"},
+			wantNilCfg:     true,
+			wantPositioned: true,
+		},
+		{
+			// A formerly permissive case: an unknown entry is no longer
+			// silently ignored.
+			name:           "unknown extra field is rejected",
+			configContent:  `{"totally-new-option":123}`,
+			wantErrParts:   []string{`"totally-new-option" is not a valid config.json entry`},
+			wantNilCfg:     true,
+			wantPositioned: true,
+		},
+		{
+			// A formerly wrong-typed case: "yes" is now a valid boolean
+			// synonym for the FlexBool entries.
+			name:           "boolean synonym yes parses",
+			configContent:  `{"save_subagent_histories":"yes"}`,
+			wantErrParts:   nil,
+			wantNilCfg:     false,
+			wantPositioned: false,
+		},
+	}
 
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(configPath, []byte(`{"enabled_tools":`), 0644); err != nil {
-		t.Fatal(err)
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			configRoot := t.TempDir()
+			setUserConfigEnv(t, configRoot)
+			configPath := lateConfigPath(t)
 
-	cfg, err := LoadConfig()
-	if err == nil {
-		t.Fatal("expected parse error for malformed config")
-	}
-	if cfg == nil {
-		t.Fatal("expected fallback config despite parse error")
-	}
-	if !cfg.EnabledTools["write_file"] || !cfg.EnabledTools["target_edit"] {
-		t.Fatalf("expected fallback default tools, got %#v", cfg.EnabledTools)
+			if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(configPath, []byte(tc.configContent), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg, err := LoadConfig()
+			if tc.wantNilCfg {
+				if err == nil {
+					t.Fatal("LoadConfig() expected a fatal error, got nil")
+				}
+				if cfg != nil {
+					t.Fatalf("LoadConfig() returned a config alongside a fatal error — strict config must not fall back: %#v", cfg)
+				}
+				if !strings.HasPrefix(err.Error(), "error in ") || !strings.Contains(err.Error(), configPath) {
+					t.Fatalf("LoadConfig() error = %q, want it to name the config path %q", err.Error(), configPath)
+				}
+				for _, part := range tc.wantErrParts {
+					if !strings.Contains(err.Error(), part) {
+						t.Fatalf("LoadConfig() error = %q, want it to contain %q", err.Error(), part)
+					}
+				}
+				if tc.wantPositioned {
+					var parseErr *ConfigParseError
+					if !errors.As(err, &parseErr) {
+						t.Fatalf("LoadConfig() error = %T, want *ConfigParseError", err)
+					}
+					if !strings.Contains(err.Error(), "at line ") || !strings.Contains(err.Error(), "column ") {
+						t.Fatalf("LoadConfig() error = %q, want a line/column position", err.Error())
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadConfig() error = %v, want nil", err)
+			}
+			if cfg == nil {
+				t.Fatal("LoadConfig() returned nil config")
+			}
+		})
 	}
 }
 
-func TestLoadConfig_ReadErrorFallsBackWithError(t *testing.T) {
+// TestLoadConfig_UnreadableFileIsFatal pins that an existing-but-unreadable
+// config.json (here: the config path is a directory) aborts with an error
+// naming the path and a nil config — starting on fallback defaults would
+// silently ignore the user's real settings.
+func TestLoadConfig_UnreadableFileIsFatal(t *testing.T) {
 	configRoot := t.TempDir()
 	setUserConfigEnv(t, configRoot)
 	configPath := lateConfigPath(t)
@@ -250,17 +355,20 @@ func TestLoadConfig_ReadErrorFallsBackWithError(t *testing.T) {
 
 	cfg, err := LoadConfig()
 	if err == nil {
-		t.Fatal("expected read error when config path is a directory")
+		t.Fatal("expected error when config path is a directory")
 	}
-	if cfg == nil {
-		t.Fatal("expected fallback config despite read error")
+	if cfg != nil {
+		t.Fatal("expected nil config on a fatal load error")
 	}
-	if !cfg.EnabledTools["read_file"] || !cfg.EnabledTools["bash"] {
-		t.Fatalf("expected fallback default tools, got %#v", cfg.EnabledTools)
+	if !strings.Contains(err.Error(), configPath) {
+		t.Fatalf("LoadConfig() error = %q, want it to contain the config path %q", err.Error(), configPath)
 	}
 }
 
-func TestLoadConfig_DefaultCreateFailureFallsBackWithError(t *testing.T) {
+// TestLoadConfig_DefaultCreateFailureIsFatal pins that a fresh install that
+// cannot write its default config.json aborts with an error and a nil
+// config instead of starting on in-memory defaults.
+func TestLoadConfig_DefaultCreateFailureIsFatal(t *testing.T) {
 	configRoot := t.TempDir()
 	blockingPath := filepath.Join(configRoot, "not-a-dir")
 	if err := os.WriteFile(blockingPath, []byte("x"), 0644); err != nil {
@@ -273,11 +381,8 @@ func TestLoadConfig_DefaultCreateFailureFallsBackWithError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when config directory cannot be created")
 	}
-	if cfg == nil {
-		t.Fatal("expected fallback config despite creation failure")
-	}
-	if !cfg.EnabledTools["read_file"] || !cfg.EnabledTools["bash"] {
-		t.Fatalf("expected fallback default tools, got %#v", cfg.EnabledTools)
+	if cfg != nil {
+		t.Fatal("expected nil config on a fatal load error")
 	}
 }
 

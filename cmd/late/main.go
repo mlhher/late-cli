@@ -362,8 +362,19 @@ func main() {
 			}
 		}
 	}
-	// Load App configuration
+	// Load App configuration. Strict config (R2/R3): a config.json with a
+	// syntax error, an unknown entry, a wrong-typed value, or an invalid
+	// enum/boolean value is FATAL — the rendered line/column error goes to
+	// stderr and late exits 1 BEFORE the TUI starts, never silently
+	// continuing on fallback defaults. The only recoverable load error is
+	// a post-load permission-hardening failure, which returns a fully
+	// valid config alongside the error and only warns. (-help/-version
+	// never reach this point: they are handled above, before LoadConfig.)
 	appConfig, err := appconfig.LoadConfig()
+	if shouldExitOnConfigLoadError(appConfig, err) {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Failed to load app config: %v\n", err)
 	}
@@ -788,6 +799,19 @@ func deriveEffectiveSessionID(historyPath string) string {
 	}
 	return id
 }
+
+// shouldExitOnConfigLoadError decides whether a failed app-config load must
+// abort startup. Strict-config rule (R2/R3): late never starts on a
+// config.json it could not fully load — a silent fallback to defaults would
+// drop the user's real settings. LoadConfig signals those fatal cases
+// (syntax errors, unknown entries, wrong-typed values, invalid enum and
+// boolean values, unreadable file) by returning a nil config together with
+// the rendered error; an error that still produced a usable config (the
+// post-load permission-hardening failure) only warns.
+func shouldExitOnConfigLoadError(cfg *appconfig.Config, err error) bool {
+	return err != nil && cfg == nil
+}
+
 func newModelClient(ctx context.Context, setting appconfig.ModelSetting, enableImages bool, logitBias map[string]int) *client.Client {
 	c := client.NewClient(client.Config{
 		BaseURL:      setting.URL,
