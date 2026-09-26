@@ -7,9 +7,16 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 )
 
 const DefaultOpenAIBaseURL = "http://localhost:8080"
+
+// DefaultSubagentTimeout is the wall-clock budget for one subagent run when
+// neither the -subagent-timeout flag nor the config.json subagent-timeout
+// entry sets one. Long autonomous runs (overnight autopilot, large
+// refactors) motivated the generous default.
+const DefaultSubagentTimeout = 24 * time.Hour
 
 // Permission modes for supervising potentially dangerous commands.
 // The effective mode is resolved by ResolvePermissionMode:
@@ -69,6 +76,13 @@ type Config struct {
 	// histories under <sessions>/<session-id>/subagents/. Default false.
 	// Enable via config file or the --save-subagent-histories CLI flag.
 	SaveSubagentHistories bool `json:"save_subagent_histories,omitempty"`
+
+	// SubagentTimeout caps the wall-clock time of one subagent run. A Go
+	// duration string ("24h", "90m"); "0" or a negative value disables the
+	// budget. Set via config file; an explicitly passed --subagent-timeout
+	// CLI flag overrides it. Invalid values are ignored with a warning and
+	// the DefaultSubagentTimeout applies.
+	SubagentTimeout string `json:"subagent-timeout,omitempty"`
 
 	// PermissionMode selects how potentially dangerous commands are
 	// supervised. One of the PermissionMode* constants; empty means the
@@ -254,6 +268,27 @@ func ResolveSaveSubagentHistories(cfg *Config, cliExplicit bool, cliValue bool, 
 		return cfg.SaveSubagentHistories
 	}
 	return false
+}
+
+// ResolveSubagentTimeout returns the effective wall-clock budget for one
+// subagent run. Precedence: explicitly-set CLI flag > config.json
+// subagent-timeout entry > DefaultSubagentTimeout. A zero or negative budget
+// means unlimited; the runner only installs a budget for positive values. An
+// unparseable config.json value yields a warning and falls back to
+// DefaultSubagentTimeout.
+func ResolveSubagentTimeout(cfg *Config, cliExplicit bool, cliValue time.Duration) (timeout time.Duration, warning string) {
+	if cliExplicit {
+		return cliValue, ""
+	}
+	if cfg != nil && cfg.SubagentTimeout != "" {
+		parsed, err := time.ParseDuration(cfg.SubagentTimeout)
+		if err != nil {
+			return DefaultSubagentTimeout,
+				fmt.Sprintf("ignoring invalid config.json subagent-timeout %q; using %q", cfg.SubagentTimeout, DefaultSubagentTimeout)
+		}
+		return parsed, ""
+	}
+	return DefaultSubagentTimeout, ""
 }
 
 // ResolvePermissionMode returns the effective permission mode.

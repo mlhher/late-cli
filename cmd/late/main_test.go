@@ -466,6 +466,110 @@ func TestRunBootstrap_DynamicLogitBias(t *testing.T) {
 	}
 }
 
+// TestResolveSubagentTimeBudgetPrecedence guards the -subagent-timeout
+// resolution chain: an explicitly-passed flag beats the config.json
+// "subagent-timeout" entry, which beats the 24h default. Each case parses
+// real CLI args into a FlagSet registered exactly the way main() registers
+// the flag (default from appconfig.DefaultSubagentTimeout, single-sourced
+// usage string), so the explicit-set detection matches production.
+func TestResolveSubagentTimeBudgetPrecedence(t *testing.T) {
+	tests := []struct {
+		name                string
+		args                []string
+		cfg                 *appconfig.Config
+		want                time.Duration
+		wantWarningContains []string
+	}{
+		{
+			name: "nothing set defaults to 24h",
+			cfg:  nil,
+			want: 24 * time.Hour,
+		},
+		{
+			name: "config entry beats default",
+			args: nil,
+			cfg:  &appconfig.Config{SubagentTimeout: "90m"},
+			want: 90 * time.Minute,
+		},
+		{
+			name: "explicit flag beats config",
+			args: []string{"-subagent-timeout=2h"},
+			cfg:  &appconfig.Config{SubagentTimeout: "90m"},
+			want: 2 * time.Hour,
+		},
+		{
+			name: "explicit flag zero beats config and means unlimited",
+			args: []string{"-subagent-timeout=0"},
+			cfg:  &appconfig.Config{SubagentTimeout: "90m"},
+			want: 0,
+		},
+		{
+			name: "invalid config warns and falls back to default",
+			cfg:  &appconfig.Config{SubagentTimeout: "garbage"},
+			want: 24 * time.Hour,
+			wantWarningContains: []string{
+				"invalid",
+				"garbage",
+				"subagent-timeout",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Register -subagent-timeout the same way main() does.
+			fs := flag.NewFlagSet("subagent-timeout-precedence", flag.ContinueOnError)
+			flagValue := fs.Duration("subagent-timeout", appconfig.DefaultSubagentTimeout, subagentTimeoutUsage)
+			if err := fs.Parse(tt.args); err != nil {
+				t.Fatalf("Parse(%v): %v", tt.args, err)
+			}
+
+			got, warning := resolveSubagentTimeBudget(fs, tt.cfg, *flagValue)
+
+			if got != tt.want {
+				t.Fatalf("resolveSubagentTimeBudget() = %v, want %v", got, tt.want)
+			}
+			if len(tt.wantWarningContains) == 0 {
+				if warning != "" {
+					t.Fatalf("resolveSubagentTimeBudget() warning = %q, want empty", warning)
+				}
+				return
+			}
+			if warning == "" {
+				t.Fatal("resolveSubagentTimeBudget() warning is empty, want a warning")
+			}
+			for _, substring := range tt.wantWarningContains {
+				if !strings.Contains(warning, substring) {
+					t.Fatalf("resolveSubagentTimeBudget() warning = %q, want it to contain %q", warning, substring)
+				}
+			}
+		})
+	}
+}
+
+// TestSubagentTimeoutFlagDefaultAndUsage guards the -subagent-timeout flag
+// surface: the default must stay the 24h appconfig.DefaultSubagentTimeout
+// (long autonomous runs were the motivating use case for the budget) and the
+// usage string must keep documenting "0 = unlimited".
+func TestSubagentTimeoutFlagDefaultAndUsage(t *testing.T) {
+	if appconfig.DefaultSubagentTimeout != 24*time.Hour {
+		t.Fatalf("appconfig.DefaultSubagentTimeout = %v, want 24h", appconfig.DefaultSubagentTimeout)
+	}
+	if !strings.Contains(subagentTimeoutUsage, "0 = unlimited") {
+		t.Errorf("subagentTimeoutUsage = %q, want it to mention \"0 = unlimited\"", subagentTimeoutUsage)
+	}
+
+	fs := flag.NewFlagSet("subagent-timeout-usage", flag.ContinueOnError)
+	fs.Duration("subagent-timeout", appconfig.DefaultSubagentTimeout, subagentTimeoutUsage)
+	f := fs.Lookup("subagent-timeout")
+	if f == nil {
+		t.Fatal("flag -subagent-timeout was not registered")
+	}
+	if f.DefValue != "24h0m0s" {
+		t.Errorf("flag -subagent-timeout default = %q, want \"24h0m0s\"", f.DefValue)
+	}
+}
+
 // TestPermissionFlagUsageRendersWithoutValueName guards the -h output of
 // -ask-for-user-approval: its usage string must contain no back-quoted word,
 // because flag.UnquoteUsage turns the first back-quoted word into the flag's

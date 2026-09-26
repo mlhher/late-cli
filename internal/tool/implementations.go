@@ -304,6 +304,15 @@ const maxReadFileChars = 32768
 // Maximum number of characters for shell output to prevent session poisoning
 const maxBashOutputChars = 32768
 
+// defaultShellTimeout bounds a single bash tool call. Overridable via the
+// --bash-timeout CLI flag (cmd/late) or SetShellTimeout in tests.
+var defaultShellTimeout = 10 * time.Minute
+
+// SetShellTimeout overrides defaultShellTimeout. It is not goroutine-safe:
+// call it once at startup (the --bash-timeout flag wiring) or from tests
+// before concurrent shell execution begins.
+func SetShellTimeout(d time.Duration) { defaultShellTimeout = d }
+
 // ShellTool executes host-native shell commands with security restrictions.
 type ShellTool struct{}
 
@@ -365,11 +374,28 @@ func (t ShellTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		params.Cwd = cwd
 	}
 
-	// Execute command using a platform-specific shell wrapper.
-	cmd := newShellCommand(ctx, params.Command)
+	// Execute command using a platform-specific shell wrapper, bounded by a
+	// default timeout so a command that never exits (tty prompts, network
+	// waits, locks) cannot hang the calling agent forever. A non-positive
+	// timeout disables the bound.
+	execCtx := ctx
+	var cancel context.CancelFunc
+	if defaultShellTimeout > 0 {
+		execCtx, cancel = context.WithTimeout(ctx, defaultShellTimeout)
+		defer cancel()
+	}
+	cmd := newShellCommand(execCtx, params.Command)
 	cmd.Dir = params.Cwd
 
 	output, err := cmd.CombinedOutput()
+
+	// The deadline killed the whole process group; surface the partial output
+	// as a real error so the caller sees why the command died. A plain user
+	// cancellation (ctx.Canceled) keeps flowing through the generic error path
+	// below so cancellation still propagates.
+	if err != nil && execCtx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("command timed out after %s and was killed (partial output):\n%s", defaultShellTimeout, string(output))
+	}
 
 	// If sqz is available, compress the output
 	if IsSqzAvailable() && len(output) > 0 {
@@ -407,19 +433,28 @@ func (t ShellTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	}
 
 	if err != nil {
-		sandwich := ""
-		if orchestratorID := common.GetOrchestratorID(ctx); strings.Contains(strings.ToLower(orchestratorID), "coder") {
-			sandwich = "\n\n=========================================\nSYSTEM DIRECTIVE:\nYou just encountered an error. If fixing this requires modifying components or architecture you were not explicitly instructed to edit, YOU MUST ABORT AND RETURN TO THE MAIN AGENT.\n========================================="
-		}
-
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			return fmt.Sprintf("Command failed with exit code %d\n%s%s", exitErr.ExitCode(), finalOutput, sandwich), nil
+			return fmt.Sprintf("Command failed with exit code %d\n%s", exitErr.ExitCode(), finalOutput), nil
 		}
-		return fmt.Sprintf("Error executing command: %v\n%s%s", err, finalOutput, sandwich), nil
+		return fmt.Sprintf("Error executing command: %v\n%s", err, finalOutput), nil
 	}
 
 	return finalOutput, nil
 }
+
+// IsShellFailureResult reports whether a shell tool result describes a failed
+// command (non-zero exit, exec error, or timeout). ExecuteToolCalls uses it to
+// decide whether to attach a harness note; keep the prefixes in sync with
+// ShellTool.Execute's return statements plus the third prefix below, which is
+// ExecuteToolCalls' own "Error executing tool %s: %v" wrapper around the
+// timeout error ShellTool.Execute returns (the tool name is "bash" on every
+// platform).
+func IsShellFailureResult(result string) bool {
+	return strings.HasPrefix(result, "Command failed with exit code ") ||
+		strings.HasPrefix(result, "Error executing command: ") ||
+		strings.HasPrefix(result, "Error executing tool bash: command timed out after ")
+}
+
 func (t ShellTool) RequiresConfirmation(args json.RawMessage) bool {
 	var params struct {
 		Command string `json:"command"`

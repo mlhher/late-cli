@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/base64"
 	"os/exec"
+	"strconv"
 	"sync"
+	"time"
 	"unicode/utf16"
 )
 
@@ -43,9 +45,27 @@ func encodePSCommand(command string) string {
 func newShellCommand(ctx context.Context, command string) *exec.Cmd {
 	shell := getWindowsShellPath()
 	encoded := encodePSCommand(command)
-	return exec.CommandContext(
+	cmd := exec.CommandContext(
 		ctx, shell,
 		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
 		"-EncodedCommand", encoded,
 	)
+	// CommandContext kills only the direct child; taskkill /T /F tears down
+	// the WHOLE process tree on cancellation, otherwise a grandchild that
+	// inherited our stdout/stderr pipes would keep CombinedOutput blocked
+	// forever even after cancel.
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		// Best-effort: a taskkill failure (e.g. the process already exited)
+		// must not mask the real outcome; WaitDelay still closes the pipes
+		// below so a pipe-holding descendant can never block Wait().
+		_ = exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
+		return nil
+	}
+	// If a graceful window is needed, Wait closes the pipes anyway after
+	// this delay so a pipe-holding descendant can never block Wait().
+	cmd.WaitDelay = 5 * time.Second
+	return cmd
 }

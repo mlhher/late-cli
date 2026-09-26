@@ -136,6 +136,20 @@ You can change models interactively using `/model` inside the TUI, or persist yo
 
 > Note: For backward compatibility, the older flat format using `openai_base_url`, `late_subagent_model`, etc., is also still supported.
 
+### Subagent Time Budget (`subagent-timeout`)
+
+Each subagent run is capped at 24 hours by default so a stuck subagent cannot block the orchestrator forever.
+
+Override the budget in `config.json` with a Go duration string:
+
+```json
+{
+  "subagent-timeout": "90m"
+}
+```
+
+Set `"subagent-timeout": "0"` to remove the cap entirely. An explicitly passed `--subagent-timeout` flag overrides the `config.json` entry. Nested subagents inherit whatever budget remains of their parent's run.
+
 ---
 
 ## The TUI
@@ -349,6 +363,7 @@ Setting `0` (or a negative value) disables stream retrying entirely. Run `late -
 | `--logit-bias` and `--subagent-logit-bias` | Manually set the logit biases for specific models (`llama.cpp` only) |
 | `--gemma-thinking` | Inject thinking tokens for Gemma 4 models |
 | `--subagent-max-turns <n>` | Set max turns per subagent (default: 500) |
+| `--subagent-timeout <duration>` | Max wall-clock time for one subagent run (default: 24h, `0` = unlimited) |
 | `--append-system-prompt "..."` | Append text to the system prompt (e.g. further instructions) |
 | `--enable-images` | Treat models as supporting images (for non llama.cpp servers) |
 | `--save-subagent-histories` | Persist subagent conversation histories to disk |

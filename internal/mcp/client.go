@@ -91,7 +91,6 @@ func (t *ToolAdapter) Name() string {
 	return common.SanitizeToolName(t.mcpTool.Name)
 }
 
-
 // BareName returns the bare (unnamespaced) tool name as reported by the MCP
 // server. Used by the tool-enable config check for backwards compatibility
 // with configs written before namespacing was introduced.
@@ -263,6 +262,7 @@ func (c *Client) assignToolNames(serverName string, adapters []*ToolAdapter) {
 		a.name = uniq[i]
 	}
 }
+
 // handleToolListChanged re-discovers tools for a server when the SDK notifies
 // us of a tools/list change. It removes stale tool adapters for that server
 // and re-enumerates via the session's paginating Tools iterator.
@@ -410,6 +410,14 @@ func NewStdioTransport(ctx context.Context, command string, args []string, env [
 // so any relative paths in `args` (and any CWD-relative behavior the user
 // scripts rely on) resolve against that directory. This matters for plugin
 // servers shipped via npm-scoped guests whose script paths are plugin-relative.
+//
+// The command is intentionally NOT wrapped in a bounded context: this starts a
+// long-lived MCP server subprocess whose lifetime is owned by the SDK's
+// CommandTransport (started on session connect, torn down with SIGTERM → wait →
+// SIGKILL on session Close). Bounding it with context.WithTimeout would kill a
+// healthy server mid-session. There is no wait-for-ready logic here to bound
+// either — the initialize handshake is bounded by the ctx the caller passes to
+// Client.Connect.
 func NewStdioTransportWithStderr(ctx context.Context, command string, args []string, env []string, stderr io.Writer, workDir string) (mcp.Transport, error) {
 	cmd := exec.Command(command, args...)
 	cmd.Env = append(os.Environ(), env...)

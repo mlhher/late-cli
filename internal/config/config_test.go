@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadConfig_MissingFileCreatesDefault(t *testing.T) {
@@ -162,6 +163,27 @@ func TestLoadConfig_ParsesOpenAIFields(t *testing.T) {
 	}
 	if cfg.LateSubagentModel != "qwen-sub" {
 		t.Fatalf("LateSubagentModel = %q", cfg.LateSubagentModel)
+	}
+}
+
+func TestLoadConfig_ParsesSubagentTimeout(t *testing.T) {
+	configRoot := t.TempDir()
+	setUserConfigEnv(t, configRoot)
+	configPath := lateConfigPath(t)
+
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(`{"subagent-timeout":"24h"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.SubagentTimeout != "24h" {
+		t.Fatalf("SubagentTimeout = %q, want %q", cfg.SubagentTimeout, "24h")
 	}
 }
 
@@ -598,6 +620,125 @@ func TestResolveSaveSubagentHistories(t *testing.T) {
 				t.Fatalf("ResolveSaveSubagentHistories() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestResolveSubagentTimeout(t *testing.T) {
+	tests := []struct {
+		name        string
+		cfg         *Config
+		cliExplicit bool
+		cliValue    time.Duration
+		want        time.Duration
+		// wantWarningContains: warning must be empty when nil; non-nil:
+		// warning must contain each substring.
+		wantWarningContains []string
+	}{
+		{
+			name:        "explicit flag wins over config",
+			cfg:         &Config{SubagentTimeout: "90m"},
+			cliExplicit: true,
+			cliValue:    2 * time.Hour,
+			want:        2 * time.Hour,
+		},
+		{
+			name:        "explicit flag zero wins over config and means unlimited",
+			cfg:         &Config{SubagentTimeout: "90m"},
+			cliExplicit: true,
+			cliValue:    0,
+			want:        0,
+		},
+		{
+			name:        "explicit negative flag wins over config and means unlimited",
+			cfg:         &Config{SubagentTimeout: "90m"},
+			cliExplicit: true,
+			cliValue:    -time.Minute,
+			want:        -time.Minute,
+		},
+		{
+			name: "config entry wins over default",
+			cfg:  &Config{SubagentTimeout: "90m"},
+			want: 90 * time.Minute,
+		},
+		{
+			name: "config zero means unlimited",
+			cfg:  &Config{SubagentTimeout: "0"},
+			want: 0,
+		},
+		{
+			name: "config negative means unlimited",
+			cfg:  &Config{SubagentTimeout: "-5m"},
+			want: -5 * time.Minute,
+		},
+		{
+			name:                "invalid config warns and falls back to default",
+			cfg:                 &Config{SubagentTimeout: "garbage"},
+			want:                DefaultSubagentTimeout,
+			wantWarningContains: []string{"invalid", "garbage"},
+		},
+		{
+			name: "empty config value falls back to default",
+			cfg:  &Config{SubagentTimeout: ""},
+			want: DefaultSubagentTimeout,
+		},
+		{
+			name: "nil config falls back to default",
+			cfg:  nil,
+			want: DefaultSubagentTimeout,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, warning := ResolveSubagentTimeout(tt.cfg, tt.cliExplicit, tt.cliValue)
+
+			if got != tt.want {
+				t.Fatalf("ResolveSubagentTimeout() = %v, want %v", got, tt.want)
+			}
+			if len(tt.wantWarningContains) == 0 {
+				if warning != "" {
+					t.Fatalf("ResolveSubagentTimeout() warning = %q, want empty", warning)
+				}
+				return
+			}
+			if warning == "" {
+				t.Fatal("ResolveSubagentTimeout() warning is empty, want a warning")
+			}
+			for _, substring := range tt.wantWarningContains {
+				if !strings.Contains(warning, substring) {
+					t.Fatalf("ResolveSubagentTimeout() warning = %q, want it to contain %q", warning, substring)
+				}
+			}
+		})
+	}
+}
+
+func TestConfig_SubagentTimeoutJSONRoundTrip(t *testing.T) {
+	original := Config{SubagentTimeout: "90m"}
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var decoded Config
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if decoded.SubagentTimeout != "90m" {
+		t.Fatalf("SubagentTimeout after round trip = %q, want %q", decoded.SubagentTimeout, "90m")
+	}
+
+	// An unset value must be omitted from the written config file.
+	emptyData, err := json.Marshal(Config{})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(emptyData, &raw); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if _, ok := raw["subagent-timeout"]; ok {
+		t.Fatalf("empty subagent-timeout should be omitted from the marshaled config, got %v", raw["subagent-timeout"])
 	}
 }
 

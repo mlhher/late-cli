@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"late/internal/agent"
@@ -82,6 +83,10 @@ func (p pluginInlineTool) CallString(args json.RawMessage) string {
 	return fmt.Sprintf("Calling plugin tool %q...", p.name)
 }
 
+// subagentTimeoutUsage is single-sourced with the -subagent-timeout flag
+// registration in main() so tests can assert on the rendered help output.
+const subagentTimeoutUsage = "Max wall-clock time for one subagent run (0 = unlimited)"
+
 func main() {
 	// Parse flags
 	helpReq := flag.Bool("help", false, "Show this help and exit.")
@@ -89,10 +94,12 @@ func main() {
 	systemPromptFileReq := flag.String("system-prompt-file", "", "Replace the built-in system prompt with a file's contents (highest priority).")
 	useToolsReq := flag.Bool("use-tools", true, "Offer tools to the main agent at all.")
 	enableBashReq := flag.Bool("enable-bash", true, "Enable the bash tool.")
+	bashTimeout := flag.Duration("bash-timeout", 10*time.Minute, "Max wall-clock time for one bash tool call (0 = unlimited)")
 	injectCWDReq := flag.Bool("inject-cwd", true, "Replace ${{CWD}} in the system prompt with the working directory.")
 	enableSubagentsReq := flag.Bool("enable-subagents", true, "Allow the agent to spawn subagents.")
 	gemmaThinkingReq := flag.Bool("gemma-thinking", false, "Prepend the Gemma <|think|> token to the system prompt.")
 	subagentMaxTurns := flag.Int("subagent-max-turns", 500, "Maximum turns per subagent.")
+	subagentTimeout := flag.Duration("subagent-timeout", appconfig.DefaultSubagentTimeout, subagentTimeoutUsage)
 	// LATE_MAX_STREAM_RETRIES optionally overrides the default retry budget
 	// for LLM stream errors; an explicit -max-stream-retries flag wins over it.
 	maxStreamRetriesDefault := executor.DefaultMaxStreamRetries
@@ -126,6 +133,9 @@ func main() {
 	flag.Parse()
 
 	tool.SetSqzEnabled(*enableSqzReq)
+	// Shell tool bound: 0/negative (--bash-timeout=0) disables it —
+	// ShellTool.Execute treats a non-positive timeout as unbounded.
+	tool.SetShellTimeout(*bashTimeout)
 
 	if *versionReq {
 		fmt.Printf("late %s\n", common.Version)
@@ -408,6 +418,13 @@ func main() {
 		storedSubagentHistoryPreference = loadedSessionMeta.SaveSubagentHistories
 	}
 	saveSubagentHistories := appconfig.ResolveSaveSubagentHistories(appConfig, saveSubagentHistoriesCLI, *saveSubagentHistoriesReq, storedSubagentHistoryPreference)
+
+	// Resolve the per-subagent wall-clock budget
+	// (explicit CLI flag > config.json subagent-timeout entry > default).
+	resolvedSubagentTimeout, subagentTimeoutWarning := resolveSubagentTimeBudget(flag.CommandLine, appConfig, *subagentTimeout)
+	if subagentTimeoutWarning != "" {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", subagentTimeoutWarning)
+	}
 
 	// Resolve the effective permission mode
 	// (explicit CLI flag > config.json permission-mode > ask-for-user-approval).
@@ -753,9 +770,47 @@ func main() {
 			}
 			child.SetMiddlewares(buildMiddlewares(pluginManager, p, child.Registry()))
 
+			// Per-subagent wall-clock budget layered on top of the parent
+			// context (agent.NewSubagentOrchestrator already wires the child
+			// to the parent's context). 0 disables the budget, so no wrapper
+			// is installed then: context.WithTimeout with a non-positive
+			// duration would expire immediately and kill the run.
+			runCtx := ctx
+			runCancel := func() {}
+			if resolvedSubagentTimeout > 0 {
+				runCtx, runCancel = context.WithTimeout(ctx, resolvedSubagentTimeout)
+			}
+			defer runCancel()
+			// SetContext is not part of common.Orchestrator; the factory
+			// always returns *orchestrator.BaseOrchestrator. If the concrete
+			// type ever changes, the child simply keeps the parent context
+			// and runs without a budget rather than failing the spawn.
+			if base, ok := child.(*orchestrator.BaseOrchestrator); ok {
+				base.SetContext(runCtx)
+			}
+
 			res, err := child.Execute("")
-			if err != nil {
-				return "", err
+			// Classify the termination BEFORE looking at err: the budget, the
+			// user's kill and crashes all surface differently here.
+			var cause string
+			switch {
+			case resolvedSubagentTimeout > 0 && runCtx.Err() == context.DeadlineExceeded:
+				cause = fmt.Sprintf("time budget exhausted (%s)", resolvedSubagentTimeout)
+			case errors.Is(err, context.Canceled) || child.IsStopRequested():
+				cause = "cancelled or killed by the user"
+			case err != nil:
+				cause = fmt.Sprintf("crashed: %v", err)
+			}
+			if cause != "" {
+				// Abnormal termination: hand the parent a pruned transcript so it
+				// can understand the cause and resume without redoing the work.
+				transcriptPath, terr := writeSubagentTranscript(child, agentType, goal, cause)
+				summary := lastActionPreview(child.History(), 500)
+				result := fmt.Sprintf("The %s subagent terminated abnormally (%s).\nFull pruned transcript: %s\nLast actions:\n%s", agentType, cause, transcriptPath, summary)
+				if terr != nil {
+					result += fmt.Sprintf("\n(transcript unavailable: %v)", terr)
+				}
+				return result, nil
 			}
 
 			if child.IsStopRequested() {
@@ -787,6 +842,22 @@ func deriveEffectiveSessionID(historyPath string) string {
 		return ""
 	}
 	return id
+}
+
+// resolveSubagentTimeBudget resolves the effective per-subagent wall-clock
+// budget: an explicitly-passed -subagent-timeout flag wins over the
+// config.json "subagent-timeout" entry, which wins over the
+// appconfig.DefaultSubagentTimeout default. Explicitness is detected on the
+// given FlagSet the same way main() detects --save-subagent-histories.
+// A zero or negative budget means unlimited.
+func resolveSubagentTimeBudget(fs *flag.FlagSet, cfg *appconfig.Config, flagValue time.Duration) (time.Duration, string) {
+	explicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "subagent-timeout" {
+			explicit = true
+		}
+	})
+	return appconfig.ResolveSubagentTimeout(cfg, explicit, flagValue)
 }
 func newModelClient(ctx context.Context, setting appconfig.ModelSetting, enableImages bool, logitBias map[string]int) *client.Client {
 	c := client.NewClient(client.Config{

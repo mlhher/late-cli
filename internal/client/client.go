@@ -12,10 +12,29 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
 )
+
+// defaultStreamIdleTimeout bounds how long a streaming response may stay
+// completely silent before it is considered stalled and aborted. The abort
+// surfaces as a regular stream error, which the executor's retry tier
+// handles. 0 disables the watchdog.
+var defaultStreamIdleTimeout = 120 * time.Second
+
+// SetStreamIdleTimeout overrides defaultStreamIdleTimeout (test use).
+func SetStreamIdleTimeout(d time.Duration) { defaultStreamIdleTimeout = d }
+
+// defaultRequestTimeout bounds a single non-streaming chat completion request
+// (connect plus full response). A server that accepts the connection and never
+// responds would otherwise block the caller for the OS TCP lifetime. 0
+// disables the bound.
+var defaultRequestTimeout = 5 * time.Minute
+
+// SetRequestTimeout overrides defaultRequestTimeout (test use).
+func SetRequestTimeout(d time.Duration) { defaultRequestTimeout = d }
 
 type Config struct {
 	BaseURL      string
@@ -65,7 +84,11 @@ func NewClient(cfg Config) *Client {
 			Transport: &http.Transport{
 				DisableKeepAlives: true,
 			},
-			Timeout: 0, // Streaming needs no timeout here
+			// No client-level timeout: streaming responses are legitimately
+			// long-lived, so stalls are bounded by the stream idle watchdog
+			// (defaultStreamIdleTimeout) and non-streaming requests by
+			// defaultRequestTimeout instead.
+			Timeout: 0,
 		},
 	}
 }
@@ -113,7 +136,20 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 	}
 
 	url := c.chatCompletionURL()
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
+
+	// Bound the non-streaming request so a server that accepts the connection
+	// and never responds cannot block the caller for the OS TCP lifetime. 5
+	// minutes is generous for a non-stream completion; if the deadline elapses
+	// the error surfaces normally through the request error path below. A
+	// non-positive defaultRequestTimeout disables the bound.
+	reqCtx := ctx
+	if defaultRequestTimeout > 0 {
+		var cancel context.CancelFunc
+		reqCtx, cancel = context.WithTimeout(ctx, defaultRequestTimeout)
+		defer cancel()
+	}
+
+	httpReq, err := http.NewRequestWithContext(reqCtx, "POST", url, bytes.NewBuffer(body))
 	if err != nil {
 		return nil, err
 	}
@@ -152,6 +188,14 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 		defer close(out)
 		defer close(errCh)
 
+		// streamCtx owns this request so the idle watchdog (spawned below,
+		// before the scan loop) can abort an in-flight body read when the
+		// provider goes silent. The deferred scancel lives in this goroutine —
+		// the same owner as close(out)/close(errCh) — so the watchdog can
+		// never outlive the request.
+		streamCtx, scancel := context.WithCancel(ctx)
+		defer scancel()
+
 		if c.getBackend() == BackendUnknown || (c.getBackend() == BackendLlamaCPP && c.ContextSize() == -1) {
 			_ = c.DiscoverBackend(ctx)
 		}
@@ -169,7 +213,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 		}
 
 		url := c.chatCompletionURL()
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
+		httpReq, err := http.NewRequestWithContext(streamCtx, "POST", url, bytes.NewBuffer(body))
 		if err != nil {
 			errCh <- err
 			return
@@ -198,6 +242,59 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 			req.OnConnect()
 		}
 
+		// lastRead is the last time the response body made real progress (a
+		// full line was consumed). It is seeded here at response time and
+		// updated after every scanned line below — never while blocked inside
+		// scanner.Scan(), which is precisely the stalled state the watchdog
+		// must detect.
+		var lastRead int64
+		atomic.StoreInt64(&lastRead, time.Now().UnixNano())
+
+		// Idle watchdog: without it, a provider that accepts the request and
+		// then streams nothing (half-open connection, stalled backend) blocks
+		// scanner.Scan() for the OS TCP lifetime, and to the caller that is
+		// indistinguishable from the model "thinking". If no line arrives
+		// within defaultStreamIdleTimeout, cancel streamCtx so the in-flight
+		// body read fails; the resulting error flows through the normal
+		// scanner.Err() path below as a regular stream error, which the
+		// executor's retry tier handles. A non-positive
+		// defaultStreamIdleTimeout disables the watchdog.
+		if defaultStreamIdleTimeout > 0 {
+			watchdogDone := make(chan struct{})
+			go func() {
+				defer close(watchdogDone)
+				ticker := time.NewTicker(5 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-streamCtx.Done():
+						return
+					case <-ticker.C:
+						last := time.Unix(0, atomic.LoadInt64(&lastRead))
+						if time.Since(last) > defaultStreamIdleTimeout {
+							// Deliberate cancellation, not a client bug: the
+							// idle watchdog fired because the provider stopped
+							// streaming. The in-flight body read fails below
+							// and is surfaced as a regular stream error.
+							scancel()
+							return
+						}
+					}
+				}
+			}()
+			// Join the watchdog before this goroutine — the request owner —
+			// returns, so the watchdog never outlives the request and its
+			// defaultStreamIdleTimeout reads cannot race with a Set* override
+			// restore in tests. scancel is called first (idempotent; the head
+			// defer below still covers early returns before this point) so the
+			// watchdog is released from its select instead of deadlocking the
+			// join.
+			defer func() {
+				scancel()
+				<-watchdogDone
+			}()
+		}
+
 		scanner := bufio.NewScanner(resp.Body)
 		// Some providers emit very long SSE lines (e.g. huge tool-call argument
 		// deltas or inline base64 parts). The default 64 KB scanner limit would
@@ -206,6 +303,10 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 		scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 		for scanner.Scan() {
 			line := scanner.Text()
+			// Real progress: a full line arrived. Never updated while blocked
+			// inside Scan() — that silence is exactly what the watchdog
+			// measures.
+			atomic.StoreInt64(&lastRead, time.Now().UnixNano())
 			if !strings.HasPrefix(line, "data: ") {
 				continue
 			}
@@ -253,7 +354,19 @@ func (c *Client) Completion(ctx context.Context, req CompletionRequest) (*Comple
 	}
 
 	url := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/completion"
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
+
+	// Bound the non-streaming request (same pattern as ChatCompletion) so a
+	// server that accepts the connection and never responds cannot block the
+	// impersonation fallback for the OS TCP lifetime. A non-positive
+	// defaultRequestTimeout disables the bound.
+	reqCtx := ctx
+	if defaultRequestTimeout > 0 {
+		var cancel context.CancelFunc
+		reqCtx, cancel = context.WithTimeout(ctx, defaultRequestTimeout)
+		defer cancel()
+	}
+
+	httpReq, err := http.NewRequestWithContext(reqCtx, "POST", url, bytes.NewBuffer(body))
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +401,19 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 	}
 
 	url := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/health"
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+
+	// Bound the probe (same pattern as ChatCompletion): a health check against
+	// a server that accepts the connection and never responds must fail with a
+	// deadline error instead of blocking the caller for the OS TCP lifetime. A
+	// non-positive defaultRequestTimeout disables the bound.
+	reqCtx := ctx
+	if defaultRequestTimeout > 0 {
+		var cancel context.CancelFunc
+		reqCtx, cancel = context.WithTimeout(ctx, defaultRequestTimeout)
+		defer cancel()
+	}
+
+	req, err := http.NewRequestWithContext(reqCtx, "GET", url, nil)
 	if err != nil {
 		return err
 	}

@@ -527,6 +527,187 @@ func TestChatCompletionStream_ContextCancellation(t *testing.T) {
 	}
 }
 
+// TestChatCompletionStream_IdleWatchdog verifies that a provider which accepts
+// the request, sends the SSE headers, and then streams nothing is aborted by
+// the stream idle watchdog instead of blocking scanner.Scan() for the OS TCP
+// lifetime. This is the half-open-connection / stalled-backend failure mode
+// that used to hang the agent (subagents included).
+func TestChatCompletionStream_IdleWatchdog(t *testing.T) {
+	st := newStreamTest(t)
+	defer st.Close()
+
+	held := make(chan struct{})
+	defer close(held) // runs (LIFO) before st.Close so the handler can unblock
+
+	st.Handle(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// DiscoverBackend probes /props before the actual request; 404 those
+		// so the probes don't hang on <-held.
+		if r.URL.Path != "/v1/chat/completions" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// Send the response HEADERS, flush, then never write another byte and
+		// never close the connection: the stream is completely silent.
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.(http.Flusher).Flush()
+		<-held
+	}))
+
+	old := defaultStreamIdleTimeout
+	SetStreamIdleTimeout(300 * time.Millisecond)
+	t.Cleanup(func() { SetStreamIdleTimeout(old) })
+
+	start := time.Now()
+	outCh, errCh := st.client.ChatCompletionStream(context.Background(), defaultRequest())
+
+	// The chunk channel must close once the watchdog aborts the stalled body
+	// read. The watchdog ticks every 5s, so with a 300ms idle timeout the
+	// abort lands on the first tick (~5s); the bound below proves a fast fail
+	// (not the pre-fix unbounded hang) without over-pinning the tick schedule.
+	chunkClosed := false
+	for !chunkClosed {
+		select {
+		case _, ok := <-outCh:
+			if !ok {
+				chunkClosed = true
+			}
+		case <-time.After(20 * time.Second):
+			t.Fatal("chunk channel never closed — idle watchdog did not abort the silent stream")
+		}
+	}
+	elapsed := time.Since(start)
+
+	// Sanity guard against a vacuous pass: only a real watchdog abort (or a
+	// broken test setup) could return this fast; the abort itself cannot fire
+	// before the 300ms idle timeout elapses.
+	if elapsed < 200*time.Millisecond {
+		t.Errorf("stream returned after %s; too fast for an idle-watchdog abort (idle timeout is 300ms) — test setup likely broken", elapsed)
+	}
+	if elapsed > 10*time.Second {
+		t.Errorf("stream aborted after %s; expected the idle watchdog to fail fast (~5s), not hang", elapsed)
+	}
+	t.Logf("idle watchdog aborted the silent stream after %s", elapsed)
+
+	// The abort must surface as a regular stream error through the existing
+	// scanner.Err() path (don't over-pin the message: it may be the
+	// "stream interrupted" wrapper or a context/body-read error).
+	select {
+	case err, ok := <-errCh:
+		if ok && err == nil {
+			t.Error("error channel delivered a nil error")
+		}
+	default:
+		t.Error("expected a stream error on the error channel after the idle watchdog aborted, got none")
+	}
+}
+
+// TestChatCompletionStream_NormalStreamNotKilled verifies that a stream which
+// keeps making real progress is never aborted, even across a watchdog tick
+// (~5s): lines arrive every 300ms, well inside the 1s idle window, so lastRead
+// keeps advancing and the watchdog never fires.
+func TestChatCompletionStream_NormalStreamNotKilled(t *testing.T) {
+	st := newStreamTest(t)
+	defer st.Close()
+
+	// 20 lines x 300ms = ~6s, deliberately crossing the first 5s watchdog tick
+	// so the tick check actually runs against a live (slow) stream.
+	const lines = 20
+
+	st.Handle(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		flusher := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		for i := 0; i < lines; i++ {
+			fmt.Fprintf(w, "data: {\"id\":\"c1\",\"choices\":[{\"delta\":{\"content\":\"chunk-%d\"}}]}\n", i)
+			flusher.Flush()
+			time.Sleep(300 * time.Millisecond)
+		}
+		fmt.Fprint(w, "data: [DONE]\n")
+		flusher.Flush()
+	}))
+
+	old := defaultStreamIdleTimeout
+	SetStreamIdleTimeout(1 * time.Second)
+	t.Cleanup(func() { SetStreamIdleTimeout(old) })
+
+	outCh, errCh := st.client.ChatCompletionStream(context.Background(), defaultRequest())
+
+	var chunks []ChatCompletionChunk
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for chunk := range outCh {
+			chunks = append(chunks, chunk)
+		}
+	}()
+
+	start := time.Now()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("stream did not finish — the idle watchdog likely killed a stream that was making progress")
+	}
+	t.Logf("slow-but-active stream of %d lines completed in %s without being killed", lines, time.Since(start))
+
+	// outCh closes only after errCh was closed (LIFO defers), so any error is
+	// already buffered by now.
+	select {
+	case err, ok := <-errCh:
+		if ok && err != nil {
+			t.Fatalf("watchdog killed a stream that was making progress every 300ms: %v", err)
+		}
+	default:
+	}
+
+	if got := len(chunks); got != lines {
+		t.Errorf("got %d chunks, want %d (watchdog must not drop chunks on an active stream)", got, lines)
+	}
+}
+
+// TestChatCompletion_RequestTimeout verifies that a server which accepts the
+// connection and never responds cannot block the non-streaming ChatCompletion
+// past defaultRequestTimeout (overridden here to 200ms).
+func TestChatCompletion_RequestTimeout(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// DiscoverBackend probes /props before the actual request; 404 those
+		// so the probes don't hang on <-release.
+		if r.URL.Path != "/v1/chat/completions" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		<-release // never respond until test teardown
+	}))
+	// LIFO: close(release) runs before server.Close, so the blocked handler
+	// is unblocked before the server waits for outstanding requests.
+	defer server.Close()
+	defer close(release)
+
+	c := NewClient(Config{BaseURL: server.URL})
+
+	old := defaultRequestTimeout
+	SetRequestTimeout(200 * time.Millisecond)
+	t.Cleanup(func() { SetRequestTimeout(old) })
+
+	start := time.Now()
+	_, err := c.ChatCompletion(context.Background(), defaultRequest())
+	elapsed := time.Since(start)
+	t.Logf("non-stream request against a silent server returned after %s", elapsed)
+
+	if err == nil {
+		t.Fatal("expected a timeout error from a server that never responds, got nil")
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("request returned after %s; expected the 200ms request timeout to fire much sooner", elapsed)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error = %v; want it to wrap context.DeadlineExceeded", err)
+	}
+}
+
 func TestStreamInterruptedError(t *testing.T) {
 	sie := &StreamInterruptedError{Err: errors.New("boom")}
 	if got := sie.Error(); got != "stream interrupted: boom" {

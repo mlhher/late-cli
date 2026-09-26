@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // BaseOrchestrator implements common.Orchestrator and manages an agent's run loop.
@@ -42,6 +43,14 @@ type BaseOrchestrator struct {
 
 	// Max turns configuration
 	maxTurns int
+
+	// droppedEvents counts progress events (streaming ContentEvents and
+	// transient "thinking" statuses) that were dropped because eventCh was
+	// full — i.e. the event consumer (the TUI's event forwarder) stalled.
+	// Atomic: incremented from the run-loop goroutine's send sites, swapped
+	// and reported by reportDroppedEvents at the end of each turn (and
+	// readable from tests).
+	droppedEvents atomic.Int64
 }
 
 func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.ToolMiddleware, maxTurns int) *BaseOrchestrator {
@@ -65,6 +74,36 @@ func (o *BaseOrchestrator) SetMiddlewares(middlewares []common.ToolMiddleware) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.middlewares = middlewares
+}
+
+// trySendProgress delivers ev to o.eventCh without ever blocking the caller.
+//
+// eventCh is buffered (100) and consumed by the TUI's event-forwarding
+// goroutine; a stalled or wedged terminal would otherwise block the agent's
+// run loop on every send — the same hang class as the executor retry-callback
+// fix that already went non-blocking. Progress sends (high-frequency streaming
+// ContentEvents and transient "thinking" statuses) are therefore LOSSY by
+// design: the authoritative state lives in the session history and stream
+// accumulator, and the terminal status events — which are sent separately and
+// remain blocking — are what the TUI state machine actually waits on. Drops
+// are counted in droppedEvents and reported by reportDroppedEvents.
+func (o *BaseOrchestrator) trySendProgress(ev common.Event) {
+	select {
+	case o.eventCh <- ev:
+	default:
+		o.droppedEvents.Add(1)
+	}
+}
+
+// reportDroppedEvents logs how many progress events were silently dropped
+// because the event consumer stalled, then resets the counter. It is called
+// from onEndTurn so each turn reports only its own drops. Stderr is used
+// instead of a field on the final ContentEvent because extending the shared
+// event contract (internal/common) is out of scope for this hardening.
+func (o *BaseOrchestrator) reportDroppedEvents() {
+	if dropped := o.droppedEvents.Swap(0); dropped > 0 {
+		fmt.Fprintf(os.Stderr, "late: %d events dropped (consumer stalled)\n", dropped)
+	}
 }
 
 func (o *BaseOrchestrator) SetContext(ctx context.Context) {
@@ -207,7 +246,10 @@ func (o *BaseOrchestrator) Submit(text string, images []string) error {
 		return err
 	}
 
-	o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
+	// Transient status: non-blocking with drop counting. A stalled consumer
+	// must not wedge the caller here; the next terminal status (below) is
+	// what the TUI state machine relies on.
+	o.trySendProgress(common.StatusEvent{ID: o.id, Status: "thinking"})
 	// Start the run loop in a background goroutine
 	go o.run()
 	return nil
@@ -237,7 +279,11 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 		}
 	}
 
-	o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
+	// Transient status: non-blocking with drop counting (see trySendProgress).
+	o.trySendProgress(common.StatusEvent{ID: o.id, Status: "thinking"})
+	// The terminal "idle" status MUST be delivered or the TUI hangs in its
+	// running state ("Stopping..."), so this send stays blocking even if the
+	// consumer is stalled. It fires once, after all work is done.
 	defer func() {
 		o.mu.Lock()
 		o.isRunning = false
@@ -264,7 +310,9 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 			_ = o.sess.AddMessage(msg)
 		}
 
-		o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
+		// Transient per-turn status: non-blocking with drop counting (see
+		// trySendProgress).
+		o.trySendProgress(common.StatusEvent{ID: o.id, Status: "thinking"})
 	}
 
 	onEndTurn := func() {
@@ -273,7 +321,15 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 		usage := o.acc.Usage
 		o.acc.Reset()
 		o.mu.Unlock()
+		// Turn-boundary signal carrying the turn's Usage: kept BLOCKING. It is
+		// low-frequency (once per turn, not per chunk) and is the
+		// authoritative end-of-turn marker the TUI uses to finalize the
+		// message and recompute token counts; dropping it would leave the
+		// rendered transcript incomplete even after the consumer catches up.
 		o.eventCh <- common.ContentEvent{ID: o.id, Usage: usage, Completed: true}
+		// Report any progress events dropped while the consumer was stalled
+		// earlier in this turn (and reset the counter for the next turn).
+		o.reportDroppedEvents()
 	}
 
 	res, err := executor.RunLoop(
@@ -289,13 +345,16 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 			accCopy := o.acc
 			o.mu.Unlock()
 
-			o.eventCh <- common.ContentEvent{
+			// High-frequency streaming delta: non-blocking with drop counting
+			// (see trySendProgress) — a stalled TUI consumer must never wedge
+			// the run loop mid-stream.
+			o.trySendProgress(common.ContentEvent{
 				ID:               o.id,
 				Content:          accCopy.Content,
 				ReasoningContent: accCopy.Reasoning,
 				ToolCalls:        accCopy.ToolCalls,
 				Usage:            accCopy.Usage,
-			}
+			})
 		},
 		func(ev common.RetryEvent) {
 			// The retry starts a fresh stream; reset the shared accumulator so
@@ -330,6 +389,9 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 		o.middlewares,
 	)
 
+	// Terminal statuses: kept BLOCKING — the TUI hangs in "Stopping..." (or in
+	// the running state) if it never receives the run's final status, so these
+	// must be delivered even to a stalled consumer.
 	if err != nil {
 		// Canceled runs follow the stop path, not the error path (no error
 		// box): a stop can surface here as the underlying stream error, e.g.
@@ -388,7 +450,9 @@ func (o *BaseOrchestrator) run() {
 				_ = o.sess.AddMessage(msg)
 			}
 
-			o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
+			// Transient per-turn status: non-blocking with drop counting (see
+			// trySendProgress).
+			o.trySendProgress(common.StatusEvent{ID: o.id, Status: "thinking"})
 		}
 
 		onEndTurn := func() {
@@ -397,7 +461,12 @@ func (o *BaseOrchestrator) run() {
 			usage := o.acc.Usage
 			o.acc.Reset()
 			o.mu.Unlock()
+			// Turn-boundary signal carrying the turn's Usage: kept BLOCKING
+			// (same reasoning as Execute's onEndTurn).
 			o.eventCh <- common.ContentEvent{ID: o.id, Usage: usage, Completed: true}
+			// Report any progress events dropped while the consumer was
+			// stalled earlier in this turn, then reset the counter.
+			o.reportDroppedEvents()
 		}
 
 		// Build extra body
@@ -416,13 +485,16 @@ func (o *BaseOrchestrator) run() {
 				accCopy := o.acc // Copy for event
 				o.mu.Unlock()
 
-				o.eventCh <- common.ContentEvent{
+				// High-frequency streaming delta: non-blocking with drop
+				// counting (see trySendProgress) — a stalled TUI consumer
+				// must never wedge the run loop mid-stream.
+				o.trySendProgress(common.ContentEvent{
 					ID:               o.id,
 					Content:          accCopy.Content,
 					ReasoningContent: accCopy.Reasoning,
 					ToolCalls:        accCopy.ToolCalls,
 					Usage:            accCopy.Usage,
-				}
+				})
 			},
 			func(ev common.RetryEvent) {
 				// The retry starts a fresh stream; reset the shared accumulator
@@ -491,6 +563,8 @@ func (o *BaseOrchestrator) run() {
 				if len(o.sess.History) > 0 && o.sess.History[len(o.sess.History)-1].Role == "user" {
 					o.sess.History = o.sess.History[:len(o.sess.History)-1]
 				}
+				// Terminal status: kept BLOCKING — the TUI must observe the
+				// run's final status or it stays wedged in its running state.
 				o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: fmt.Errorf("image_unsupported")}
 			} else if isBadRequestStatusError(err) {
 				// The API rejected the request body even after the executor's bad-body
@@ -513,12 +587,15 @@ func (o *BaseOrchestrator) run() {
 					o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: errors.New(msg)}
 				}
 			} else {
+				// Terminal status: kept BLOCKING (see above).
 				o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: err}
 			}
 			break
 		}
 
 		if !hasPending {
+			// Terminal status: kept BLOCKING — the TUI must observe the run's
+			// final status or it stays wedged in its running state.
 			o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"}
 			break
 		}
@@ -526,6 +603,7 @@ func (o *BaseOrchestrator) run() {
 
 	// Check if stop was requested and send StopRequestedEvent
 	if o.IsStopRequested() {
+		// Terminal, fires once: kept BLOCKING so the TUI reliably observes it.
 		o.eventCh <- common.StopRequestedEvent{ID: o.id}
 	}
 }
@@ -661,6 +739,13 @@ func (o *BaseOrchestrator) AddChild(child common.Orchestrator) {
 	o.children = append(o.children, child)
 	o.mu.Unlock()
 
+	// ChildAddedEvent MUST be sent BLOCKING (no select/default): the TUI's
+	// ForwardOrchestratorEvents only spawns the child's event-forwarding
+	// goroutine when it receives this event, so dropping it would silently
+	// orphan the child's entire event stream. It has a guaranteed consumer by
+	// construction, and AddChild runs on the (single) subagent-runner
+	// goroutine, so a brief block here only backpressures child creation
+	// until the parent's consumer catches up.
 	o.eventCh <- common.ChildAddedEvent{
 		ParentID: o.id,
 		Child:    child,
