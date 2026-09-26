@@ -124,6 +124,20 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 	}
 	c.applyHeaders(httpReq)
 
+	// Fleet-wide pacing: the same process-wide bound as the streaming path
+	// (see ChatCompletionStream) applies to plain completions. The root
+	// agent's and every subagent's client share the limiter, so this call
+	// queues behind the whole fleet. The acquire sits right before Do with
+	// no early return in between, and the deferred release covers every
+	// exit below.
+	release := acquireLLMSlot(ctx)
+	if release == nil && ctx.Err() != nil {
+		return nil, fmt.Errorf("waiting for an LLM concurrency slot: %w", ctx.Err())
+	}
+	if release != nil {
+		defer release()
+	}
+
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, err
@@ -181,6 +195,28 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 			httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 		}
 		c.applyHeaders(httpReq)
+
+		// Fleet-wide pacing: take one of the process-wide LLM slots before
+		// the request leaves the process and hold it for the stream's whole
+		// lifetime — providers count an open streaming response as in-flight
+		// concurrency, so the slot must span the body read, not just the
+		// handshake. The root agent and every subagent share this one bound
+		// by design; without it, parallel agents stampede the provider's
+		// account-level concurrency limit and all of them get 429s. No early
+		// return sits between the acquire and Do, so the deferred release
+		// covers every exit from here on.
+		release := acquireLLMSlot(ctx)
+		if release == nil && ctx.Err() != nil {
+			// The context ended while this request was queued for a slot:
+			// surface the cancellation instead of issuing a doomed request.
+			// The wrapped context error keeps errors.Is(err, context.Canceled)
+			// working, which the retry executor treats as non-retryable.
+			errCh <- fmt.Errorf("waiting for an LLM concurrency slot: %w", ctx.Err())
+			return
+		}
+		if release != nil {
+			defer release()
+		}
 
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
@@ -264,6 +300,17 @@ func (c *Client) Completion(ctx context.Context, req CompletionRequest) (*Comple
 	}
 	c.applyHeaders(httpReq)
 
+	// Fleet-wide pacing: same process-wide bound as ChatCompletion — the
+	// root agent and every subagent share it, and the deferred release
+	// covers every exit below.
+	release := acquireLLMSlot(ctx)
+	if release == nil && ctx.Err() != nil {
+		return nil, fmt.Errorf("waiting for an LLM concurrency slot: %w", ctx.Err())
+	}
+	if release != nil {
+		defer release()
+	}
+
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, err
@@ -293,6 +340,19 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 		return err
 	}
 	c.applyHeaders(req)
+
+	// Fleet-wide pacing: health checks go through the same process-wide
+	// bound as real LLM requests so a probing fleet cannot add to a
+	// provider that is already at its concurrency limit. The deferred
+	// release covers every exit below.
+	release := acquireLLMSlot(ctx)
+	if release == nil && ctx.Err() != nil {
+		return fmt.Errorf("waiting for an LLM concurrency slot: %w", ctx.Err())
+	}
+	if release != nil {
+		defer release()
+	}
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err

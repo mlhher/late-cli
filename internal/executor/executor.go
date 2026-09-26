@@ -3,7 +3,6 @@ package executor
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -253,19 +252,24 @@ func RunLoop(
 	var lastContent string
 
 	// Retry budgets for failing LLM stream calls, resolved once per run.
-	// Two independent tiers: infrastructure failures (transport errors,
-	// 408/429/5xx) draw from the classic maxRetries budget, while HTTP 400
-	// bad-body rejections draw from the much smaller, dedicated badBodyBudget.
+	// Three independent tiers: infrastructure failures (transport errors,
+	// 408/5xx) draw from the classic maxRetries budget, HTTP 400 bad-body
+	// rejections draw from the much smaller, dedicated badBodyBudget, and
+	// HTTP 429 throttle responses pace on the large throttleBudget ceiling —
+	// pacing, not failures, so 429s never consume either failure budget.
 	maxRetries := maxStreamRetriesFromContext(ctx)
 	badBodyBudget := maxBadBodyRetriesFromContext(ctx)
+	throttleBudget := maxThrottleRetriesFromContext(ctx)
 
 	// A global disable (--max-stream-retries=0 / negative, or the ctx key)
-	// must silence BOTH tiers: the bad-body tier has its own default
-	// budget, which would otherwise keep retrying HTTP 400s despite the
-	// advertised "retries disabled" contract. An explicit bad-body budget
-	// still applies whenever the global budget is positive.
+	// must silence ALL tiers: the bad-body tier has its own default budget
+	// and the throttle tier its own large ceiling, which would otherwise
+	// keep retrying despite the advertised "retries disabled" contract. An
+	// explicit bad-body budget still applies whenever the global budget is
+	// positive.
 	if maxRetries <= 0 {
 		badBodyBudget = 0
+		throttleBudget = 0
 	}
 
 	for i := 0; maxTurns <= 0 || i < maxTurns; i++ {
@@ -279,29 +283,32 @@ func RunLoop(
 		// Inner attempt loop around the stream call only: retries never
 		// consume a turn (the turn counter above is untouched). Each attempt
 		// starts a fresh stream and ConsumeStream builds a fresh accumulator;
-		// a failed attempt commits nothing to history. Failures tier into two
-		// independent retry budgets: infrastructure failures (transport
-		// errors, 408/429/5xx) share the classic maxRetries budget, while
+		// a failed attempt commits nothing to history. Failures tier into
+		// three independent retry budgets: infrastructure failures
+		// (transport errors, 408/5xx) share the classic maxRetries budget,
 		// HTTP 400 body-parse rejections get their own small dedicated
 		// badBodyBudget, because strict OpenAI-compatible gateways often fail
-		// transiently while reading the request body. The two budgets use
-		// independent counters, so 400 retries never consume infrastructure
-		// retry budget and vice versa.
+		// transiently while reading the request body, and HTTP 429 throttle
+		// responses pace on the much larger throttleBudget — a sustained
+		// account/model concurrency limit 429s every attempt until capacity
+		// frees up, which must not exhaust a failure budget. The budgets use
+		// independent counters, so one tier's retries never consume another
+		// tier's budget.
 		var acc *StreamAccumulator
 		var err error
-		infraAttempts, badBodyAttempts := 0, 0
+		infraAttempts, badBodyAttempts, throttleAttempts := 0, 0, 0
 		var recoveryFired bool
 		for {
 			// Pre-attempt guard (retries only): if the context died while we
 			// were waiting in a previous backoff (both select cases below can
 			// be ready and the timer may win), do not call StartStream with a
 			// dead ctx. Handle it as a cancel, not a new attempt.
-			if infraAttempts+badBodyAttempts > 0 && ctx.Err() != nil {
+			if infraAttempts+badBodyAttempts+throttleAttempts > 0 && ctx.Err() != nil {
 				return "", err
 			}
 
 			var onConnect func()
-			if (infraAttempts+badBodyAttempts) > 0 && onRecover != nil {
+			if (infraAttempts+badBodyAttempts+throttleAttempts) > 0 && onRecover != nil {
 				onConnect = func() {
 					if !recoveryFired {
 						recoveryFired = true
@@ -320,19 +327,15 @@ func RunLoop(
 			// a non-retryable failure. Propagates byte-identically to the
 			// pre-retry behavior.
 			//
-			// Server-requested Retry-After: both retry tiers can carry a
-			// *client.StatusError (429/408/5xx in the infra tier, 400 in the
-			// bad-body tier), so the error chain is inspected once here and
-			// the requested delay — 0 when absent or invalid — is combined
-			// with the local jittered backoff below. effectiveRetryDelay
-			// guarantees the wait is never shorter than the server asked
-			// (capped at retryAfterCeiling) and the existing timer select
-			// keeps it cancelable.
-			var retryAfter time.Duration
-			var se *client.StatusError
-			if errors.As(err, &se) {
-				retryAfter = se.RetryAfter
-			}
+			// Server-requested Retry-After: every retry tier can carry a
+			// *client.StatusError (408/5xx in the infra tier, 400 in the
+			// bad-body tier, 429 in the throttle tier), so the error chain is
+			// inspected once here and the requested delay — 0 when absent or
+			// invalid — is combined with the local jittered backoff below.
+			// effectiveRetryDelay guarantees the wait is never shorter than
+			// the server asked (capped at retryAfterCeiling) and the
+			// existing timer select keeps it cancelable.
+			retryAfter := retryAfterFrom(err)
 			var delay time.Duration
 			switch classifyStreamError(err) {
 			case retryClassNone:
@@ -351,6 +354,32 @@ func RunLoop(
 						MaxAttempts: maxRetries,
 						// Effective delay: max(local jittered backoff,
 						// server-requested Retry-After, capped).
+						Delay: delay,
+						Err:   err,
+					})
+				}
+			case retryClassThrottle:
+				// Pacing tier: a 429 never consumes the infra or bad-body
+				// budgets — under a sustained account/model concurrency
+				// limit every failure-budget retry would be wasted before
+				// the limit lifts. The ceiling only bounds a pathological
+				// infinite-429 provider; the run budget (e.g. the 24h
+				// subagent budget) is the real bound.
+				if throttleAttempts >= throttleBudget {
+					return "", err
+				}
+				throttleAttempts++
+				// Same jittered doubling curve as the other tiers, at a
+				// longer base (2s) and cap (2min — saturates at attempt 7),
+				// never shorter than the server-requested Retry-After.
+				delay = effectiveRetryDelay(streamThrottleDelay(throttleAttempts), retryAfter)
+				if onRetry != nil {
+					onRetry(common.RetryEvent{
+						ID:          common.GetOrchestratorID(ctx),
+						Attempt:     throttleAttempts,
+						MaxAttempts: throttleBudget,
+						// Effective delay, same combination as the other
+						// tiers.
 						Delay: delay,
 						Err:   err,
 					})
@@ -395,7 +424,7 @@ func RunLoop(
 		// response. If at least one retry happened in this turn, signal
 		// recovery exactly once: the turn-start callback fired before the
 		// retries, so no thinking event will announce it.
-		if (infraAttempts+badBodyAttempts) > 0 && onRecover != nil && !recoveryFired {
+		if (infraAttempts+badBodyAttempts+throttleAttempts) > 0 && onRecover != nil && !recoveryFired {
 			// Signal recovery if not already fired upon connect (e.g. mock session).
 			onRecover()
 		}
