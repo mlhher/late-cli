@@ -249,8 +249,10 @@ func (t *ShellTool) ValidateBashCommand(command string, cwd string) error {
 		if gateLevel == "enforce" {
 			return fmt.Errorf("bash refused: `%s` detected. Use the native `search_content` (for text inside files) or `find_files` (for finding files/directories) tools instead — they respect .gitignore, permission gates, and apply output caps.", extractCommand(command))
 		}
-		// "warn" level: log but allow through
-		fmt.Fprintf(os.Stderr, "[WARN] Consider using search_content or find_files instead of bash %s\n", extractCommand(command))
+		// "warn" level: log but allow through — routed through the
+		// diagnostics sink so a TUI session gets a toast instead of raw
+		// stderr painting over the alt-screen (see tool.SetDiagnostics).
+		reportf("[WARN] Consider using search_content or find_files instead of bash %s\n", extractCommand(command))
 	}
 
 	blocked, err, _ := t.analyzeBashCommand(command, cwd)

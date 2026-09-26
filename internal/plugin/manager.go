@@ -16,6 +16,17 @@ type PluginManager struct {
 	pluginsDir string // absolute path to the global plugins store directory
 	projectDir string // optional absolute path to project-local plugins dir (.late/plugins/)
 	plugins    map[string]*InstalledPlugin
+
+	// diagSink receives mid-session diagnostic lines (hook errors, hook
+	// stderr, dropped notices) when installed — the TUI wires it to a
+	// warning toast so raw text never paints over the alt-screen. When nil
+	// (CLI flows, tests, pre-TUI bootstrap) diagnostics fall back to
+	// os.Stderr. Guarded by its own mutex rather than mu: some reporters
+	// (HandleCommand) already hold mu.RLock, and a nested RLock on the same
+	// RWMutex could deadlock against a queued writer. Multiple
+	// SetDiagnostics calls: the LAST sink wins (it replaces the previous).
+	diagSink func(msg string)
+	diagMu   sync.RWMutex
 }
 
 // NewPluginManager creates a new PluginManager for the given plugins directory.
@@ -48,6 +59,35 @@ func (pm *PluginManager) ProjectDir() string {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 	return pm.projectDir
+}
+
+// SetDiagnostics installs fn as the manager's diagnostic sink. Every
+// mid-session diagnostic line (hook stderr forwarding, hook errors from the
+// onToolCall/onToolResult/onMessageSend runners, inline-tool and theme
+// discovery warnings) is routed to fn instead of os.Stderr, so a TUI session
+// can surface it as a toast without raw text painting over the alt-screen.
+// Passing nil removes the sink and restores the stderr fallback. Calling
+// SetDiagnostics again replaces the previous sink — the LAST installed sink
+// wins. Must be called before the first run to apply to it (or any time;
+// reads are mutex-guarded, so installing mid-run is safe).
+func (pm *PluginManager) SetDiagnostics(fn func(msg string)) {
+	pm.diagMu.Lock()
+	defer pm.diagMu.Unlock()
+	pm.diagSink = fn
+}
+
+// diagnosticsSink returns the installed sink or nil (thread-safe).
+func (pm *PluginManager) diagnosticsSink() func(msg string) {
+	pm.diagMu.RLock()
+	defer pm.diagMu.RUnlock()
+	return pm.diagSink
+}
+
+// reportf formats one diagnostic line and routes it to the installed
+// diagnostics sink, or — when no sink is installed — to os.Stderr with the
+// exact same format string, pinning the pre-sink CLI/bootstrap behavior.
+func (pm *PluginManager) reportf(format string, args ...any) {
+	reportLine(pm.diagnosticsSink(), format, args...)
 }
 
 // TargetDir returns the plugins directory appropriate for the target scope.

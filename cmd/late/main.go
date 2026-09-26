@@ -679,6 +679,18 @@ func main() {
 	model.BootstrapStatus = "Starting..."
 	p := tea.NewProgram(model, pOpts...)
 
+	// diag is the mid-session diagnostics sink: hook timeouts/errors, hook
+	// stderr, and dropped-progress-event notices are delivered to the live
+	// TUI as DiagnosticMsg warning toasts instead of raw
+	// fmt.Fprintf(os.Stderr, ...) writes, which paint text over the
+	// alt-screen (duplicated footer rows, displaced agent-name line). The
+	// trailing newline the stderr formatting carries is trimmed here so the
+	// toast text is clean. Sources without a sink installed (CLI flows,
+	// pre-TUI bootstrap) still fall back to os.Stderr.
+	diag := func(msg string) {
+		p.Send(tui.DiagnosticMsg{Text: strings.TrimRight(msg, "\n")})
+	}
+
 	// toolSync serializes plugin/MCP tool-registry refreshes triggered by
 	// MCP servers' own tools/list_changed notifications (wired via
 	// mcpClient.OnToolsChanged below). It recomputes the full current tool/
@@ -692,6 +704,18 @@ func main() {
 	go func() {
 		// Set messenger first
 		p.Send(tui.SetMessengerMsg{Messenger: p})
+
+		// Install the diagnostics sink now that the program is live: every
+		// mid-session diagnostic source reports through the TUI instead of
+		// raw stderr (see diag above). Subagent orchestrators are separate
+		// instances created per spawn — the runner below installs the same
+		// sink on each child.
+		if pluginManager != nil {
+			pluginManager.SetDiagnostics(diag)
+		}
+		rootAgent.SetDiagnostics(diag)
+		tool.SetDiagnostics(diag)
+
 		if resumedSessionTitle != "" {
 			p.Send(tui.BootstrapStatusMsg{
 				Text:   resumedSessionTitle,
@@ -752,6 +776,13 @@ func main() {
 				return "", err
 			}
 			child.SetMiddlewares(buildMiddlewares(pluginManager, p, child.Registry()))
+
+			// Diagnostics sink: the child is its own BaseOrchestrator
+			// instance, so without this its mid-session diagnostics would
+			// fall back to raw os.Stderr and paint text over the alt-screen.
+			if bo, ok := child.(*orchestrator.BaseOrchestrator); ok {
+				bo.SetDiagnostics(diag)
+			}
 
 			res, err := child.Execute("")
 			if err != nil {

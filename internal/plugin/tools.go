@@ -3,8 +3,6 @@ package plugin
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"sort"
 
 	"late/internal/client"
@@ -70,7 +68,7 @@ func (pm *PluginManager) GetInlineTools(used map[string]bool) []InlineTool {
 			// Validate path containment up-front so we can skip tools
 			// whose script would escape the plugin directory.
 			if _, err := resolveHookPath(p.Path, t.Script); err != nil {
-				fmt.Fprintf(os.Stderr, "[tools] plugin %s tool %q: %v\n", p.Name, t.Name, err)
+				pm.reportf("[tools] plugin %s tool %q: %v\n", p.Name, t.Name, err)
 				continue
 			}
 
@@ -90,7 +88,7 @@ func (pm *PluginManager) GetInlineTools(used map[string]bool) []InlineTool {
 						// well-formed stdin.
 						payload = []byte("{}")
 					}
-					return runHook(ctx, pluginDir, scriptPath, payload)
+					return pm.runHook(ctx, pluginDir, scriptPath, payload)
 				},
 			})
 			rawIdentities = append(rawIdentities, p.Name+":"+t.Name)
