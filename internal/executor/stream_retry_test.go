@@ -259,6 +259,14 @@ func TestIsRetryableStreamError(t *testing.T) {
 			err:  fmt.Errorf("stream error: %w", &client.StatusError{StatusCode: 404, Status: "404 Not Found"}),
 			want: false,
 		},
+		{
+			// 413 NEVER retries — any tier: the provider rejected the request
+			// BODY, so resending the identical body is guaranteed to fail.
+			// The typed client error carries the ErrPayloadTooLarge sentinel.
+			name: "wrapped 413 payload-too-large is not retryable",
+			err:  fmt.Errorf("stream error: %w", &client.PayloadTooLargeError{Status: &client.StatusError{StatusCode: 413, Status: "413 Payload Too Large", Body: "Request body too large"}}),
+			want: false,
+		},
 
 		// Not retryable: anything unknown fails fast, like pre-retry behavior.
 		{
@@ -371,6 +379,14 @@ func TestClassifyStreamError(t *testing.T) {
 		{
 			name: "wrapped 404 is none",
 			err:  fmt.Errorf("stream error: %w", &client.StatusError{StatusCode: 404, Status: "404 Not Found"}),
+			want: retryClassNone,
+		},
+		{
+			// 413 fails fast on every tier: the request body exceeded the
+			// provider's limit, so retrying cannot help (pinned here and by
+			// TestRunLoopDoesNotRetry413 end-to-end).
+			name: "wrapped 413 payload-too-large is none",
+			err:  fmt.Errorf("stream error: %w", &client.PayloadTooLargeError{Status: &client.StatusError{StatusCode: 413, Status: "413 Payload Too Large", Body: "Request body too large"}}),
 			want: retryClassNone,
 		},
 

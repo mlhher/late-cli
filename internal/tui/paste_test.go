@@ -56,6 +56,17 @@ func (m *mockOrchestrator) DrainQueuedMessages() []string {
 	return q
 }
 
+// typedOrchestrator is a mockOrchestrator pinned to a specific orchestrator
+// ID, so tests can focus states whose ID maps to a specific agent type
+// through agentTypeForID ("main" → orchestrator, "<type>-subagent-<n>" →
+// "<type>").
+type typedOrchestrator struct {
+	mockOrchestrator
+	id string
+}
+
+func (m *typedOrchestrator) ID() string { return m.id }
+
 type mockKey struct {
 	code rune
 	text string

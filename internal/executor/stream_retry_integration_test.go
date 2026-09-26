@@ -464,6 +464,60 @@ func TestRunLoopDoesNotRetryNonRetryable(t *testing.T) {
 	}
 }
 
+func TestRunLoopDoesNotRetry413(t *testing.T) {
+	// A 413 (payload too large) must fail the run on the FIRST attempt with
+	// zero retries on every tier: the provider rejected the request BODY, so
+	// resending the identical body can never succeed. The client classifies
+	// it as *client.PayloadTooLargeError (sentinel ErrPayloadTooLarge) with
+	// actionable recovery guidance in the error text.
+	rs := newRetryServer(t, func(w http.ResponseWriter, r *http.Request) {
+		serveStatus(w, http.StatusRequestEntityTooLarge, "Request body too large")
+	})
+
+	sess := newRetryTestSession(t, rs.server.URL)
+	onRetry, retryEvents := retryCollector(t)
+	onRecover, recoveries := recoveryCollector(t)
+
+	// A generous budget that must never be touched by a 413.
+	ctx, cancel := runLoopCtx(5, 15*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err := RunLoop(ctx, sess, 1, nil, nil, nil, nil, onRetry, onRecover, nil)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("RunLoop returned nil error, want the 413 to fail the run")
+	}
+	if !errors.Is(err, client.ErrPayloadTooLarge) {
+		t.Fatalf("RunLoop error = %v, want it to carry the ErrPayloadTooLarge sentinel", err)
+	}
+	var statusErr *client.StatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("RunLoop error = %v, want it to wrap *client.StatusError with 413", err)
+	}
+	if !strings.Contains(err.Error(), client.PayloadTooLargeGuidance) {
+		t.Errorf("RunLoop error = %q, want it to carry the recovery guidance", err.Error())
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("non-retryable 413 took %v to fail, want a fast failure", elapsed)
+	}
+
+	if events := retryEvents(); len(events) != 0 {
+		t.Errorf("got %d RetryEvents, want 0 for a non-retryable 413: %+v", len(events), events)
+	}
+	// No retries, no recovery: the flag must never fire on a clean failure.
+	if got := recoveries(); got != 0 {
+		t.Errorf("onRecover fired %d times, want 0 (no retries happened)", got)
+	}
+	if got := rs.postCount(); got != 1 {
+		t.Errorf("server got %d POSTs, want exactly 1 (no retry after 413)", got)
+	}
+	if len(sess.History) != 1 {
+		t.Errorf("history length = %d, want 1 (nothing committed)", len(sess.History))
+	}
+}
+
 func TestRunLoopCancelDuringBackoffStops(t *testing.T) {
 	rs := newRetryServer(t, func(w http.ResponseWriter, r *http.Request) {
 		serveStatus(w, http.StatusInternalServerError, "down while user waits")

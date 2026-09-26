@@ -23,6 +23,13 @@ type SessionMeta struct {
 	SubagentSeq           int       `json:"subagent_seq"`
 	SaveSubagentHistories *bool     `json:"save_subagent_histories,omitempty"`
 	WorkingDir            string    `json:"working_dir,omitempty"` // Absolute path of the project directory where the session was started
+	// CompactionHighWater is the history compaction high-water mark: the
+	// monotonic message index below which the frozen prefix ends. The
+	// compactor never re-scores or rewrites a message with a smaller index,
+	// so the prompt-cache anchor survives across compaction runs and
+	// restarts. omitempty keeps legacy sidecars byte-identical while the
+	// mark is zero. See compact.go for the invariants it enforces.
+	CompactionHighWater int `json:"compaction_high_water,omitempty"`
 }
 
 // SessionDir returns the directory where session metadata and histories are stored

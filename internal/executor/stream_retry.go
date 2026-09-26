@@ -167,6 +167,16 @@ func classifyStreamError(err error) streamRetryClass {
 	}
 	var se *client.StatusError
 	if errors.As(err, &se) {
+		// 413 NEVER retries — on any tier: the provider rejected the request
+		// body itself (payload too large), so resending the identical body is
+		// guaranteed to fail again. The client surfaces it as
+		// *client.PayloadTooLargeError (sentinel ErrPayloadTooLarge); the
+		// fallthrough below would already fail fast (413 is not
+		// 400/429/408/5xx), but the explicit branch pins the invariant where
+		// a reader can see it.
+		if se.StatusCode == 413 {
+			return retryClassNone
+		}
 		if se.StatusCode == 400 {
 			return retryClassBadBody
 		}

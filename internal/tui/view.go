@@ -525,6 +525,20 @@ func formatAgentBreadcrumb(id string) string {
 	return id
 }
 
+// agentTypeForID maps an orchestrator ID to the agent type used by
+// config.AgentModels lookups: the root agent ("main") maps to "orchestrator"
+// and "<type>-subagent-<n>" (the NextChildID scheme) maps to "<type>".
+// Unrecognized IDs return "" (no config lookup possible).
+func agentTypeForID(id string) string {
+	if id == "" || id == common.MainAgentID {
+		return "orchestrator"
+	}
+	if idx := strings.Index(id, "-subagent-"); idx > 0 {
+		return id[:idx]
+	}
+	return ""
+}
+
 func (m *Model) statusBarView() string {
 	w := max(m.Width, 1)
 

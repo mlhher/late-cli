@@ -49,6 +49,16 @@ func EstimateTokenCountFast(text string) int {
 
 // CalculateHistoryTokensFast calculates token count quickly without blocking on BPE load,
 // ensuring the initial TUI frame renders immediately with a populated token bar.
+//
+// DIVERGENCE from CalculateHistoryTokens (deliberate, initial frame only —
+// tui/model.go's first paint): it uses EstimateTokenCountFast, which falls
+// back to the ~3.5 chars/token heuristic while the BPE vocabulary is still
+// loading, and it counts only message Content + ReasoningContent + 4
+// overhead per message — it does NOT walk ToolCalls (name + arguments), so a
+// history dense in tool calls undercounts relative to the slow path. That is
+// acceptable for the pre-discovery frame the async token-count traffic
+// replaces (update.go recomputes with CalculateHistoryTokens); do not use
+// this for any accounting that persists or gates.
 func CalculateHistoryTokensFast(history []client.ChatMessage, systemPrompt string, tools []client.ToolDefinition) int {
 	total := EstimateTokenCountFast(systemPrompt) + 10 // System prompt + overhead
 	for _, t := range tools {

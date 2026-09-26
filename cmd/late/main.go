@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"late/internal/agent"
@@ -20,6 +21,7 @@ import (
 
 	"late/internal/assets"
 	"late/internal/client"
+	"late/internal/compaction"
 	appconfig "late/internal/config"
 	"late/internal/mcp"
 	"late/internal/pathutil"
@@ -29,6 +31,7 @@ import (
 	"late/internal/tui"
 
 	"encoding/json"
+	"text/tabwriter"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
@@ -119,6 +122,15 @@ func main() {
 	logitBiasReq := flag.String("logit-bias", "", "Main-agent token bias: JSON object or comma-separated TOKEN_ID:BIAS pairs.")
 	suppressThinkingWordsReq := flag.Bool("suppress-thinking-words", false, "Bias anti-overthinking tokens (requires the same model for main agent and subagents).")
 	subagentLogitBiasReq := flag.String("subagent-logit-bias", "", "Subagent token bias: JSON object or comma-separated TOKEN_ID:BIAS pairs.")
+	// Compaction (staged rollout of the jev-compaction port): off = no
+	// scoring at all; shadow = score tool outputs + shadow log only
+	// (default, no behavior change); enabled = additionally relocate
+	// low-scoring segments out of oversized tool results (registers the
+	// expand tool so originals stay retrievable).
+	compactionModeReq := flag.String("compaction-mode", "", "Tool-output compaction stage: off, shadow (score + shadow log only), or enabled (also relocate low-scoring segments; adds the expand tool). Overrides config.json compaction-mode. Default: shadow.")
+	compactionThresholdReq := flag.Float64("compaction-threshold", compaction.DefaultRelocationThreshold, "Score (0-1] below which tool-output segments are elided when -compaction-mode=enabled. Overrides config.json compaction-threshold; default 0.35.")
+	replayShadowReq := flag.String("replay-shadow", "", "Replay the default shadow log at the given comma-separated thresholds (e.g. 0.10,0.35,0.50): print the kept/relocated/tokens-saved/still-missed table plus the false-negative rate, then exit. Read-only; the TUI does not start.")
+	checkCompactionReq := flag.Bool("check-compaction", false, "Run the compaction preflight against the resolved System One backend — real requests checking (1) decisions answers and parse, (2) the gate relocates something from a real tool output, (3) a pointer expands back byte for byte — print the per-stage report and exit (0 pass, 1 fail; the TUI does not start). Pairs with -compaction-mode. With config.json compaction-backend \"offline\" the same three stages run against the deterministic local scripted scorer: no key, no network.")
 
 	flag.Usage = func() {
 		writeHelp(os.Stderr, flag.CommandLine)
@@ -134,6 +146,34 @@ func main() {
 
 	if *helpReq {
 		flag.Usage()
+		return
+	}
+
+	// -replay-shadow: read-only offline replay of the default shadow log —
+	// one kept/relocated/tokens-saved/still-missed row per given threshold
+	// (re-decided from the recorded scores, no scorer round trip) plus the
+	// false-negative rate — then exit without starting the TUI.
+	//
+	// This branch deliberately runs BEFORE appconfig.LoadConfig: the replay
+	// consumes only the shadow log, never config.json, and LoadConfig has
+	// side effects a read-only diagnostic must not take — it CREATES a
+	// default config.json when the file is missing and tightens the config
+	// dir/file permissions. The price is that the startup config warnings
+	// (invalid compaction-mode, compaction-threshold-percent, …) are not
+	// printed on this path; they surface on any normal run or
+	// -check-compaction (which resolves the config below). If a replay ever
+	// needs to honor a config setting, move this branch below the
+	// LoadConfig block and accept the side effects.
+	if *replayShadowReq != "" {
+		thresholds, err := parseReplayThresholds(*replayShadowReq)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if err := runReplayShadow(thresholds); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -367,6 +407,22 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Failed to load app config: %v\n", err)
 	}
+	// Surface an invalid compaction-threshold-percent the same way the
+	// invalid permission-mode is reported: warn once and use the default.
+	if _, compactionWarning := appconfig.ResolveCompactionThreshold(appConfig); compactionWarning != "" {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", compactionWarning)
+	}
+	// Same warn-and-fall-back pattern for the auto-compaction threshold.
+	if _, _, autocompactWarning := appconfig.ResolveAutocompact(appConfig); autocompactWarning != "" {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", autocompactWarning)
+	}
+	// Per-model jev-autocompact-percent overrides use the same key inside
+	// each models[] entry; an out-of-range per-model value warns and falls
+	// back to the global threshold (it cannot fail the models[] key walk —
+	// that covers key names, not value ranges).
+	for _, modelWarning := range appConfig.AutocompactWarnings() {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", modelWarning)
+	}
 	enabledTools := make(map[string]bool)
 	if appConfig != nil {
 		for toolName, enabled := range appConfig.EnabledTools {
@@ -486,6 +542,11 @@ func main() {
 		if loadedSessionMeta.WorkingDir != "" {
 			sess.SetWorkingDir(loadedSessionMeta.WorkingDir)
 		}
+		// Restore the compaction high-water mark so the frozen prefix stays
+		// append-only across restarts: resumed sessions never re-score or
+		// rewrite messages a previous run already froze. Legacy sidecars
+		// without the field carry zero — the count-based prefix then applies.
+		sess.SetCompactionHighWater(loadedSessionMeta.CompactionHighWater)
 	} else {
 		sess.SetSubagentMetadata(0, &saveSubagentHistories)
 	}
@@ -532,6 +593,215 @@ func main() {
 				runner:      t.Runner,
 			})
 			pluginToolNames = append(pluginToolNames, t.Name)
+		}
+	}
+
+	// Compaction (staged rollout stage 2 of the jev-compaction port).
+	// Mode resolution: the -compaction-mode flag beats config.json
+	// compaction-mode; both are validated against the same three values
+	// (invalid → warn + shadow, the safe default).
+	compactionMode, compactionModeWarning := appconfig.ResolveCompactionMode(appConfig)
+	if *compactionModeReq != "" {
+		if appconfig.IsValidCompactionMode(*compactionModeReq) {
+			compactionMode = *compactionModeReq
+			compactionModeWarning = ""
+		} else {
+			compactionMode = appconfig.DefaultCompactionMode
+			compactionModeWarning = fmt.Sprintf("ignoring invalid -compaction-mode %q; using %q",
+				*compactionModeReq, appconfig.DefaultCompactionMode)
+		}
+	}
+	if compactionModeWarning != "" {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", compactionModeWarning)
+	}
+
+	// Retrieval read side (Step 17): compaction-retrieval scores the record
+	// store's digest against the current task before every stream request
+	// and stages the top-k relevant records into the outgoing request's work
+	// area (ephemeral — never the frozen prefix, never persisted). Resolved
+	// with the same warn-on-invalid pattern as the other compaction knobs;
+	// the warning fires for the inert combinations (mode not "enabled",
+	// where the store never fills).
+	compactionRetrieval, compactionRetrievalWarning := appconfig.ResolveCompactionRetrieval(appConfig)
+	if compactionRetrievalWarning != "" {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", compactionRetrievalWarning)
+	}
+
+	// Backend selection (Step 18): config.json compaction-backend points
+	// scoring at a specific scorer. The only value today is "offline" — the
+	// deterministic scripted scorer (no API key, no network; demos and tests
+	// only, its scores are content hashes). A set value WINS over the
+	// environment: JEV_API and auto-detection are consulted only when the
+	// entry is absent, because the config entry is the explicit statement
+	// about where scoring happens. Invalid values warn and fall back to the
+	// env-based path.
+	compactionBackendName, compactionBackendWarning := appconfig.ResolveCompactionBackend(appConfig)
+	if compactionBackendWarning != "" {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", compactionBackendWarning)
+	}
+
+	// -check-compaction: run the compaction preflight (Step 16) against the
+	// backend THIS run would resolve and exit — the TUI never starts. The
+	// mode resolution above is deliberately shared with the normal startup
+	// path (the check must vet exactly the backend the session would use),
+	// and -compaction-mode pairs with the flag, so an invalid mode warns
+	// here the same way it would in a real run. The check itself exercises
+	// scoring, the gate, and expansion — a superset of what shadow mode does
+	// — so it applies in every mode: it is the "would have caught the
+	// too-small local backend before integration" tool. With the offline
+	// backend selected in config.json the same stages run against the
+	// scripted scorer — no key, no network, and they pass by construction.
+	if *checkCompactionReq {
+		os.Exit(runCompactionCheck(compactionBackendName == appconfig.CompactionBackendOffline))
+	}
+
+	// Elision threshold: segments scoring strictly below it are relocated
+	// out of oversized tool results when compaction-mode is enabled
+	// (default per the upstream repo's own shadow-log replay data).
+	// Precedence: an explicitly passed -compaction-threshold flag >
+	// config.json compaction-threshold > the 0.35 default. The resolver
+	// receives the flag value only when it was explicitly passed
+	// (flag.Visit — config loads after flag.Parse, so this is the only
+	// reliable explicit-flag signal); 0 otherwise, so the config entry can
+	// win over the flag's built-in default.
+	compactionThresholdFlagValue := 0.0
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "compaction-threshold" {
+			compactionThresholdFlagValue = *compactionThresholdReq
+		}
+	})
+	compactionThreshold, compactionThresholdWarning := appconfig.ResolveCompactionScoreThreshold(appConfig, compactionThresholdFlagValue)
+	if compactionThresholdWarning != "" {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", compactionThresholdWarning)
+	}
+
+	// Gate safety knobs (reference-parity semantics for the elide decision).
+	// Max elide fraction: a scorer that wants to drop more than this share
+	// of an output's tokens is distrusted and nothing is elided. Protected
+	// floor: stacktrace and diff segments are only elided below this score.
+	compactionMaxElidePercent, maxElideWarning := appconfig.ResolveCompactionMaxElidePercent(appConfig)
+	if maxElideWarning != "" {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", maxElideWarning)
+	}
+	compactionProtectedFloorPercent, protectedFloorWarning := appconfig.ResolveCompactionProtectedFloor(appConfig)
+	if protectedFloorWarning != "" {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", protectedFloorWarning)
+	}
+
+	// The TUI's /jev-compact-context command and auto-trigger reuse this
+	// pipeline (its scoring client) and elide store; both stay nil when
+	// compaction is off or no backend resolved, which disables them.
+	var (
+		compactionPipeline  *compaction.Pipeline
+		compactionStore     *compaction.Store
+		compactionShadowLog *compaction.ShadowLog
+		// compactionBackend is the resolved backend behind the pipeline,
+		// captured for the Step 16 startup probe; nil when compaction is
+		// off, no backend resolved, or the offline scripted scorer is
+		// selected (nothing to probe — there is no network to reach).
+		compactionBackend *compaction.ResolvedBackend
+	)
+	if compactionMode != appconfig.CompactionModeOff {
+		// Scoring source: the offline scripted scorer (compaction-backend
+		// "offline") or, when the config entry is absent/invalid, the
+		// env-resolved System One backend as before. The config entry wins:
+		// an "offline" session never resolves a backend, never needs a key,
+		// and never sends a request.
+		compactionOffline := compactionBackendName == appconfig.CompactionBackendOffline
+		var (
+			backend   compaction.ResolvedBackend
+			scoringOK bool
+		)
+		if compactionOffline {
+			scoringOK = true
+		} else {
+			resolved, backendErr := compaction.ResolveBackendEnv("")
+			if backendErr != nil {
+				if compactionMode == appconfig.CompactionModeEnabled {
+					// Relocation without a backend would fail-open every
+					// oversized result (nothing ever elided): warn and drop to
+					// the shadow stage per the staged rollout.
+					fmt.Fprintf(os.Stderr, "Warning: compaction-mode %q needs a System One backend (%v); falling back to %q\n",
+						appconfig.CompactionModeEnabled, backendErr, appconfig.CompactionModeShadow)
+					compactionMode = appconfig.CompactionModeShadow
+				} else {
+					fmt.Fprintf(os.Stderr, "Warning: compaction-mode %q has no System One backend (%v)\n",
+						appconfig.CompactionModeShadow, backendErr)
+				}
+			} else {
+				backend = resolved
+				scoringOK = true
+			}
+		}
+		// The pipeline only exists behind usable scoring: without it every
+		// decisions call would burn retries and fail-open, so this run
+		// proceeds with compaction off instead (the warning above explains).
+		// Offline scoring is always usable — that is the point of the demo
+		// path.
+		if scoringOK {
+			shadowLog, shadowErr := compaction.NewShadowLog()
+			if shadowErr != nil {
+				// Logging is best-effort: scoring (and relocation) still
+				// run without it.
+				fmt.Fprintf(os.Stderr, "Warning: compaction shadow log unavailable (%v); continuing without it\n", shadowErr)
+				shadowLog = nil
+			}
+			compactionShadowLog = shadowLog
+			var pipeline *compaction.Pipeline
+			if compactionOffline {
+				// Step 18 demo path: the same segmentation, gate, pointers,
+				// and store over the deterministic scripted scorer. Demos
+				// and tests only — the scripted scores are content hashes,
+				// not essentialness judgments, and must never become a
+				// production default.
+				pipeline = compaction.NewOfflinePipeline(compaction.PipelineOptions{Shadow: shadowLog})
+			} else {
+				compactionBackend = &backend
+				pipeline = compaction.NewPipeline(backend, "", shadowLog, compaction.PipelineOptions{})
+			}
+			// GateConfig: the reference-parity elision safety semantics —
+			// keep threshold, elide-fraction tripwire, and protected-kind
+			// floors — threaded from config.json (defaults mirror the
+			// reference pipeline.py). KeepThreshold uses the SAME resolved
+			// compactionThreshold as EnableRelocation below — one source of
+			// truth for the elision cutoff (flag > config > default).
+			gate := compaction.DefaultGateConfig()
+			gate.KeepThreshold = compactionThreshold
+			gate.MaxElideFraction = float64(compactionMaxElidePercent) / 100
+			protectedFloor := float64(compactionProtectedFloorPercent) / 100
+			gate.ProtectedKinds = map[compaction.SegmentKind]float64{
+				compaction.KindStacktrace: protectedFloor,
+				compaction.KindDiff:       protectedFloor,
+			}
+			pipeline.ApplyGateConfig(gate)
+			if compactionMode == appconfig.CompactionModeEnabled {
+				// The record store persists elided originals across
+				// restarts: [[elided …]] pointers saved into a session
+				// history must still resolve after `late` exits, so
+				// relocation is backed by the append-only JSONL store at
+				// compaction.DefaultStorePath instead of a throwaway
+				// in-memory map. Open failure degrades to the in-memory
+				// store — compaction keeps working, pointers merely stop
+				// surviving restarts (the shadow-log warning pattern).
+				store := openCompactionStore()
+				// Outcomes: the expand tool attributes every expand back to
+				// the record and its contributing segment ids through the
+				// shadow log attached here (Step 13's false-negative
+				// ledger). Nil-safe — a missing shadow log simply disables
+				// outcome logging.
+				store = store.WithShadowLog(compactionShadowLog)
+				pipeline.EnableRelocation(store, compactionThreshold)
+				// The expand tool returns relocated originals. Registered on
+				// the main registry before any spawn: subagents inherit it
+				// (and the same store) from the parent registry.
+				sess.Registry.Register(tool.ExpandTool{Store: store})
+				compactionStore = store
+			}
+			// Shared by the root agent and every subagent: ExecuteToolCalls
+			// consults it for both (shadow mode scores and logs without
+			// changing results).
+			executor.SetToolResultCompactor(pipeline)
+			compactionPipeline = pipeline
 		}
 	}
 
@@ -625,6 +895,69 @@ func main() {
 		model.CommandHandler = pluginManager.HandleCommand
 	}
 
+	// History compaction for /jev-compact-context + the auto-trigger: the
+	// session's CompactContext shares the pipeline's scoring client and its
+	// elide-id space (the same store the expand tool reads). Shadow mode
+	// reports without mutating; enabled mode persists the compacted history.
+	if compactionPipeline != nil {
+		if compactionStore == nil {
+			// Shadow mode: the history walk still mints pointer ids for its
+			// honest report, so it needs a store even though nothing is
+			// applied; a fresh one keeps those ids out of the (absent)
+			// expand tool's id space.
+			compactionStore = compaction.NewStore()
+		}
+		model.Compactor = historyCompactionRunner(sess, compactionPipeline.HistoryScorer(), compactionStore,
+			compactionMode != appconfig.CompactionModeEnabled, compactionThreshold, compactionShadowLog)
+		// The TUI's one-shot 413 payload-recovery compaction only fires when
+		// compaction can actually shrink history: mode "enabled" (after the
+		// shadow fallback above, which downgrades to shadow when the
+		// backend is unavailable — compactionMode is re-read here, so the
+		// fallback is honored), not shadow report-only runs.
+		//
+		// Ordering invariant: this assignment runs before tea.NewProgram
+		// below, and the TUI can only observe a 413 after a run starts —
+		// which requires a submitted message through the live program. So
+		// no event can trigger the recovery before the flag is set: the
+		// startup race is closed by construction, not by synchronization.
+		model.CompactionApplies = compactionMode == appconfig.CompactionModeEnabled
+	}
+
+	// Retrieval hooks (Step 17): BaseOrchestrator runs the hook at every
+	// turn start — right before that turn's stream request — so each agent
+	// (root and every subagent, which each own a session) stages retrieved
+	// context into its own request's work area. The hook owns its errors:
+	// a failed retrieval warns once and the turn proceeds without it; the
+	// next turns retry, so one flaky scoring round never disables the
+	// feature for the session.
+	var retrievalWarnOnce sync.Once
+	var retrievalHookFor func(s *session.Session) func(context.Context)
+	// diagSink reads the mid-session diagnostics sink at hook-run time: diag
+	// (below, after the TUI program exists) assigns it, so closures created
+	// here — before the program starts — route their warnings through the
+	// live TUI instead of raw stderr. The write happens before p.Run() and
+	// before any agent run can start (runs begin only when the TUI submits
+	// a message), so the assignment happens-before every read. nil (CLI
+	// flows, bootstrap) keeps the os.Stderr fallback.
+	var diagSink func(msg string)
+	if compactionRetrieval && compactionPipeline != nil {
+		retrievalHookFor = func(s *session.Session) func(context.Context) {
+			return func(ctx context.Context) {
+				if _, err := s.InjectRetrieved(ctx, compactionPipeline, compactionStore,
+					compaction.DefaultRetrieveK, compaction.DefaultRetrieveBudgetTokens, compaction.DefaultRetrieveThreshold); err != nil {
+					retrievalWarnOnce.Do(func() {
+						if diagSink != nil {
+							diagSink(fmt.Sprintf("Warning: compaction retrieval skipped (%v); later turns retry\n", err))
+							return
+						}
+						fmt.Fprintf(os.Stderr, "Warning: compaction retrieval skipped (%v); later turns retry\n", err)
+					})
+				}
+			}
+		}
+		rootAgent.SetRetrievalHook(retrievalHookFor(sess))
+	}
+
 	// Register plugin slash commands + theme catalog so plugin commands fire
 	// when the user presses Enter.
 	if pluginManager != nil && pluginManager.Count() > 0 {
@@ -679,6 +1012,31 @@ func main() {
 	model.BootstrapStatus = "Starting..."
 	p := tea.NewProgram(model, pOpts...)
 
+	// diag is the mid-session diagnostics sink: compaction's mid-session
+	// warnings — the pipeline's one-time auth-poison note and the retrieval-
+	// skip notice — are delivered to the live TUI as DiagnosticMsg warning
+	// toasts instead of raw fmt.Fprintf(os.Stderr, ...) writes, which paint
+	// text over the alt-screen (duplicated footer rows, displaced agent-name
+	// line). The trailing newline the stderr formatting carries is trimmed
+	// here so the toast text is clean. Sources without a sink installed
+	// (CLI flows, pre-TUI bootstrap) still fall back to os.Stderr. Every
+	// diagnostic is ALSO appended to the durable critical-error log
+	// (~/.local/share/late/late-errors.log): a toast disappears with the
+	// terminal, the file does not — best-effort, never fails the caller.
+	diag := func(msg string) {
+		common.LogError("diagnostic", strings.TrimRight(msg, "\n"))
+		p.Send(tui.DiagnosticMsg{Text: strings.TrimRight(msg, "\n")})
+	}
+	// Publish the sink to closures created before the program existed (see
+	// diagSink above), and give the compaction pipeline's one-time
+	// auth-poison warning the same route: it can fire mid-session (first
+	// scoring call after a key is revoked) and must not paint raw stderr
+	// over the alt-screen either.
+	diagSink = diag
+	if compactionPipeline != nil {
+		compactionPipeline.SetWarningSink(diag)
+	}
+
 	// toolSync serializes plugin/MCP tool-registry refreshes triggered by
 	// MCP servers' own tools/list_changed notifications (wired via
 	// mcpClient.OnToolsChanged below). It recomputes the full current tool/
@@ -723,6 +1081,40 @@ func main() {
 		}
 	}()
 
+	// Startup compaction probe (Step 16): one cheap ScoreBatch with a single
+	// small item against the resolved backend, in its own goroutine so the
+	// first paint never waits for the backend. A failure never tears the
+	// pipeline down — scoring is fail-open by contract and shadow mode is
+	// harmless — it warns once on stderr, surfaces the reason in the status
+	// bar, and, ONLY for a typed auth rejection, disables the session's
+	// scoring through the same path a live 401 takes (the probe's client is
+	// a throwaway, so without this the live pipeline would learn on its
+	// first real scoring call against a backend that can only say 401). The
+	// probe is deliberately NOT logged as a shadow decision: it is not a
+	// scoring decision, and one probe line per launch would pollute the
+	// replay ledger.
+	if compactionPipeline != nil && compactionBackend != nil {
+		probeBackend := *compactionBackend
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), compactionProbeTimeout)
+			defer cancel()
+			if err := compaction.ProbeBackend(ctx, probeBackend, ""); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: compaction backend probe failed (%v); scoring fails open this session\n", err)
+				common.LogErrorf("compaction", "backend probe failed: %v", err)
+				p.Send(tui.BootstrapStatusMsg{
+					Text:    "compaction: backend probe failed — scoring fails open",
+					Warning: true,
+				})
+				var ce *compaction.Error
+				if errors.As(err, &ce) && ce.Kind == compaction.KindAuth {
+					compactionPipeline.DisableAuth(ce.Error())
+				}
+				return
+			}
+			p.Send(tui.BootstrapStatusMsg{Text: "compaction: backend probe OK", Active: false})
+		}()
+	}
+
 	if *enableSubagentsReq {
 		runner := func(ctx context.Context, goal string, ctxFiles []string, agentType string) (string, error) {
 			var currentSubagentClient *client.Client
@@ -753,6 +1145,15 @@ func main() {
 			}
 			child.SetMiddlewares(buildMiddlewares(pluginManager, p, child.Registry()))
 
+			// Retrieval read side (Step 17): children get the same per-turn
+			// hook as the root agent — the work-area injection is per-agent
+			// session, while the record store and pipeline are shared.
+			if retrievalHookFor != nil {
+				if bo, ok := child.(*orchestrator.BaseOrchestrator); ok {
+					bo.SetRetrievalHook(retrievalHookFor(bo.Session()))
+				}
+			}
+
 			res, err := child.Execute("")
 			if err != nil {
 				return "", err
@@ -773,6 +1174,225 @@ func main() {
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Unspecified error: %v", err)
 		os.Exit(1)
+	}
+}
+
+// compactionCheckTimeout bounds the whole -check-compaction preflight (three
+// stages of real requests against the backend, one attempt each; the offline
+// backend's stages are local and finish in microseconds) and
+// compactionProbeTimeout bounds the light startup probe. Generous enough for
+// a slow local gateway, short enough that a dead endpoint cannot hang the
+// flag or the startup path.
+const (
+	compactionCheckTimeout = 90 * time.Second
+	compactionProbeTimeout = 30 * time.Second
+)
+
+// runCompactionCheck runs the compaction preflight against the backend the
+// normal startup path resolves — the same compaction.ResolveBackendEnv("")
+// call the pipeline wiring makes — and returns the process exit code: 0 when
+// every stage passes, 1 otherwise. A missing backend or key is stage 0's
+// failure: the report then says what to configure instead of starting a run
+// that cannot score anything. With offline (config.json compaction-backend
+// "offline") the same three stages run against the deterministic scripted
+// scorer instead: no backend is resolved, no key is consulted, no request is
+// sent, and the stages pass by construction — the demo path's self-test.
+func runCompactionCheck(offline bool) int {
+	if offline {
+		ctx, cancel := context.WithTimeout(context.Background(), compactionCheckTimeout)
+		defer cancel()
+		results, ok := compaction.RunPreflightOffline(ctx)
+		fmt.Print(compaction.FormatCheckReport(results, ok))
+		if !ok {
+			return 1
+		}
+		return 0
+	}
+	backend, backendErr := compaction.ResolveBackendEnv("")
+	if backendErr != nil {
+		fmt.Print(compaction.FormatCheckReport(noBackendCheckResults(backendErr), false))
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), compactionCheckTimeout)
+	defer cancel()
+	results, ok := compaction.RunPreflight(ctx, backend, "", nil)
+	fmt.Print(compaction.FormatCheckReport(results, ok))
+	if !ok {
+		return 1
+	}
+	return 0
+}
+
+// noBackendCheckResults builds the stage-0 failure report for a run with no
+// resolved compaction backend: the three real stages cannot run without one,
+// and the detail carries the guidance plus the resolver's typed reason (which
+// backend was tried and what each was missing).
+func noBackendCheckResults(backendErr error) []compaction.CheckResult {
+	return []compaction.CheckResult{{
+		Stage:  compaction.CheckStageBackend,
+		OK:     false,
+		Detail: fmt.Sprintf("no compaction backend configured (set the provider key or run with -compaction-mode pointing at a gateway): %v", backendErr),
+	}}
+}
+
+// openCompactionStore opens the persistent elided-record store at the
+// default path (compaction.DefaultStorePath), degrading to the in-memory
+// store — with a stderr warning — when the path cannot be resolved or the
+// file cannot be opened. Compaction must keep working even when its
+// persistence layer fails, exactly like the shadow log: the session loses
+// only cross-restart pointer resolution, nothing else.
+func openCompactionStore() *compaction.Store {
+	path, err := compaction.DefaultStorePath()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: compaction record store path unavailable (%v); continuing in-memory — elided originals will not survive restarts\n", err)
+		common.LogErrorf("compaction-store", "record store path unavailable: %v", err)
+		return compaction.NewStore()
+	}
+	return openCompactionStoreAt(path)
+}
+
+// openCompactionStoreAt is openCompactionStore for an explicit path; split
+// out so tests can exercise the degrade-to-in-memory fallback without
+// touching the real user store.
+func openCompactionStoreAt(path string) *compaction.Store {
+	store, err := compaction.OpenStore(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: compaction record store unavailable (%v); continuing in-memory — elided originals will not survive restarts\n", err)
+		common.LogErrorf("compaction-store", "record store unavailable at %s: %v", path, err)
+		return compaction.NewStore()
+	}
+	return store
+}
+
+// parseReplayThresholds parses a -replay-shadow value: a comma-separated
+// list of keep thresholds in (0, 1], e.g. "0.10,0.35,0.50". Surrounding
+// whitespace is tolerated. Empty entries, non-numeric values, and
+// out-of-range thresholds are errors — the caller asked for an explicit
+// replay, so silently clamping would misrepresent it.
+func parseReplayThresholds(s string) ([]float64, error) {
+	var out []float64
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil, fmt.Errorf("invalid -replay-shadow value %q: empty threshold", s)
+		}
+		th, err := strconv.ParseFloat(part, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid -replay-shadow threshold %q: %v", part, err)
+		}
+		if th <= 0 || th > 1 {
+			return nil, fmt.Errorf("invalid -replay-shadow threshold %v: must be in (0, 1]", th)
+		}
+		out = append(out, th)
+	}
+	return out, nil
+}
+
+// runReplayShadow prints the replay table (one row per threshold, re-decided
+// from the log's recorded scores without any scorer round trip) plus the
+// false-negative rate line for the default shadow log, then returns; the
+// caller exits. Strictly read-only: a missing log is reported as "nothing
+// scored yet" and nothing is created — the only constructor reached,
+// NewShadowLogAt, runs after a stat confirmed the file exists (its parent
+// mkdir is then a no-op) and nothing appends to it.
+func runReplayShadow(thresholds []float64) error {
+	path, err := compaction.DefaultShadowPath()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("No shadow log at %s — nothing scored yet (compaction modes shadow and enabled write it).\n", path)
+			return nil
+		}
+		return err
+	}
+	shadowLog, err := compaction.NewShadowLogAt(path)
+	if err != nil {
+		return err
+	}
+	rows, err := shadowLog.ReplayTable(thresholds)
+	if err != nil {
+		return err
+	}
+	ffr, err := shadowLog.FalseNegativeRate()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Shadow log: %s\n\n", path)
+	fmt.Print(formatReplayTable(rows, ffr))
+	return nil
+}
+
+// formatReplayTable renders the replay rows as an aligned table — threshold,
+// kept, relocated, tokens saved, still missed — followed by the
+// false-negative rate line. Split from runReplayShadow so tests can pin the
+// exact rendering.
+func formatReplayTable(rows []compaction.ReplayRow, ffr float64) string {
+	var b strings.Builder
+	tw := tabwriter.NewWriter(&b, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "threshold\tkept\trelocated\ttokens saved\tstill missed")
+	for _, r := range rows {
+		fmt.Fprintf(tw, "%.2f\t%d\t%d\t%d\t%d\n", r.Threshold, r.Kept, r.Relocated, r.TokensSaved, r.StillMissed)
+	}
+	tw.Flush()
+	fmt.Fprintf(&b, "\nfalse-negative rate: %.1f%%\n", ffr*100)
+	return b.String()
+}
+
+// historyCompactionRunner adapts the live session for the TUI's
+// /jev-compact-context command and auto-trigger: each call runs one
+// session.CompactContext pass — scoring history segments against the ongoing
+// task with the pipeline's decision client and relocating low scorers into
+// the shared elide store — and persists the mutated history the same way the
+// orchestrator's own SaveHistory call sites do. Shadow runs (compaction-mode
+// "shadow") compute the honest would-save report without touching history,
+// so they skip persistence. threshold mirrors the pipeline's elision
+// threshold so both compaction paths make the same keep/elide calls.
+// shadowLog receives one "history-run" summary line per run — shadow or
+// mutating, failed or clean — so runs are auditable next to the per-segment
+// decisions they produced; it may be nil (logging is unavailable), and an
+// append failure is a stderr warning, never a run failure.
+func historyCompactionRunner(sess *session.Session, scorer session.HistoryScorer, store session.ElideStore, shadow bool, threshold float64, shadowLog *compaction.ShadowLog) func(context.Context) (session.CompactionReport, error) {
+	return func(ctx context.Context) (session.CompactionReport, error) {
+		report, err := sess.CompactContext(ctx, scorer, store, session.CompactionOptions{
+			Threshold:  threshold,
+			ShadowOnly: shadow,
+		})
+		if !shadow {
+			// The walk mutated (or partially mutated — a mid-walk scorer
+			// failure leaves consistent pointers and stored originals)
+			// history: persist it even when err != nil.
+			if saveErr := session.SaveHistory(sess.HistoryPath, sess.History); saveErr != nil {
+				err = errors.Join(err, fmt.Errorf("saving compacted history: %w", saveErr))
+			}
+		}
+		if err != nil {
+			// Durable record of the failure (walk aborts, save failures):
+			// the toast/TUI notice is ephemeral, the error log is not.
+			// Best-effort — never fails the run.
+			common.LogErrorf("compaction", "history compaction run failed (shadow=%v): %v", shadow, err)
+		}
+		if shadowLog != nil {
+			run := compaction.RunSummary{
+				Shadow:       shadow,
+				Scanned:      report.MessagesScanned,
+				Scored:       report.MessagesScored,
+				Elided:       report.SegmentsElided,
+				TokensBefore: report.TokensBefore,
+				TokensAfter:  report.TokensAfter,
+				TokensSaved:  report.TokensSaved,
+			}
+			if err != nil {
+				run.Err = err.Error()
+			}
+			// Best-effort: a logging failure must never fail the compaction
+			// itself, so it only surfaces as a warning.
+			if appendErr := shadowLog.AppendRun(report.TaskHash, run); appendErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: compaction run summary not logged (%v)\n", appendErr)
+			}
+		}
+		return report, err
 	}
 }
 

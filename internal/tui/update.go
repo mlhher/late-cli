@@ -9,6 +9,7 @@ import (
 	"late/internal/common"
 	"late/internal/config"
 	"late/internal/git"
+	"late/internal/session"
 	"math/rand/v2"
 	"net/http"
 	"os"
@@ -50,6 +51,20 @@ type pluginCommandResultMsg struct {
 	output  string
 	handled bool
 	err     error
+}
+
+// compactionUnavailableStatus is the status shown when /jev-compact-context
+// fires with no compaction pipeline wired (compaction-mode off, or the
+// System One backend never resolved, so there is no scorer to run).
+const compactionUnavailableStatus = "compaction unavailable — enable compaction-mode first"
+
+// compactionResultMsg carries the outcome of one full-history context
+// compaction run (/jev-compact-context or the auto-trigger). The run
+// executes off the TUI update loop — network scoring can take seconds — so
+// the report is delivered back as a message.
+type compactionResultMsg struct {
+	report session.CompactionReport
+	err    error
 }
 
 // messageHookResultMsg carries the outcome of asynchronously running a
@@ -152,6 +167,17 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 	}
 
 	if _, ok := msg.(clearToastMsg); ok {
+		// Stale expiry tick: toasts overlap often (hook diagnostics fire in
+		// bursts, the 413 guidance toast lasts 8s), and a tea.Tick scheduled
+		// by the PREVIOUS toast can land while a NEWER toast is still alive.
+		// Clearing unconditionally let that old tick kill the new toast
+		// early. Every toast-set rewrites ToastExpireTime, so while "now" is
+		// still before that expiry, the arriving tick cannot be the one the
+		// current toast scheduled — ignore it; the current toast owns its
+		// own clear tick.
+		if m.ToastMessage != "" && time.Now().UnixMilli() < m.ToastExpireTime {
+			return m, nil
+		}
 		m.ToastMessage = ""
 		m.ToastWarning = false
 		m.updateViewport()
@@ -378,6 +404,54 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		m = m.finishSubmit(msg.target, msg.input)
+		return m, nil
+	}
+	if msg, ok := msg.(compactionResultMsg); ok {
+		// Exactly one compaction run may be in flight (Model.CompactionRunning
+		// guards both the manual command and the auto-trigger); it just ended.
+		m.CompactionRunning = false
+		if !msg.report.ShadowOnly {
+			// The walk rewrote (possibly partially, on a mid-walk scorer
+			// failure) the root session's history: invalidate the root
+			// state's render and token caches so the transcript re-renders
+			// from the compacted messages and the context bar reflects the
+			// new size — the same bookkeeping the rewind path does.
+			if rootState, ok := m.AgentStates[m.Root.ID()]; ok {
+				rootState.Transcript.generation++
+				rootState.Transcript.dirty = true
+				rootState.RenderedHistory = nil
+				rootState.LastTotalContent = ""
+				rootState.CachedHistoryLen = 0
+				rootState.CachedHistoryTokens = 0
+				rootState.CumulativeTokenCount = common.CalculateHistoryTokens(
+					m.Root.History(),
+					m.Root.SystemPrompt(),
+					m.Root.ToolDefinitions(),
+				)
+			}
+		}
+		// The status lands on whichever agent the user is looking at; the
+		// compaction itself always targets the root session.
+		s := m.GetAgentState(m.Focused.ID())
+		switch {
+		case msg.err != nil:
+			s.StatusText = fmt.Sprintf("compaction failed after scoring %d/%d messages: %v",
+				msg.report.MessagesScored, msg.report.MessagesScanned, msg.err)
+		case msg.report.ShadowOnly:
+			s.StatusText = fmt.Sprintf("shadow report: would save ~%d tokens, %d segments elided (scored %d/%d messages; enable compaction-mode to apply)",
+				msg.report.TokensSaved, msg.report.SegmentsElided,
+				msg.report.MessagesScored, msg.report.MessagesScanned)
+		default:
+			// The suffix is honesty, not decoration: the count above was just
+			// recomputed locally (CalculateHistoryTokens), while steady state
+			// tracks the provider-reported usage — the two estimators
+			// disagree, and the bar may jump once the next request's real
+			// usage arrives.
+			s.StatusText = fmt.Sprintf("compacted: saved ~%d tokens, %d segments elided (scored %d/%d messages)… (estimate — the next request's usage refreshes the bar)",
+				msg.report.TokensSaved, msg.report.SegmentsElided,
+				msg.report.MessagesScored, msg.report.MessagesScanned)
+		}
+		m.updateViewport()
 		return m, nil
 	}
 
@@ -836,6 +910,12 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 						m.Focused.SystemPrompt(),
 						m.Focused.ToolDefinitions(),
 					)
+					// A rewind rewrote this agent's history: re-arm the
+					// one-shot 413 payload-recovery compaction, exactly like
+					// /new does. Without this, a conversation that already
+					// burned its recovery pass keeps a 413 permanent even
+					// after the user rolled back to a smaller history.
+					focusedState.PayloadRecoveryUsed = false
 
 					m.ToastMessage = "conversation rewound"
 					m.ToastWarning = false
@@ -1092,6 +1172,30 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				m.updateLayout()
 				return m, nil
 			}
+			if cmd == "/jev-compact-context" {
+				m.Input.Reset()
+				m.Input.SetValue("")
+				m.ShowAutocomplete = false
+				m.AutocompleteItems = nil
+				m.AutocompleteIndex = 0
+				// Compaction needs the pipeline's scorer and store; without
+				// them (compaction-mode off / no backend) there is nothing
+				// to run.
+				if m.Compactor == nil {
+					focusedState.StatusText = compactionUnavailableStatus
+					m.updateViewport()
+					return m, nil
+				}
+				if m.CompactionRunning {
+					focusedState.StatusText = "compaction already running"
+					m.updateViewport()
+					return m, nil
+				}
+				m.CompactionRunning = true
+				focusedState.StatusText = "compacting context..."
+				m.updateViewport()
+				return m, m.startCompaction()
+			}
 			if cmd == "/model" {
 				m.Input.Reset()
 				m.Input.SetValue("")
@@ -1165,6 +1269,11 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 					state.CachedHistoryLen = 0
 					state.CachedHistoryTokens = 0
 					state.LastTotalContent = ""
+					// A fresh conversation re-arms the JEV auto-compaction
+					// trigger for every agent.
+					state.AutocompactDisarmed = false
+					// ...and the one-shot 413 payload-recovery compaction.
+					state.PayloadRecoveryUsed = false
 				}
 				m.LastFocusedID = ""
 				m.Viewport.GotoTop()
@@ -1459,7 +1568,14 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 		m.ToastMessage = msg.Text
 		m.ToastWarning = msg.Warning
 		m.ToastExpireTime = time.Now().UnixMilli() + 3000
-		return m, func() tea.Msg { return clearToastMsg{} }
+		// The toast carries its own expiry above: schedule the clear tick
+		// instead of clearing on the next loop iteration. The old
+		// immediate-clear command erased the toast the moment Bubble Tea ran
+		// the command — one rendered frame — making the toast invisible even
+		// though the expiry was set for 3s.
+		return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+			return clearToastMsg{}
+		})
 
 	case ToastMsg:
 		m.ToastMessage = msg.Text
@@ -1492,6 +1608,30 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case DiagnosticMsg:
+		// Mid-session diagnostics (hook timeouts/errors, dropped-progress-
+		// event notices) surface as a WARNING toast instead of raw stderr
+		// writes, which would paint text over the alt-screen. A toast —
+		// unlike a stderr line — cannot duplicate or displace the footer
+		// status row. Empty text is ignored (nothing to report).
+		if msg.Text == "" {
+			return m, nil
+		}
+		text := msg.Text
+		// The toast lives in the status bar; a long hook error must not
+		// wrap or overflow it. Truncate to the terminal width with the
+		// same ellipsis helper the bar itself uses at render time.
+		if m.Width > 0 {
+			text = m.truncateWithEllipsis(text, m.Width)
+		}
+		m.ToastMessage = text
+		m.ToastWarning = true
+		m.ToastExpireTime = time.Now().UnixMilli() + 6000
+		m.updateViewport()
+		return m, tea.Tick(6*time.Second, func(t time.Time) tea.Msg {
+			return clearToastMsg{}
+		})
+
 	case OrchestratorEventMsg:
 		s := m.GetAgentState(msg.Event.OrchestratorID())
 		// restoredToast delivers the recovery toast through the existing
@@ -1499,6 +1639,16 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 		// the retried attempt actually produced a response; it is returned
 		// after the event switch below.
 		var restoredToast tea.Cmd
+		// autoCompactCmd fires when the focused agent's usage update crosses
+		// the JEV auto-compaction threshold (see maybeJevAutoCompact); it is
+		// returned after the event switch below.
+		var autoCompactCmd tea.Cmd
+		// payloadToastCmd surfaces the 413 payload-too-large guidance as a
+		// warning toast (the error box already carries the full text).
+		var payloadToastCmd tea.Cmd
+		// payloadRecoveryCmd runs the one-shot 413 recovery compaction (see
+		// maybePayloadRecoveryCompaction).
+		var payloadRecoveryCmd tea.Cmd
 
 		switch event := msg.Event.(type) {
 		case common.ContentEvent:
@@ -1551,6 +1701,12 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			if event.ID == m.Focused.ID() {
 				m.updateViewport()
 			}
+			// JEV auto-compaction trigger — the same flow as
+			// /jev-compact-context, fired when the focused agent's just-updated
+			// usage crosses the configured share of the context window.
+			if event.ID == m.Focused.ID() {
+				autoCompactCmd = m.maybeJevAutoCompact(s)
+			}
 		case common.StatusEvent:
 			switch event.Status {
 			case "thinking":
@@ -1598,6 +1754,23 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				} else {
 					s.StatusText = fmt.Sprintf("Error: %v", event.Error)
 					s.Error = event.Error
+					// A 413 (payload too large) is actionable, not just
+					// fatal: the provider rejected the request body
+					// outright, so the error text itself carries the
+					// recovery guidance. The error box renders it above;
+					// the warning toast repeats it where it stays readable
+					// for a few seconds.
+					if errors.Is(event.Error, client.ErrPayloadTooLarge) {
+						payloadToastCmd = payloadTooLargeToastCmd()
+						// One-shot recovery: compact once so the next
+						// request can fit. Only the ROOT agent triggers it —
+						// the recovery always compacts the root session, and
+						// a subagent's 413 is not fixed by rewriting root
+						// history.
+						if event.ID == m.Root.ID() {
+							payloadRecoveryCmd = m.maybePayloadRecoveryCompaction(s)
+						}
+					}
 				}
 				// A turn that ended in error must not produce a recovery
 				// toast on the next turn.
@@ -1689,8 +1862,24 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 		}
 
+		// Compose every command the event produced. tea.Batch drops nils and
+		// returns nil when the list is empty, so the fall-through to the
+		// generic tail below is preserved when nothing fired.
+		var eventCmds []tea.Cmd
 		if restoredToast != nil {
-			return m, restoredToast
+			eventCmds = append(eventCmds, restoredToast)
+		}
+		if autoCompactCmd != nil {
+			eventCmds = append(eventCmds, autoCompactCmd)
+		}
+		if payloadRecoveryCmd != nil {
+			eventCmds = append(eventCmds, payloadRecoveryCmd)
+		}
+		if payloadToastCmd != nil {
+			eventCmds = append(eventCmds, payloadToastCmd)
+		}
+		if len(eventCmds) > 0 {
+			return m, tea.Batch(eventCmds...)
 		}
 
 	case ConfirmRequestMsg:
@@ -1703,6 +1892,121 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// startCompaction returns the tea.Cmd that runs one full-history compaction
+// pass off the TUI update loop (network scoring can take seconds) and
+// delivers the outcome as a compactionResultMsg. The caller must have set
+// Model.CompactionRunning — the shared in-flight guard — beforehand; a nil
+// Compactor (compaction unavailable) yields a nil command.
+func (m *Model) startCompaction() tea.Cmd {
+	runner := m.Compactor
+	if runner == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		report, err := runner(context.Background())
+		return compactionResultMsg{report: report, err: err}
+	}
+}
+
+// autocompactRearmPoints is how far below the trigger percentage usage must
+// fall before the JEV auto-compaction trigger re-arms: after one crossing
+// fires, the agent stays disarmed until its usage drops under
+// (percent-9)% — typically because a compaction just shrank the history —
+// or /new starts a fresh conversation.
+const autocompactRearmPoints = 9
+
+// maybeJevAutoCompact returns the tea.Cmd that runs one full-history
+// compaction pass when the focused agent's usage has crossed the configured
+// percentage (config jev-autocompact + jev-autocompact-percent, default 99)
+// of the context window — the same m.Focused.MaxTokens() source the info
+// bar's context bar uses. The percent keys off the watched (focused) agent's
+// model, not the root's: that is whose context window fills, so a per-model
+// jev-autocompact-percent override inside its models[] entry (resolved by
+// Config.AutocompactPercentForAgent through agent_models) wins over the
+// global threshold. The run is guarded by Model.CompactionRunning and fires
+// once per crossing: the agent is disarmed until usage falls below the
+// re-arm level or a new session starts. Without a known context size
+// (MaxTokens() <= 0) there is no threshold to cross, so the trigger skips
+// silently.
+func (m *Model) maybeJevAutoCompact(s *AppState) tea.Cmd {
+	if !m.JevAutocompact || m.Compactor == nil || m.CompactionRunning {
+		return nil
+	}
+	maxTokens := m.Focused.MaxTokens()
+	if maxTokens <= 0 {
+		// Unknown context size (client.ContextSize -1, or unlimited): the
+		// threshold is undefined — skip silently.
+		return nil
+	}
+	// The global percent (validated at startup by ResolveAutocompact) is the
+	// fallback; the focused agent's model entry can override it. A nil
+	// AppConfig has no model registry, so only the global applies there.
+	percent := m.JevAutocompactPercent
+	if m.AppConfig != nil {
+		percent = m.AppConfig.AutocompactPercentForAgent(agentTypeForID(m.Focused.ID()), m.JevAutocompactPercent)
+	}
+	if percent <= 0 || percent > 100 {
+		percent = config.DefaultJevAutocompactPercent
+	}
+	if s.AutocompactDisarmed {
+		// Re-arm once usage falls below (percent-9)% again. A percent
+		// below the re-arm margin resolves to a negative level, which
+		// usage (always >= 0) can never cross: the trigger stays disarmed.
+		if s.CumulativeTokenCount < maxTokens*(percent-autocompactRearmPoints)/100 {
+			s.AutocompactDisarmed = false
+		}
+		return nil
+	}
+	if s.CumulativeTokenCount < maxTokens*percent/100 {
+		return nil
+	}
+	m.CompactionRunning = true
+	s.AutocompactDisarmed = true
+	s.StatusText = "compacting context..."
+	return m.startCompaction()
+}
+
+// payloadRecoveryStatus is the status shown while the one-shot 413 recovery
+// compaction runs.
+const payloadRecoveryStatus = "request too large — compacting context (recovery)…"
+
+// payloadTooLargeToastCmd builds the warning-toast command for a 413
+// failure: the recovery guidance travels on the error text (rendered by the
+// error box), but the status bar truncates, so the toast repeats it where it
+// stays readable. The ToastMsg handler owns the expiry tick.
+func payloadTooLargeToastCmd() tea.Cmd {
+	return func() tea.Msg {
+		return ToastMsg{
+			Text:     client.PayloadTooLargeGuidance,
+			Warning:  true,
+			Duration: 8 * time.Second,
+		}
+	}
+}
+
+// maybePayloadRecoveryCompaction returns the tea.Cmd that runs ONE
+// full-history compaction pass after the root agent's request failed with
+// the payload-too-large (413) sentinel: the provider rejected the request
+// body outright, so the context must shrink before the same request can
+// succeed. It reuses the shared CompactionRunning in-flight guard and fires
+// at most once per conversation — PayloadRecoveryUsed (reset by /new) keeps
+// a provider that still rejects after a compaction from spinning a
+// compact→retry→413 loop. The trigger is inert unless compaction can
+// actually shrink history (CompactionApplies: mode "enabled") or is already
+// running. s must be the failing (root) agent's state.
+func (m *Model) maybePayloadRecoveryCompaction(s *AppState) tea.Cmd {
+	if m.Compactor == nil || !m.CompactionApplies || m.CompactionRunning {
+		return nil
+	}
+	if s.PayloadRecoveryUsed {
+		return nil
+	}
+	s.PayloadRecoveryUsed = true
+	m.CompactionRunning = true
+	s.StatusText = payloadRecoveryStatus
+	return m.startCompaction()
 }
 
 // submitMessage runs the full "user pressed Enter" pipeline for a message:

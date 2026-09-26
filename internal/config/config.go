@@ -39,6 +39,16 @@ type ModelSetting struct {
 	URL   string `json:"url"`
 	Key   string `json:"key"`
 	Model string `json:"model"`
+
+	// JevAutocompactPercent is the per-model override of the global
+	// autocompact trigger: different models have different context sizes, so
+	// the same "compact at N% of the window" level is not right for every
+	// model. It reuses the top-level jev-autocompact-percent key name inside
+	// the entry. 0/unset = use the global; values 1-100 are honored and win
+	// over the global for every agent whose agent_models entry routes to
+	// this model (see Config.AutocompactPercentForAgent); out-of-range
+	// values warn at startup and are ignored (see Config.AutocompactWarnings).
+	JevAutocompactPercent int `json:"jev-autocompact-percent,omitempty"`
 }
 
 // Reference returns the stable value stored in agent_models. Model is retained
@@ -50,10 +60,85 @@ func (m ModelSetting) Reference() string {
 	return m.Model
 }
 
+// AutocompactPercentOverride reports the entry's per-model autocompact
+// trigger override. The second return is true only for a valid percentage
+// (1-100): 0/unset means "no override — use the global", and an out-of-range
+// value is ignored with a startup warning (Config.AutocompactWarnings), so
+// both resolve to the global threshold.
+func (m ModelSetting) AutocompactPercentOverride() (int, bool) {
+	if m.JevAutocompactPercent >= 1 && m.JevAutocompactPercent <= 100 {
+		return m.JevAutocompactPercent, true
+	}
+	return 0, false
+}
+
 const (
 	configDirPerm  os.FileMode = 0o700
 	configFilePerm os.FileMode = 0o600
 )
+
+// DefaultCompactionThresholdPercent is the context-usage percentage at which
+// compaction happens when config.json does not set
+// compaction-threshold-percent (or sets an invalid value).
+const DefaultCompactionThresholdPercent = 80
+
+// Compaction modes (staged rollout of the jev-compaction port). The
+// effective mode is resolved by ResolveCompactionMode: an explicitly set
+// --compaction-mode flag (validated in main) > config.json compaction-mode >
+// DefaultCompactionMode.
+const (
+	// CompactionModeOff disables compaction entirely: no scoring, no shadow
+	// log, no relocation.
+	CompactionModeOff = "off"
+	// CompactionModeShadow scores tool outputs and appends to the shadow log
+	// without changing any tool result (the stage-1 behavior).
+	CompactionModeShadow = "shadow"
+	// CompactionModeEnabled additionally relocates low-scoring segments out
+	// of tool results (with [[elided …]] pointers plus the expand tool to
+	// retrieve the originals).
+	CompactionModeEnabled = "enabled"
+)
+
+// DefaultCompactionMode is the compaction-mode default: score and shadow-log
+// only, never change agent behavior.
+const DefaultCompactionMode = CompactionModeShadow
+
+// DefaultJevAutocompactPercent is the context-usage percentage at which the
+// JEV auto-compaction trigger fires when config.json does not set
+// jev-autocompact-percent (or sets an invalid value).
+const DefaultJevAutocompactPercent = 99
+
+// DefaultCompactionMaxElidePercent is the elide-fraction tripwire: when the
+// compaction scorer wants to elide more than this percentage of a tool
+// output's tokens, it is distrusted and nothing is elided (reference:
+// jev-compaction pipeline.py max_elide_fraction=0.7). Applied when
+// config.json does not set compaction-max-elide-percent (or sets an
+// invalid value).
+const DefaultCompactionMaxElidePercent = 70
+
+// DefaultCompactionThreshold mirrors compaction.DefaultRelocationThreshold —
+// the score strictly below which segments are elided (re-declared here so
+// the config package stays free of a compaction import). It is the fallback
+// when neither the -compaction-threshold flag nor config.json
+// compaction-threshold provides a valid value.
+const DefaultCompactionThreshold = 0.35
+
+// DefaultCompactionProtectedFloorPercent is the score floor (as a
+// percentage) under which protected segment kinds (stacktrace, diff) may be
+// elided: at any higher score they are kept even below the normal
+// threshold (reference: pipeline.py protected_floor=0.05). Applied when
+// config.json does not set compaction-protected-floor (or sets an invalid
+// value).
+const DefaultCompactionProtectedFloorPercent = 5
+
+// CompactionBackendOffline is the compaction-backend value that selects the
+// deterministic offline scripted scorer (compaction.ScriptedScorer): the
+// whole compaction flow runs locally with no API key and no network. It
+// exists for demos and tests — the scripted scores are a content hash, not a
+// judgment of essentialness — and must never become a production default.
+// It mirrors compaction.OfflineBackendName (re-declared here so the config
+// package stays free of a compaction import).
+const CompactionBackendOffline = "offline"
 
 // Config represents the application configuration.
 type Config struct {
@@ -86,6 +171,87 @@ type Config struct {
 	Theme       string            `json:"theme,omitempty"`
 	Models      []ModelSetting    `json:"models,omitempty"`
 	AgentModels map[string]string `json:"agent_models,omitempty"`
+
+	// CompactionThresholdPercent is the context-usage percentage at which
+	// compaction should trigger (surfaced by the TUI info bar as the
+	// remaining headroom). 0 means DefaultCompactionThresholdPercent;
+	// values outside 1-100 are invalid and resolve back to the default
+	// with a warning (see ResolveCompactionThreshold).
+	CompactionThresholdPercent int `json:"compaction-threshold-percent,omitempty"`
+
+	// CompactionMode selects the staged rollout stage of the tool-output
+	// compaction port: CompactionModeOff, CompactionModeShadow (default:
+	// score + shadow log only), or CompactionModeEnabled (also relocate
+	// low-scoring segments and register the expand tool). Set via config
+	// file; the --compaction-mode CLI flag overrides it. Invalid values
+	// warn and fall back to DefaultCompactionMode (see
+	// ResolveCompactionMode).
+	CompactionMode string `json:"compaction-mode,omitempty"`
+
+	// JevAutocompact enables the automatic full-history context compaction
+	// (the /jev-compact-context flow): when the focused agent's context
+	// usage crosses JevAutocompactPercent of the context window, the TUI
+	// runs one compaction pass. Default false.
+	JevAutocompact bool `json:"jev-autocompact,omitempty"`
+
+	// JevAutocompactPercent is that threshold percentage. 0 (unset) means
+	// DefaultJevAutocompactPercent; values outside 1-100 are invalid and
+	// resolve back to the default with a warning (see ResolveAutocompact).
+	JevAutocompactPercent int `json:"jev-autocompact-percent,omitempty"`
+
+	// CompactionMaxElidePercent is the compaction gate's elide-fraction
+	// tripwire as a percentage: when the scorer wants to elide more than
+	// this share of a tool output's tokens, the scorer is distrusted and
+	// NOTHING is elided (the tripwire is recorded in the result and the
+	// shadow log). 0 (unset) means DefaultCompactionMaxElidePercent;
+	// values outside 1-100 are invalid and resolve back to the default with
+	// a warning (see ResolveCompactionMaxElidePercent). The tripwire cannot
+	// be disabled from config.json (100 still trips on an over-100% claim,
+	// i.e. never — set it to 100 for the closest thing to off).
+	CompactionMaxElidePercent int `json:"compaction-max-elide-percent,omitempty"`
+
+	// CompactionThreshold is the elision score threshold: the score
+	// strictly below which tool-output segments (and full-history
+	// segments, for /jev-compact-context) are elided when compaction-mode
+	// is "enabled". 0 (unset) means the -compaction-threshold flag, or the
+	// DefaultCompactionThreshold (0.35) when the flag is not passed; values
+	// outside (0,1] are invalid and resolve back to the default with a
+	// warning (see ResolveCompactionScoreThreshold). NOTE: this is the
+	// per-segment SCORE cutoff — compaction-threshold-percent above is a
+	// different knob (the context-usage level the info bar reports
+	// headroom for), and jev-autocompact-percent is a third one (the
+	// context-usage level that fires the auto-trigger).
+	CompactionThreshold float64 `json:"compaction-threshold,omitempty"`
+
+	// CompactionProtectedFloor is the score floor, as a percentage, under
+	// which protected segment kinds (stacktrace, diff) may be elided: at
+	// any higher score they are kept even below the normal threshold.
+	// 0 (unset) means DefaultCompactionProtectedFloorPercent; values
+	// outside 1-100 are invalid and resolve back to the default with a
+	// warning (see ResolveCompactionProtectedFloor).
+	CompactionProtectedFloor int `json:"compaction-protected-floor,omitempty"`
+
+	// CompactionBackend selects where compaction scores come from. The only
+	// value today is CompactionBackendOffline ("offline"): the deterministic
+	// scripted scorer — no API key, no network, demos and tests only (its
+	// scores are content hashes, not judgments). Empty (unset) keeps the
+	// env-based backend resolution (JEV_API / auto-detection) that
+	// compaction.ResolveBackendEnv performs. A set value WINS over the env
+	// — the config entry is the explicit statement about where scoring
+	// happens, so JEV_API is only consulted when this entry is absent.
+	// Invalid values warn and fall back to the env-based resolution (see
+	// ResolveCompactionBackend).
+	CompactionBackend string `json:"compaction-backend,omitempty"`
+
+	// CompactionRetrieval enables the retrieve() read side of the compaction
+	// record store (Step 17): before every stream request the store's digest
+	// summaries are scored against the current task and the top-k relevant
+	// records are appended to the outgoing request's work area (never the
+	// frozen prefix, never persisted to history). Default false. It needs a
+	// record store to read, which only fills when compaction-mode is
+	// "enabled" — ResolveCompactionRetrieval warns about the inert
+	// combinations.
+	CompactionRetrieval bool `json:"compaction-retrieval,omitempty"`
 }
 
 func defaultConfig() Config {
@@ -143,6 +309,17 @@ func LoadConfig() (*Config, error) {
 
 	var cfg Config
 	if err := json.Unmarshal(content, &cfg); err != nil {
+		fallback := defaultConfig()
+		return &fallback, err
+	}
+
+	// Unknown keys inside models[] entries are fatal, located errors: the
+	// typed decode would silently drop a hand-edited typo there, and the
+	// per-model settings (including the per-model jev-autocompact-percent
+	// override) are exactly where hand edits go wrong. See
+	// models_entry_keys.go; value-range problems keep the warn-and-fall-back
+	// path (AutocompactWarnings).
+	if err := checkModelsEntryKeys(configPath, content); err != nil {
 		fallback := defaultConfig()
 		return &fallback, err
 	}
@@ -292,6 +469,212 @@ func ResolvePermissionMode(cfg *Config, askFlag, unsupervisedFlag bool) (mode st
 	return PermissionModeAskForUserApproval, "", nil
 }
 
+// ResolveCompactionThreshold returns the effective compaction threshold
+// percentage and a warning string, mirroring ResolvePermissionMode's
+// invalid-value pattern: 0 (unset) means DefaultCompactionThresholdPercent,
+// values in 1-100 are honored as-is, and anything else falls back to the
+// default with a warning.
+func ResolveCompactionThreshold(cfg *Config) (threshold int, warning string) {
+	if cfg == nil {
+		return DefaultCompactionThresholdPercent, ""
+	}
+	if cfg.CompactionThresholdPercent >= 1 && cfg.CompactionThresholdPercent <= 100 {
+		return cfg.CompactionThresholdPercent, ""
+	}
+	if cfg.CompactionThresholdPercent == 0 {
+		return DefaultCompactionThresholdPercent, ""
+	}
+	return DefaultCompactionThresholdPercent,
+		fmt.Sprintf("ignoring invalid config.json compaction-threshold-percent %d; using %d",
+			cfg.CompactionThresholdPercent, DefaultCompactionThresholdPercent)
+}
+
+// IsValidCompactionMode reports whether mode is one of the accepted
+// compaction-mode values (off, shadow, enabled).
+func IsValidCompactionMode(mode string) bool {
+	switch mode {
+	case CompactionModeOff, CompactionModeShadow, CompactionModeEnabled:
+		return true
+	}
+	return false
+}
+
+// ResolveCompactionMode returns the effective compaction mode from
+// config.json and a warning string, mirroring ResolveCompactionThreshold's
+// invalid-value pattern: empty (unset) means DefaultCompactionMode, valid
+// values are honored as-is, and anything else falls back to the default with
+// a warning. The --compaction-mode CLI flag overrides the resolved value and
+// is validated with IsValidCompactionMode by the caller (main).
+func ResolveCompactionMode(cfg *Config) (mode string, warning string) {
+	if cfg == nil || cfg.CompactionMode == "" {
+		return DefaultCompactionMode, ""
+	}
+	if IsValidCompactionMode(cfg.CompactionMode) {
+		return cfg.CompactionMode, ""
+	}
+	return DefaultCompactionMode,
+		fmt.Sprintf("ignoring invalid config.json compaction-mode %q; using %q",
+			cfg.CompactionMode, DefaultCompactionMode)
+}
+
+// ResolveAutocompact returns the effective JEV auto-compaction switch and
+// threshold percentage, mirroring ResolveCompactionThreshold's invalid-value
+// pattern: percent 0 (unset) means DefaultJevAutocompactPercent, values in
+// 1-100 are honored as-is, and anything else falls back to the default with
+// a warning. The switch is a plain boolean: absent (false) means the
+// auto-trigger never fires.
+func ResolveAutocompact(cfg *Config) (enabled bool, percent int, warning string) {
+	if cfg == nil {
+		return false, DefaultJevAutocompactPercent, ""
+	}
+	percent = DefaultJevAutocompactPercent
+	switch {
+	case cfg.JevAutocompactPercent >= 1 && cfg.JevAutocompactPercent <= 100:
+		percent = cfg.JevAutocompactPercent
+	case cfg.JevAutocompactPercent == 0:
+		// Unset: keep the default.
+	default:
+		warning = fmt.Sprintf("ignoring invalid config.json jev-autocompact-percent %d; using %d",
+			cfg.JevAutocompactPercent, DefaultJevAutocompactPercent)
+	}
+	return cfg.JevAutocompact, percent, warning
+}
+
+// ResolveCompactionScoreThreshold resolves the elision score threshold: the
+// score strictly below which segments are elided when compaction-mode is
+// "enabled" (also the /jev-compact-context walk's keep threshold). It is a
+// DIFFERENT knob from compaction-threshold-percent (the context-usage level
+// the info bar reports headroom for) and from jev-autocompact-percent (the
+// context-usage level that fires the auto-trigger).
+//
+// Precedence: an explicitly passed -compaction-threshold flag > config.json
+// compaction-threshold > DefaultCompactionThreshold (0.35). The caller
+// passes flagValue = 0 when the flag was NOT on the command line (the
+// flag.Visit detection in main) — flag values are indistinguishable from
+// defaults through the flag package alone, and 0 is itself invalid, so it
+// doubles cleanly as the "not set" sentinel. Valid range is (0,1] for both
+// sources: an explicitly passed but out-of-range flag warns and falls
+// through to the config entry (or the default), and an out-of-range config
+// value warns and falls back to the default.
+func ResolveCompactionScoreThreshold(cfg *Config, flagValue float64) (threshold float64, warning string) {
+	if flagValue > 0 && flagValue <= 1 {
+		// Explicit, valid flag wins over everything.
+		return flagValue, ""
+	}
+	if cfg != nil && cfg.CompactionThreshold > 0 && cfg.CompactionThreshold <= 1 {
+		threshold = cfg.CompactionThreshold
+	} else {
+		threshold = DefaultCompactionThreshold
+	}
+	switch {
+	case flagValue != 0:
+		// Explicit but out of range: the caller meant to set it, so say so.
+		warning = fmt.Sprintf("ignoring invalid -compaction-threshold %v; using %v", flagValue, threshold)
+	case cfg != nil && (cfg.CompactionThreshold < 0 || cfg.CompactionThreshold > 1):
+		// Present but invalid. 0 is the silent unset (see the Config doc);
+		// anything else outside (0,1] warns.
+		warning = fmt.Sprintf("ignoring invalid config.json compaction-threshold %v; using %v", cfg.CompactionThreshold, threshold)
+	}
+	return threshold, warning
+}
+
+// ResolveCompactionMaxElidePercent returns the effective compaction
+// elide-fraction tripwire percentage and a warning string, mirroring
+// ResolveCompactionThreshold's invalid-value pattern: 0 (unset) means
+// DefaultCompactionMaxElidePercent, values in 1-100 are honored as-is, and
+// anything else falls back to the default with a warning.
+func ResolveCompactionMaxElidePercent(cfg *Config) (percent int, warning string) {
+	if cfg == nil {
+		return DefaultCompactionMaxElidePercent, ""
+	}
+	if cfg.CompactionMaxElidePercent >= 1 && cfg.CompactionMaxElidePercent <= 100 {
+		return cfg.CompactionMaxElidePercent, ""
+	}
+	if cfg.CompactionMaxElidePercent == 0 {
+		return DefaultCompactionMaxElidePercent, ""
+	}
+	return DefaultCompactionMaxElidePercent,
+		fmt.Sprintf("ignoring invalid config.json compaction-max-elide-percent %d; using %d",
+			cfg.CompactionMaxElidePercent, DefaultCompactionMaxElidePercent)
+}
+
+// ResolveCompactionProtectedFloor returns the effective score floor (as a
+// percentage) under which protected segment kinds may be elided, mirroring
+// ResolveCompactionThreshold's invalid-value pattern: 0 (unset) means
+// DefaultCompactionProtectedFloorPercent, values in 1-100 are honored
+// as-is, and anything else falls back to the default with a warning.
+func ResolveCompactionProtectedFloor(cfg *Config) (percent int, warning string) {
+	if cfg == nil {
+		return DefaultCompactionProtectedFloorPercent, ""
+	}
+	if cfg.CompactionProtectedFloor >= 1 && cfg.CompactionProtectedFloor <= 100 {
+		return cfg.CompactionProtectedFloor, ""
+	}
+	if cfg.CompactionProtectedFloor == 0 {
+		return DefaultCompactionProtectedFloorPercent, ""
+	}
+	return DefaultCompactionProtectedFloorPercent,
+		fmt.Sprintf("ignoring invalid config.json compaction-protected-floor %d; using %d",
+			cfg.CompactionProtectedFloor, DefaultCompactionProtectedFloorPercent)
+}
+
+// IsValidCompactionBackend reports whether backend is one of the accepted
+// compaction-backend values (offline).
+func IsValidCompactionBackend(backend string) bool {
+	return backend == CompactionBackendOffline
+}
+
+// ResolveCompactionBackend returns the effective compaction-backend value
+// from config.json plus a warning, mirroring ResolveCompactionMode's
+// invalid-value pattern. Precedence: a set config value WINS — scoring goes
+// exactly where the user pointed it, and the env-based backend resolution
+// (JEV_API / auto-detection inside compaction.ResolveBackendEnv) is only
+// consulted when this entry is ABSENT. So:
+//
+//   - ("", "") — unset (or a nil config): the caller resolves a backend
+//     from the environment as before.
+//   - ("offline", "") — the offline scripted scorer; the caller builds the
+//     offline pipeline and never resolves a backend or needs a key.
+//   - ("", warning) — an unrecognized value: the config entry is ignored
+//     with the warning, and the caller falls back to the env-based
+//     resolution.
+//
+// The warning names the config key so the user can fix the typo in
+// config.json rather than guess which entry was rejected.
+func ResolveCompactionBackend(cfg *Config) (backend string, warning string) {
+	if cfg == nil || cfg.CompactionBackend == "" {
+		return "", ""
+	}
+	if IsValidCompactionBackend(cfg.CompactionBackend) {
+		return cfg.CompactionBackend, ""
+	}
+	return "", fmt.Sprintf("ignoring invalid config.json compaction-backend %q (known values: %s); resolving the backend from the environment",
+		cfg.CompactionBackend, CompactionBackendOffline)
+}
+
+// ResolveCompactionRetrieval returns whether the compaction store's
+// retrieve() read side is enabled, mirroring ResolveAutocompact's resolver
+// shape (value plus warning). The switch is a plain boolean defaulting to
+// false: absent means retrieval never runs. A bool config entry has no
+// invalid VALUE — a wrong-typed config.json value fails the whole parse —
+// so the warning return carries
+// the one invalid COMBINATION instead: retrieval enabled while
+// compaction-mode is not "enabled". The record store only fills when
+// relocation runs (mode "enabled"), so in shadow or off mode retrieval
+// would score an eternally empty store and inject nothing; the resolver
+// still honors the switch (harmless no-op) and lets the warning explain.
+func ResolveCompactionRetrieval(cfg *Config) (enabled bool, warning string) {
+	if cfg == nil || !cfg.CompactionRetrieval {
+		return false, ""
+	}
+	mode, _ := ResolveCompactionMode(cfg)
+	if mode != CompactionModeEnabled {
+		return true, fmt.Sprintf("config.json compaction-retrieval has no effect while compaction-mode is %q: the record store only fills in %q mode",
+			mode, CompactionModeEnabled)
+	}
+	return true, ""
+}
+
 func nonEmptyEnv(lookup EnvLookup, key string) (string, bool) {
 	if lookup == nil {
 		return "", false
@@ -358,6 +741,57 @@ func (cfg *Config) GetModelForAgent(agentType string) (ModelSetting, bool) {
 		}
 	}
 	return ModelSetting{}, false
+}
+
+// AutocompactWarnings returns one warning per models[] entry whose
+// jev-autocompact-percent value parses (otherwise the strict parse aborts)
+// but is outside the valid 1-100 range. The global threshold applies for that
+// model until the entry is fixed, exactly like an out-of-range global
+// jev-autocompact-percent warns and falls back to the default. The warnings
+// name the model entry (its id, or its model name when no id is set) and the
+// bad value so the user can locate the offending line. A nil config has no
+// entries and returns nil.
+func (cfg *Config) AutocompactWarnings() []string {
+	if cfg == nil {
+		return nil
+	}
+	var warnings []string
+	for _, m := range cfg.Models {
+		v := m.JevAutocompactPercent
+		if v == 0 || (v >= 1 && v <= 100) {
+			continue
+		}
+		name := m.ID
+		if name == "" {
+			name = m.Model
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"ignoring invalid config.json models[%s] jev-autocompact-percent %d; using the global jev-autocompact-percent for this model",
+			name, v))
+	}
+	return warnings
+}
+
+// AutocompactPercentForAgent resolves the effective JEV auto-compaction
+// trigger percentage for one agent type. Resolution order: the
+// agent_models-routed model entry's per-model override (when valid, 1-100) >
+// the global jev-autocompact-percent (already validated and normalized by
+// ResolveAutocompact) > DefaultJevAutocompactPercent, which the caller passes
+// as the global. A nil config or an agent type with no model entry just uses
+// the global. The percent keys off the agent's own model because that is
+// whose context window fills.
+func (cfg *Config) AutocompactPercentForAgent(agentType string, global int) int {
+	if cfg == nil || agentType == "" {
+		return global
+	}
+	setting, ok := cfg.GetModelForAgent(agentType)
+	if !ok {
+		return global
+	}
+	if override, ok := setting.AutocompactPercentOverride(); ok {
+		return override
+	}
+	return global
 }
 
 // SaveConfig atomically writes the configuration back to config.json.

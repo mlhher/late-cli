@@ -14,21 +14,27 @@ func LateConfigDir() (string, error) {
 	return filepath.Join(configDir, "late"), nil
 }
 
-func LateSessionDir() (string, error) {
+// LateDataDir returns the late data directory — the parent of every mutable
+// data file (session histories, the compaction shadow log and record store,
+// the critical-error log): ~/.local/share/late on Unix-likes. Windows keeps
+// all app state under the config dir (AppData), exactly like LateSessionDir.
+func LateDataDir() (string, error) {
 	if runtime.GOOS == "windows" {
-		// Use UserConfigDir on Windows to keep all app state under AppData.
-		lateConfigDir, err := LateConfigDir()
-		if err != nil {
-			return "", err
-		}
-		return filepath.Join(lateConfigDir, "sessions"), nil
+		return LateConfigDir()
 	}
-
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(homeDir, ".local", "share", "late", "sessions"), nil
+	return filepath.Join(homeDir, ".local", "share", "late"), nil
+}
+
+func LateSessionDir() (string, error) {
+	lateDataDir, err := LateDataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(lateDataDir, "sessions"), nil
 }
 
 // LateProjectMCPConfigPath returns the relative project-local MCP config
