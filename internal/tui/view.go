@@ -360,7 +360,7 @@ func (m *Model) renderMinimalEqualizerAt(now time.Time) string {
 
 		// Gentle incommensurate harmonic (golden ratio 1.618) creates organic, non-repeating crests
 		// Low amplitude ensures it never causes erratic snap or jitter
-		w2 := 0.35 * math.Sin(t*0.93 + float64(i)*0.55 + 1.2)
+		w2 := 0.35 * math.Sin(t*0.93+float64(i)*0.55+1.2)
 
 		// Breathing envelope gives gentle natural cadence
 		swell := 0.88 + 0.20*math.Sin(t*0.38+float64(i)*0.25)
@@ -568,6 +568,20 @@ func (m *Model) statusBarView() string {
 
 	var leftItems []string
 
+	// Breadcrumb path from the root down to the focused agent. Computed before
+	// the left-section segments are assembled: the focused-agent label below is
+	// suppressed when the full chain renders (the breadcrumbs already name the
+	// focused agent) and the breadcrumb block reuses the same parts.
+	var pathParts []string
+	curr := m.Focused
+	for curr != nil {
+		pathParts = append([]string{curr.ID()}, pathParts...)
+		curr = curr.Parent()
+	}
+	if len(pathParts) <= 1 && m.Focused != nil && m.Root != nil && m.Focused.ID() != m.Root.ID() {
+		pathParts = []string{m.Root.ID(), m.Focused.ID()}
+	}
+
 	// State (far left)
 	var statePart string
 	statusText := s.StatusText
@@ -588,6 +602,23 @@ func (m *Model) statusBarView() string {
 	}
 	leftItems = append(leftItems, statePart)
 
+	// Focused agent label: always name the focused agent. The root agent has no
+	// breadcrumb chain, so without this the status bar showed no agent name or
+	// type at all for the orchestrator. A focused subagent is covered by its
+	// breadcrumb chain instead (no duplicate label).
+	if m.Focused != nil && len(pathParts) <= 1 {
+		id := m.Focused.ID()
+		isRoot := m.Focused == m.Root || (m.Root != nil && id == m.Root.ID())
+		label := agentTypeForID(id)
+		if isRoot || label == "orchestrator" || id == common.MainAgentID || id == "main" {
+			label = "orchestrator"
+		} else if label == "" {
+			label = id
+		}
+		focusedAgentPart := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Background(appBgColor).Render(label)
+		leftItems = append(leftItems, focusedAgentPart)
+	}
+
 	// Branch or CWD (whisper-muted, unobtrusive context)
 	if m.ShowCWD {
 		if m.GitBranch != "" {
@@ -603,16 +634,8 @@ func (m *Model) statusBarView() string {
 		}
 	}
 
-	// Breadcrumbs (on the left, shown when focused on a subagent)
-	var pathParts []string
-	curr := m.Focused
-	for curr != nil {
-		pathParts = append([]string{curr.ID()}, pathParts...)
-		curr = curr.Parent()
-	}
-	if len(pathParts) <= 1 && m.Focused != nil && m.Root != nil && m.Focused.ID() != m.Root.ID() {
-		pathParts = []string{m.Root.ID(), m.Focused.ID()}
-	}
+	// Breadcrumbs (on the left, shown when focused on a subagent); the path
+	// parts are computed above alongside the focused-agent label.
 	if len(pathParts) > 1 {
 		var styledParts []string
 		for i, id := range pathParts {
@@ -715,6 +738,20 @@ func (m *Model) statusBarView() string {
 
 	content := lipgloss.JoinHorizontal(lipgloss.Left, parts...)
 	return statusBarBaseStyle.Width(w).Render(" " + content + " ")
+}
+
+// agentTypeForID maps an orchestrator ID to the agent type used by
+// config.AgentModels lookups: the root agent ("main") maps to "orchestrator"
+// and "<type>-subagent-<n>" (the NextChildID scheme) maps to "<type>".
+// Unrecognized IDs return "" (no config lookup possible).
+func agentTypeForID(id string) string {
+	if id == "" || id == common.MainAgentID {
+		return "orchestrator"
+	}
+	if idx := strings.Index(id, "-subagent-"); idx > 0 {
+		return id[:idx]
+	}
+	return ""
 }
 
 func (m *Model) updateViewport() {
@@ -931,19 +968,14 @@ func (m *Model) truncateWithEllipsis(s string, w int) string {
 	if w <= 3 {
 		return "..."
 	}
-
-	limit := w - 3
-	res := ""
-	currW := 0
-	for _, r := range s {
-		rw := lipgloss.Width(string(r))
-		if currW+rw > limit {
-			break
-		}
-		res += string(r)
-		currW += rw
-	}
-	return res + "..."
+	// ansi.Truncate is escape-sequence aware: it measures the same visible
+	// width lipgloss.Width does, never cuts inside a CSI sequence (the old
+	// rune walker counted escape bytes as content and could split one),
+	// keeps any trailing style resets, and already accounts for the tail
+	// width, so the result stays <= w cells. Callers pass both plain and
+	// lipgloss-styled text (the status bar truncates rendered, styled
+	// status strings on narrow terminals).
+	return ansi.Truncate(s, w, "...")
 }
 
 func (m *Model) renderMarkdownBlock(content string, innerWidth int) string {
