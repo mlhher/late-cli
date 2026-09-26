@@ -362,8 +362,12 @@ func main() {
 			}
 		}
 	}
-	// Load App configuration
+	// Load App configuration. A load error means the run proceeds with
+	// degraded defaults (LoadConfig already wraps the error with the exact
+	// config path); keep the message so the TUI status bar can surface it
+	// before backend discovery reports.
 	appConfig, err := appconfig.LoadConfig()
+	configLoadWarning := initialBootstrapStatus(err)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Failed to load app config: %v\n", err)
 	}
@@ -676,7 +680,15 @@ func main() {
 		pOpts = append(pOpts, tea.WithWindowSize(w, h))
 	}
 
-	model.BootstrapStatus = "Starting..."
+	// A degraded app config surfaces as the initial status-bar text so the
+	// user sees it on the first paint; the async BootstrapStatusMsg traffic
+	// below replaces it as soon as backend discovery reports. "Starting..."
+	// only applies to a clean config load.
+	if configLoadWarning != "" {
+		model.BootstrapStatus = configLoadWarning
+	} else {
+		model.BootstrapStatus = "Starting..."
+	}
 	p := tea.NewProgram(model, pOpts...)
 
 	// toolSync serializes plugin/MCP tool-registry refreshes triggered by
@@ -788,6 +800,18 @@ func deriveEffectiveSessionID(historyPath string) string {
 	}
 	return id
 }
+
+// initialBootstrapStatus decides what the TUI status bar shows before the
+// async backend-discovery messages arrive. A failed app-config load returns
+// the "config error: ..." warning (the error already names the exact config
+// path); a clean load returns "" so the caller falls back to "Starting...".
+func initialBootstrapStatus(loadErr error) string {
+	if loadErr != nil {
+		return fmt.Sprintf("config error: %v", loadErr)
+	}
+	return ""
+}
+
 func newModelClient(ctx context.Context, setting appconfig.ModelSetting, enableImages bool, logitBias map[string]int) *client.Client {
 	c := client.NewClient(client.Config{
 		BaseURL:      setting.URL,

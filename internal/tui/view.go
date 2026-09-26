@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"late/internal/common"
+	"late/internal/pathutil"
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
@@ -360,7 +361,7 @@ func (m *Model) renderMinimalEqualizerAt(now time.Time) string {
 
 		// Gentle incommensurate harmonic (golden ratio 1.618) creates organic, non-repeating crests
 		// Low amplitude ensures it never causes erratic snap or jitter
-		w2 := 0.35 * math.Sin(t*0.93 + float64(i)*0.55 + 1.2)
+		w2 := 0.35 * math.Sin(t*0.93+float64(i)*0.55+1.2)
 
 		// Breathing envelope gives gentle natural cadence
 		swell := 0.88 + 0.20*math.Sin(t*0.38+float64(i)*0.25)
@@ -1414,7 +1415,13 @@ func (m *Model) renderModelPickerView() {
 	lines = append(lines, header, "")
 
 	if len(m.ModelPickerModels) <= 1 && (m.AppConfig == nil || len(m.AppConfig.Models) == 0) {
-		lines = append(lines, viewEmptyStyle.Copy().Foreground(warnBorderColor).Render("No models configured in ~/.config/late/config.json"))
+		// Point the user at the real OS config location; fall back to the
+		// literal only if the platform config dir cannot be resolved.
+		emptyMsg := "No models configured in ~/.config/late/config.json"
+		if cfgDir, dirErr := pathutil.LateConfigDir(); dirErr == nil {
+			emptyMsg = fmt.Sprintf("No models configured in %s", filepath.Join(cfgDir, "config.json"))
+		}
+		lines = append(lines, viewEmptyStyle.Copy().Foreground(warnBorderColor).Render(emptyMsg))
 		lines = append(lines, "", viewEmptyStyle.Render("Please add a 'models' array to your config file first."))
 	} else {
 		// Instructions

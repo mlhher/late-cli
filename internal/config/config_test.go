@@ -838,3 +838,140 @@ func TestConfig_PermissionModeJSONRoundTrip(t *testing.T) {
 		t.Fatalf("empty config should not marshal a permission-mode key, got %s", emptyData)
 	}
 }
+
+// TestLoadConfig_DegradationGuard covers the config degradation guard: a
+// config.json that cannot be parsed or read yields the fallback default
+// together with an error naming the exact file path and a Degraded flag
+// that makes SaveConfig refuse to overwrite the user's file. A valid file
+// (including unknown extra keys, which must keep parsing permissively)
+// loads non-degraded and saves normally. A missing file (fresh install) is
+// covered by TestLoadConfig_MissingFileCreatesDefault and stays
+// non-degraded.
+func TestLoadConfig_DegradationGuard(t *testing.T) {
+	cases := []struct {
+		name          string
+		configContent string
+		wantErr       bool
+		wantPathInErr bool
+		wantDegraded  bool
+		// roundTripModel: non-empty for savable configs — SaveConfig must
+		// succeed and the model must survive a save/reload round trip.
+		roundTripModel string
+	}{
+		{
+			name:           "valid config parses without degradation",
+			configContent:  `{"enabled_tools":{"bash":true},"openai_model":"gpt-test"}`,
+			wantErr:        false,
+			wantDegraded:   false,
+			roundTripModel: "gpt-test",
+		},
+		{
+			name:          "trailing comma is a parse error naming the path",
+			configContent: `{"enabled_tools":{"bash":true},}`,
+			wantErr:       true,
+			wantPathInErr: true,
+			wantDegraded:  true,
+		},
+		{
+			name:          "wrong-typed field is a parse error naming the path",
+			configContent: `{"theme":123}`,
+			wantErr:       true,
+			wantPathInErr: true,
+			wantDegraded:  true,
+		},
+		{
+			name:           "unknown extra field parses permissively",
+			configContent:  `{"totally-new-option":123}`,
+			wantErr:        false,
+			wantDegraded:   false,
+			roundTripModel: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			configRoot := t.TempDir()
+			setUserConfigEnv(t, configRoot)
+			configPath := lateConfigPath(t)
+
+			if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(configPath, []byte(tc.configContent), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg, err := LoadConfig()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("LoadConfig() expected an error, got nil")
+				}
+				if tc.wantPathInErr && !strings.Contains(err.Error(), configPath) {
+					t.Fatalf("LoadConfig() error = %q, want it to contain the config path %q", err.Error(), configPath)
+				}
+			} else if err != nil {
+				t.Fatalf("LoadConfig() error = %v, want nil", err)
+			}
+			if cfg == nil {
+				t.Fatal("LoadConfig() returned nil config")
+			}
+			if cfg.Degraded != tc.wantDegraded {
+				t.Fatalf("cfg.Degraded = %v, want %v", cfg.Degraded, tc.wantDegraded)
+			}
+
+			if !tc.wantDegraded {
+				if err := SaveConfig(cfg); err != nil {
+					t.Fatalf("SaveConfig() error = %v, want nil for a non-degraded config", err)
+				}
+				if tc.roundTripModel != "" {
+					reloaded, err := LoadConfig()
+					if err != nil {
+						t.Fatalf("LoadConfig() after save error = %v", err)
+					}
+					if reloaded.OpenAIModel != tc.roundTripModel {
+						t.Fatalf("round-tripped OpenAIModel = %q, want %q", reloaded.OpenAIModel, tc.roundTripModel)
+					}
+					if reloaded.Degraded {
+						t.Fatal("reloaded config after a normal save must not be degraded")
+					}
+				}
+				return
+			}
+
+			before, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			saveErr := SaveConfig(cfg)
+			if saveErr == nil {
+				t.Fatal("SaveConfig() expected a refusal error for a degraded config, got nil")
+			}
+			if !strings.Contains(saveErr.Error(), "refusing to save config") {
+				t.Fatalf("SaveConfig() error = %q, want it to mention refusing to save", saveErr.Error())
+			}
+			after, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Fatalf("SaveConfig() modified a degraded config's file:\nbefore: %s\nafter:  %s", before, after)
+			}
+		})
+	}
+}
+
+// TestConfig_DegradedNotSerialized pins that the runtime-only Degraded flag
+// never leaks into config.json (json:"-").
+func TestConfig_DegradedNotSerialized(t *testing.T) {
+	data, err := json.Marshal(&Config{Degraded: true})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if _, ok := raw["Degraded"]; ok {
+		t.Fatalf("Degraded must not be serialized, got %s", data)
+	}
+}

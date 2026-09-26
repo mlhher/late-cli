@@ -1,12 +1,16 @@
 package tui
 
 import (
-	"late/internal/config"
-	"late/internal/pathutil"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
+
+	"late/internal/config"
+	"late/internal/pathutil"
 )
 
 func TestModelPickerAppliesOrchestratorModelImmediately(t *testing.T) {
@@ -178,5 +182,38 @@ func TestModelPickerPublishesOnlyAfterSaveSucceeds(t *testing.T) {
 	}
 	if applied {
 		t.Fatal("model was applied after config save failed")
+	}
+}
+
+// TestModelPickerEmptyStateShowsRealConfigPath verifies the empty-state hint
+// points at the OS-real config location (pathutil.LateConfigDir) instead of the
+// hardcoded ~/.config/late literal (Diagnosis item 2).
+func TestModelPickerEmptyStateShowsRealConfigPath(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("HOME", configHome)
+	t.Setenv("APPDATA", configHome)
+
+	wantPath, err := pathutil.LateConfigDir()
+	if err != nil {
+		t.Skipf("LateConfigDir unavailable in test env: %v", err)
+	}
+	wantPath = filepath.Join(wantPath, "config.json")
+
+	// Empty picker: AppConfig present but zero models, only the default row.
+	model := NewModel(&mockOrchestrator{}, nil, &config.Config{})
+	model.Viewport.SetWidth(200)
+	model.Viewport.SetHeight(40)
+	model.Mode = ViewModelPicker
+	model.ModelPickerAgents = []string{"orchestrator"}
+	model.ModelPickerModels = []string{"default"}
+	model.renderModelPickerView()
+
+	plain := ansi.Strip(model.Viewport.View())
+	if !strings.Contains(plain, "No models configured in "+wantPath) {
+		t.Fatalf("model picker empty state missing real config path %q, got:\n%s", wantPath, plain)
+	}
+	if strings.Contains(plain, "~/.config/late") {
+		t.Fatalf("model picker empty state shows hardcoded ~ path, got:\n%s", plain)
 	}
 }
