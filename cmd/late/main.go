@@ -439,6 +439,11 @@ func main() {
 	}
 	resolvedSubagentConfig := appconfig.ResolveSubagentSettings(appConfig, resolvedOpenAIConfig)
 
+	// Resolve the startup state of the todos side pane. The panel is open
+	// by default; config.json "show-todo-pane": false starts with it
+	// closed. Width handling happens in the TUI (see model.ShowTodoPane).
+	showTodoPane := appConfig.ResolveShowTodoPane()
+
 	// Validate --suppress-thinking-words: only allowed in homogeneous setups
 	if err := validateSuppressThinkingWords(*suppressThinkingWordsReq, resolvedClientConfig.Model, resolvedSubagentConfig.Model, appConfig); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: --suppress-thinking-words is currently only supported when orchestrator and subagents use the same model: %v\n", err)
@@ -663,6 +668,14 @@ func main() {
 		model.SubagentInfo = resolvedSubagentConfig.Model
 	}
 	model.ShowCWD = *showCWDReq
+	// Set ShowTodoPane BEFORE the SetSize calls below: SetSize -> updateLayout
+	// reserves the side-pane width for terminals >= 85 cols and silently
+	// closes the pane again below that threshold — the same guard as the
+	// /todos command, without a startup toast. Users on narrow terminals
+	// can open it with /todos later, which shows the standard toast. If the
+	// size cannot be detected here, the initial WindowSizeMsg runs the same
+	// updateLayout path.
+	model.ShowTodoPane = showTodoPane
 	model.LazyHistory = true
 
 	pOpts := []tea.ProgramOption{

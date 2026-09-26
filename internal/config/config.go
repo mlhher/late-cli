@@ -83,6 +83,12 @@ type Config struct {
 
 	SkillsDir string `json:"skills_dir,omitempty"`
 
+	// ShowTodoPane controls whether the todos side pane starts open.
+	// The todos panel is open by default; set false to start with it
+	// closed. Terminals narrower than 85 columns always start with the
+	// pane closed; it can be opened later with /todos.
+	ShowTodoPane *bool `json:"show-todo-pane,omitempty"`
+
 	Theme       string            `json:"theme,omitempty"`
 	Models      []ModelSetting    `json:"models,omitempty"`
 	AgentModels map[string]string `json:"agent_models,omitempty"`
@@ -290,6 +296,20 @@ func ResolvePermissionMode(cfg *Config, askFlag, unsupervisedFlag bool) (mode st
 		}
 	}
 	return PermissionModeAskForUserApproval, "", nil
+}
+
+// ResolveShowTodoPane returns whether the todos side pane should be open
+// when the TUI starts. The todos panel is open by default; set
+// "show-todo-pane": false in config.json to start with it closed.
+// An absent entry (nil pointer) resolves to true, an explicit false to
+// false, and an explicit true to true. A nil config also resolves to the
+// open default. Terminal width is not considered here: the TUI silently
+// keeps the pane closed below 85 columns.
+func (cfg *Config) ResolveShowTodoPane() bool {
+	if cfg == nil || cfg.ShowTodoPane == nil {
+		return true
+	}
+	return *cfg.ShowTodoPane
 }
 
 func nonEmptyEnv(lookup EnvLookup, key string) (string, bool) {

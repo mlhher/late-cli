@@ -360,7 +360,7 @@ func (m *Model) renderMinimalEqualizerAt(now time.Time) string {
 
 		// Gentle incommensurate harmonic (golden ratio 1.618) creates organic, non-repeating crests
 		// Low amplitude ensures it never causes erratic snap or jitter
-		w2 := 0.35 * math.Sin(t*0.93 + float64(i)*0.55 + 1.2)
+		w2 := 0.35 * math.Sin(t*0.93+float64(i)*0.55+1.2)
 
 		// Breathing envelope gives gentle natural cadence
 		swell := 0.88 + 0.20*math.Sin(t*0.38+float64(i)*0.25)
@@ -1660,7 +1660,7 @@ func (m Model) todoPaneView(height int) string {
 	var lines []string
 	focusMarker := ""
 	if m.TodoPaneFocused {
-		focusMarker = "  • focused"
+		focusMarker = "  [focused · esc to unfocus]"
 	}
 	title := lipgloss.NewStyle().
 		Bold(true).
@@ -1703,13 +1703,19 @@ func (m Model) todoPaneView(height int) string {
 	}
 
 	content := strings.Join(lines, "\n")
+	// The pane must be visibly different while focused: elevated background
+	// (applied to the whole box, content lines included) plus a brighter border.
+	bg, border := appBgColor, lipgloss.Color("#232329")
+	if m.TodoPaneFocused {
+		bg, border = todoFocusedBg, primaryColor
+	}
 	boxStyle := lipgloss.NewStyle().
 		Width(innerWidth).
 		Height(innerHeight).
 		MaxHeight(innerHeight).
 		Border(lipgloss.NormalBorder(), false, false, false, true).
-		BorderForeground(lipgloss.Color("#232329")).
-		Background(appBgColor)
+		BorderForeground(border).
+		Background(bg)
 
 	return boxStyle.Render(content)
 }

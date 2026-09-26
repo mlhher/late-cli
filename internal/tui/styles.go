@@ -24,6 +24,10 @@ var (
 	borderColor  = lipgloss.Color("#1C1F26") // Hairline Divider
 	activeBorder = lipgloss.Color("#2D323E") // Focused / Active Border
 
+	// Todo pane focus surface. Elevated so the pane visibly changes color
+	// while focused (userMsgBg aliases appBgColor and would be invisible).
+	todoFocusedBg = chipBgColor
+
 	// Centralized Border Styles & Colors
 	boxBorderStyle   = lipgloss.RoundedBorder()
 	modalBorderColor = secondaryColor // Primary border color for dialogs & overlays (/help, /themes, commit detail)
