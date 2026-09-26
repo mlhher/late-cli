@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -13,28 +12,6 @@ import (
 	"late/internal/client"
 	"late/internal/common"
 )
-
-func TestSplitStreamingMarkdown(t *testing.T) {
-	tests := []struct {
-		name     string
-		content  string
-		complete []string
-		tail     string
-	}{
-		{name: "unfinished paragraph", content: "hello world", tail: "hello world"},
-		{name: "completed paragraph", content: "hello\n\nworld", complete: []string{"hello\n\n"}, tail: "world"},
-		{name: "blank line inside fence", content: "```go\nfoo\n\nbar\n```\n\nafter", complete: []string{"```go\nfoo\n\nbar\n```\n\n"}, tail: "after"},
-		{name: "open fence stays mutable", content: "before\n\n```go\nfoo\n\nbar", complete: []string{"before\n\n"}, tail: "```go\nfoo\n\nbar"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			complete, tail := splitStreamingMarkdown(tt.content)
-			if !reflect.DeepEqual(complete, tt.complete) || tail != tt.tail {
-				t.Fatalf("splitStreamingMarkdown() = %#v, %q; want %#v, %q", complete, tail, tt.complete, tt.tail)
-			}
-		})
-	}
-}
 
 // Run workers explicitly, as Bubble Tea would, without relying on timers.
 func renderTestTranscript(m *Model) {

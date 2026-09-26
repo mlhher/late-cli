@@ -31,6 +31,7 @@ type transcriptState struct {
 	rows         []string
 	blocks       []RenderBlock
 	cache        map[string][]string
+	fragments    map[string][]string
 	offset       int
 	detached     bool
 	dirty        bool
@@ -53,6 +54,7 @@ type transcriptRenderedMsg struct {
 	rows         []string
 	blocks       []RenderBlock
 	cache        map[string][]string
+	fragments    map[string][]string
 }
 
 type transcriptLabel struct {
@@ -243,6 +245,7 @@ func (m *Model) applyTranscript(result transcriptRenderedMsg) {
 	}
 	t.welcome = result.welcome
 	t.rows, t.blocks, t.cache = result.rows, result.blocks, result.cache
+	t.fragments = result.fragments
 	t.thinking, t.thinkingLine = result.thinking, result.thinkingLine
 	t.activities = result.activities
 	t.width, t.theme = result.width, result.theme
@@ -275,8 +278,10 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 	t.dirty = false
 	id, generation := m.Focused.ID(), t.generation
 	oldCache := t.cache
+	oldFragments := t.fragments
 	if t.width != width || t.theme != string(styles) {
 		oldCache = nil
+		oldFragments = nil
 	}
 	theme := string(styles)
 	entries := make([]transcriptEntry, 0, len(m.Focused.History())+3)
@@ -403,11 +408,19 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 	bg := appBgColor
 	activityHeader := m.renderActivityAt("thinking...", toolWidth, time.Unix(0, 0))
 	answerStyle := assistantReplyStyle(width)
+	reasoningStyle := thoughtBodyStyle(width)
+	plainTheme := theme == string(LateTheme)
 	return func() tea.Msg {
-		renderer, err := glamour.NewTermRenderer(glamour.WithStylesFromJSONBytes([]byte(theme)), glamour.WithWordWrap(assistantReplyContentWidth(width)), glamour.WithPreservedNewLines())
+		var renderer *glamour.TermRenderer
+		var rendererErr error
+		initialized := false
 		result := transcriptRenderedMsg{activities: make(map[int]string), partial: partial, welcome: welcome, id: id, generation: generation, width: width, theme: theme, cache: make(map[string][]string, len(entries))}
 		markdown := func(source string) string {
-			if err != nil {
+			if !initialized {
+				renderer, rendererErr = glamour.NewTermRenderer(glamour.WithStylesFromJSONBytes([]byte(theme)), glamour.WithWordWrap(assistantReplyContentWidth(width)), glamour.WithPreservedNewLines())
+				initialized = true
+			}
+			if rendererErr != nil {
 				return source
 			}
 			out, e := renderer.Render(source)
@@ -416,30 +429,15 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 			}
 			return out
 		}
-		// Completed Markdown blocks cannot be changed by later stream deltas, so
-		// retain their fully styled output. Only the unfinished tail is parsed on
-		// each update, preserving immediate Markdown without repeatedly rendering
-		// the complete growing response.
-		streamingMarkdown := func(source string) string {
-			complete, tail := splitStreamingMarkdown(source)
-			parts := make([]string, 0, len(complete)+1)
-			for _, block := range complete {
-				key := "stream-markdown:" + block
-				cached, ok := oldCache[key]
-				if !ok {
-					cached = []string{answerStyle.Render(strings.Trim(markdown(block), "\r\n"))}
-				}
-				result.cache[key] = cached
-				parts = append(parts, cached[0])
-			}
-			if text := strings.TrimLeft(tail, "\r\n"); text != "" {
-				parts = append(parts, answerStyle.Render(strings.Trim(markdown(text), "\r\n")))
-			}
-			return strings.Join(parts, "\n")
-		}
+		r := transcriptRowRenderer{width: width, background: bg, answer: answerStyle, thought: reasoningStyle, markdown: markdown, plainTheme: plainTheme, old: oldFragments, next: make(map[string][]string)}
 		for _, entry := range entries {
 			key := fmt.Sprintf("%t:%d:%s:%d:%s:%d:%s:%v", entry.active, len(entry.role), entry.role, len(entry.content), entry.content, len(entry.reasoning), entry.reasoning, entry.labels)
 			rows, ok := oldCache[key]
+			if ok && entry.active {
+				// An unchanged entry still owns its reusable rows. The maps are
+				// immutable once published to the model.
+				result.fragments = oldFragments
+			}
 			if !ok {
 				parts := make([]string, 0, 4)
 				switch entry.role {
@@ -459,32 +457,41 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 						parts = append(parts, "\n"+userPromptStyle(width).Render(block)+"\n")
 					}
 				case "assistant":
+					appendPart := func(text string) { rows = append(rows, r.normalize(text)...) }
 					if entry.reasoning != "" {
 						header := headerStyle.Render("· thinking")
 						if entry.active && entry.content == "" && len(entry.labels) == 0 {
 							header = activityHeader
 						}
-						parts = append(parts, header, thoughtBodyStyle(width).Render(entry.reasoning))
+						appendPart(header)
+						if entry.active {
+							rows = append(rows, r.reasoning(entry.reasoning)...)
+						} else {
+							appendPart(reasoningStyle.Render(entry.reasoning))
+						}
 					}
 					if entry.content != "" {
 						if entry.reasoning != "" {
-							parts = append(parts, "")
+							appendPart("")
 						}
 						if entry.active {
-							parts = append(parts, streamingMarkdown(entry.content))
+							rows = append(rows, r.prose(entry.content)...)
 						} else {
 							rendered := markdown(entry.content)
-							parts = append(parts, answerStyle.Render(strings.Trim(rendered, "\r\n")))
+							appendPart(answerStyle.Render(strings.Trim(rendered, "\r\n")))
 						}
 					}
 					if len(entry.labels) > 0 {
-						if len(parts) > 0 && parts[len(parts)-1] != "" {
-							parts = append(parts, "")
+						if len(rows) > 0 && strings.TrimSpace(ansi.Strip(rows[len(rows)-1])) != "" {
+							appendPart("")
 						}
 						for _, label := range entry.labels {
-							parts = append(parts, label.rendered)
+							appendPart(label.rendered)
 						}
-						parts = append(parts, "")
+						appendPart("")
+					}
+					if entry.active {
+						result.fragments = r.next
 					}
 				case "notice", "error":
 					style := noticeStyle
@@ -498,22 +505,13 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 					parts = append(parts, entry.content)
 				case "thinking":
 					// Reserve the same header and gutter rows used by streamed reasoning.
-					parts = append(parts, activityHeader, thoughtBodyStyle(width).Render(""))
+					parts = append(parts, activityHeader, reasoningStyle.Render(""))
 				}
-				if len(parts) == 0 {
+				if len(parts) == 0 && len(rows) == 0 {
 					continue
 				}
-				rows = strings.Split(strings.Join(parts, "\n"), "\n")
-				padding := lipgloss.NewStyle().Background(bg)
-				for i, row := range rows {
-					if ansi.StringWidth(row) > width {
-						row = ansi.Truncate(row, width, "")
-					}
-					missing := width - ansi.StringWidth(row)
-					if missing > 0 {
-						row += padding.Render(strings.Repeat(" ", missing))
-					}
-					rows[i] = row
+				if rows == nil {
+					rows = r.normalize(strings.Join(parts, "\n"))
 				}
 			}
 			result.cache[key] = rows
@@ -553,26 +551,6 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 		}
 		return result
 	}
-}
-
-// splitStreamingMarkdown returns stable blocks ending at blank lines outside
-// fenced code. Anything after the last safe boundary remains mutable. Keeping
-// an open fence in the tail is important because its closing delimiter changes
-// how the whole block must be rendered.
-func splitStreamingMarkdown(content string) (complete []string, tail string) {
-	inFence := false
-	lastSplit := 0
-	for i := 0; i < len(content); i++ {
-		if (i == 0 || content[i-1] == '\n') && i+3 <= len(content) && content[i:i+3] == "```" {
-			inFence = !inFence
-		}
-		if !inFence && i+1 < len(content) && content[i] == '\n' && content[i+1] == '\n' {
-			complete = append(complete, content[lastSplit:i+2])
-			lastSplit = i + 2
-			i++
-		}
-	}
-	return complete, content[lastSplit:]
 }
 
 func transcriptError(err error) string {

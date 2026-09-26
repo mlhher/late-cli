@@ -139,6 +139,39 @@ func BenchmarkUpdateViewportStreamingParagraphs(b *testing.B) {
 	}
 }
 
+// Unique rows prevent repeated prose from hiding cache costs. An unchanged
+// refresh between deltas also models status events while a stream is open.
+func BenchmarkUpdateViewportStreamingUniqueRows(b *testing.B) {
+	for _, reasoning := range []bool{false, true} {
+		b.Run(fmt.Sprintf("reasoning_%t", reasoning), func(b *testing.B) {
+			model, state := newViewportBenchmarkModel(nil)
+			state.State = StateStreaming
+			var prefix strings.Builder
+			for i := 0; prefix.Len() < 64<<10; i++ {
+				fmt.Fprintf(&prefix, "Passage %d describes a different part of the response and its supporting details.\n\n", i)
+			}
+			variants := [...]string{prefix.String() + "active tail a", prefix.String() + "active tail b"}
+			setContent := func(content string) {
+				state.StreamingState = common.ContentEvent{ID: model.Focused.ID()}
+				if reasoning {
+					state.StreamingState.ReasoningContent = content
+				} else {
+					state.StreamingState.Content = content
+				}
+			}
+			setContent(variants[0])
+			renderTestTranscript(model)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				renderTestTranscript(model)
+				setContent(variants[i&1])
+				renderTestTranscript(model)
+			}
+		})
+	}
+}
+
 // BenchmarkUpdateViewportStreamingReasoning measures the uncached reasoning
 // path, which currently renders the complete reasoning text on every frame.
 func BenchmarkUpdateViewportStreamingReasoning(b *testing.B) {

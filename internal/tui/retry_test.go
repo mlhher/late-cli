@@ -690,4 +690,3 @@ func TestRetryAnimatesInterruptedLabel(t *testing.T) {
 		t.Fatalf("live transcript view = %q, want it to contain interrupted retrying label", liveView)
 	}
 }
-
