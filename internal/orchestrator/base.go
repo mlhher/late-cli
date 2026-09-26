@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // BaseOrchestrator implements common.Orchestrator and manages an agent's run loop.
@@ -42,14 +44,61 @@ type BaseOrchestrator struct {
 
 	// Max turns configuration
 	maxTurns int
+
+	// Activity tracking for the idle watchdog. lastActivity holds unix-nano
+	// of the last observed sign of life (stream chunk, tool execution,
+	// nested-spawn heartbeat); inFlightTools and nestedSpawns count
+	// outstanding tool executions and nested subagent runs. All three are
+	// atomic; idleNotified enforces the once-per-idle-episode notification.
+	// oldestToolStartAt holds the unix-nano start time of the oldest
+	// in-flight tool (0 when none) so the busy check can tell a progressing
+	// tool (younger than the idle threshold) from one that has stalled past
+	// it — a stalled tool must not mask idleness forever, or the watchdog
+	// could never kill the hung tool and rescue the agent.
+	lastActivity      atomic.Int64
+	inFlightTools     atomic.Int64
+	oldestToolStartAt atomic.Int64
+	nestedSpawns      atomic.Int64
+	idleNotified      atomic.Bool
+
+	// toolKillDone records that the idle watchdog already used its first
+	// escalation stage for this run (killed the hung in-flight tool), so the
+	// next sustained-idle tick goes straight to the agent-level kill.
+	// Once-per-stage semantics: stage 1 fires at most once per run, stage 2
+	// (the agent kill) at most once because cancel() readies ctx.Done and
+	// stops the watchdog.
+	toolKillDone atomic.Bool
+
+	// Idle-watchdog policy, guarded by mu and set via SetIdlePolicy before a
+	// run starts. idleTimeout <= 0 disables the watchdog; idleKillAfter <= 0
+	// means notify only. idleTickInterval defaults to defaultIdleTickInterval
+	// and is overridable (same package) so tests can drive the watchdog
+	// deterministically.
+	idleTimeout      time.Duration
+	idleKillAfter    time.Duration
+	idleTickInterval time.Duration
+
+	// idleKillReason records why the idle watchdog cancelled this run; guarded
+	// by mu. Empty unless the watchdog killed the run.
+	idleKillReason string
 }
+
+// Idle-watchdog tuning. defaultIdleTickInterval is how often the watchdog
+// re-checks for idleness; idleProbeLines is how many transcript entries are
+// rendered into a SubagentIdleEvent probe; idleProbeLineMaxLen caps each
+// rendered probe line.
+const (
+	defaultIdleTickInterval = 30 * time.Second
+	idleProbeLines          = 3
+	idleProbeLineMaxLen     = 160
+)
 
 func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.ToolMiddleware, maxTurns int) *BaseOrchestrator {
 	childSeq := 0
 	if sess != nil {
 		childSeq = sess.SubagentSeq()
 	}
-	return &BaseOrchestrator{
+	o := &BaseOrchestrator{
 		id:          id,
 		sess:        sess,
 		middlewares: middlewares,
@@ -59,6 +108,10 @@ func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.
 		maxTurns:    maxTurns,
 		childSeq:    childSeq,
 	}
+	// Construction counts as activity so an immediate run starts with a
+	// fresh idle episode.
+	o.lastActivity.Store(time.Now().UnixNano())
+	return o
 }
 
 func (o *BaseOrchestrator) SetMiddlewares(middlewares []common.ToolMiddleware) {
@@ -86,6 +139,273 @@ func (o *BaseOrchestrator) SetMaxTurns(maxTurns int) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.maxTurns = maxTurns
+}
+
+// SetIdlePolicy configures the idle watchdog for this orchestrator: idle is
+// the "truly idle" threshold (0 = watchdog off) and killAfter is the
+// sustained-idle point at which the orchestrator cancels its own run
+// (0 = notify only). Must be called before Execute/Submit to apply to a run.
+func (o *BaseOrchestrator) SetIdlePolicy(idle, killAfter time.Duration) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.idleTimeout = idle
+	o.idleKillAfter = killAfter
+}
+
+// MarkActivity records a sign of life — a streamed chunk, a tool execution,
+// or a nested-spawn heartbeat — and re-arms the idle notification so a new
+// idle episode can be reported after activity resumes. It implements
+// common.ActivityMarker.
+func (o *BaseOrchestrator) MarkActivity() {
+	o.lastActivity.Store(time.Now().UnixNano())
+	o.idleNotified.Store(false)
+}
+
+// BeginNestedSpawn marks a nested subagent run as in flight so the idle
+// watchdog treats this orchestrator as busy for the child's duration.
+func (o *BaseOrchestrator) BeginNestedSpawn() { o.nestedSpawns.Add(1) }
+
+// EndNestedSpawn marks a previously begun nested subagent run as finished.
+func (o *BaseOrchestrator) EndNestedSpawn() { o.nestedSpawns.Add(-1) }
+
+// IdleKillReason returns the recorded kill reason when the idle watchdog
+// self-cancelled this run, or "" otherwise.
+func (o *BaseOrchestrator) IdleKillReason() string {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.idleKillReason
+}
+
+// activityMiddleware is the internal, always-present outermost middleware:
+// every tool execution bumps activity and the in-flight tool counter, and
+// stamps the in-flight start time used by the idle watchdog's busy check. It
+// is inserted OUTERMOST (before user middlewares), so the confirmation
+// middleware runs INSIDE this wrapper — a tool waiting for user approval
+// still counts as in-flight, i.e. awaiting-approval counts as active. That
+// is by design: a paused-for-approval agent is not idle.
+func (o *BaseOrchestrator) activityMiddleware() common.ToolMiddleware {
+	return func(next common.ToolRunner) common.ToolRunner {
+		return func(ctx context.Context, tc client.ToolCall) (string, error) {
+			o.MarkActivity()
+			o.beginToolInFlight()
+			defer o.endToolInFlight()
+			return next(ctx, tc)
+		}
+	}
+}
+
+// beginToolInFlight records the start of a tool execution. With concurrent
+// tools it keeps the OLDEST start time — the busy check only needs the
+// longest-running call — and the stamp is cleared again once no tool is
+// in flight.
+func (o *BaseOrchestrator) beginToolInFlight() {
+	o.inFlightTools.Add(1)
+	now := time.Now().UnixNano()
+	for {
+		prev := o.oldestToolStartAt.Load()
+		if prev != 0 && prev <= now {
+			return
+		}
+		if o.oldestToolStartAt.CompareAndSwap(prev, now) {
+			return
+		}
+	}
+}
+
+// endToolInFlight marks a tool execution as finished and clears the oldest
+// in-flight timestamp when the in-flight count drops back to zero.
+func (o *BaseOrchestrator) endToolInFlight() {
+	if o.inFlightTools.Add(-1) == 0 {
+		o.oldestToolStartAt.Store(0)
+	}
+}
+
+// withActivityMiddleware returns the middleware chain passed to RunLoop with
+// the internal activity middleware prepended as the outermost layer. The
+// chain is rebuilt fresh so the stored o.middlewares slice is never mutated.
+func (o *BaseOrchestrator) withActivityMiddleware() []common.ToolMiddleware {
+	chain := make([]common.ToolMiddleware, 0, len(o.middlewares)+1)
+	chain = append(chain, o.activityMiddleware())
+	chain = append(chain, o.middlewares...)
+	return chain
+}
+
+// startIdleWatchdog launches the idle watchdog for one run; it stops when the
+// run context is cancelled. On every tick it checks whether the orchestrator
+// has been truly idle — no stream progress, no in-flight nested spawn, and no
+// tool call younger than the idle threshold — for longer than the configured
+// idle threshold. An in-flight tool counts as progress only while it is
+// YOUNGER than the idle threshold: a tool stuck for longer than that stops
+// masking idleness, which is what makes the tool-first kill (stage 1 of the
+// escalation below) reachable for hung tools. The first qualifying tick emits
+// one SubagentIdleEvent (once per idle episode; MarkActivity re-arms). When a
+// kill threshold is configured, the kill escalates in two stages (see the
+// kill branch below for why that check is not gated on the once-per-episode
+// flag).
+func (o *BaseOrchestrator) startIdleWatchdog(ctx context.Context, cancel context.CancelFunc) {
+	o.mu.RLock()
+	idleTimeout := o.idleTimeout
+	idleKillAfter := o.idleKillAfter
+	tickInterval := o.idleTickInterval
+	o.mu.RUnlock()
+
+	if idleTimeout <= 0 {
+		return
+	}
+	if tickInterval <= 0 {
+		tickInterval = defaultIdleTickInterval
+	}
+
+	go func() {
+		ticker := time.NewTicker(tickInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+
+			idle := time.Since(time.Unix(0, o.lastActivity.Load()))
+			// Busy means real progress is still possible: a nested subagent
+			// run, or a tool call in flight for LESS than the idle threshold.
+			// A tool that outlives idleTimeout is considered stalled — it no
+			// longer suppresses idleness, so a hung tool cannot hide from the
+			// watchdog forever.
+			busy := o.nestedSpawns.Load() > 0
+			if start := o.oldestToolStartAt.Load(); start != 0 &&
+				time.Since(time.Unix(0, start)) < idleTimeout {
+				busy = true
+			}
+			if idle < idleTimeout || busy {
+				continue
+			}
+
+			// Once per idle episode: Swap(false→true) fires only on the
+			// first qualifying tick after the last MarkActivity.
+			if !o.idleNotified.Swap(true) {
+				select {
+				case o.eventCh <- common.SubagentIdleEvent{ID: o.id, IdleFor: idle, Probe: o.idleProbe()}:
+				default:
+				}
+			}
+
+			// Two-stage sustained-idle kill. Like the notification above, the
+			// threshold check runs on EVERY qualifying tick: the kill
+			// threshold normally sits well past the notify threshold (e.g.
+			// notify at 15m, kill at 30m), and gating it on the
+			// once-per-episode flag would swallow it — the notify tick fires
+			// long before idle reaches the kill threshold.
+			//
+			// Stage 1 (first qualifying tick that finds a stalled tool in
+			// flight): kill the TOOL, not the agent. executor.ExecuteToolCalls
+			// registers each call's cancellable context on the session, so
+			// CancelInFlightTool makes the hung call return a "tool cancelled"
+			// result and the run continues — the model sees the cancellation
+			// and can recover. The watchdog then re-checks on the NEXT tick:
+			// if activity resumed (next tool call, streamed chunk), nothing
+			// else happens; if idleness persists past the kill threshold,
+			// stage 2 fires. Once-per-stage: toolKillDone gates stage 1 to a
+			// single shot per run.
+			//
+			// Stage 2 (next qualifying tick, or the same one when no tool was
+			// in flight to kill): cancel our own run context — the
+			// orchestrator probed the transcript and decided this agent is
+			// stuck. cancel() readies ctx.Done, so stage 2 records and
+			// cancels at most once.
+			if idleKillAfter > 0 && idle >= idleKillAfter {
+				if start := o.oldestToolStartAt.Load(); start != 0 && !o.toolKillDone.Load() {
+					if o.sess != nil && o.sess.CancelInFlightTool() {
+						// Stage 1 done. Skip the agent kill this tick and
+						// re-evaluate on the next one.
+						o.toolKillDone.Store(true)
+						continue
+					}
+					// The tool finished between the busy check and the kill
+					// attempt — nothing left to cancel; fall through to
+					// stage 2.
+				}
+
+				// Record the probe lines in the kill reason for the crash
+				// classification, noting an earlier tool kill that failed to
+				// rescue the run.
+				probe := o.idleProbe()
+				reason := fmt.Sprintf(
+					"idle for %s (kill threshold %s); last transcript entries: %s",
+					idle.Truncate(time.Second), idleKillAfter, strings.Join(probe, " | "),
+				)
+				if o.toolKillDone.Load() {
+					reason = "in-flight tool cancelled; " + reason
+				}
+				o.mu.Lock()
+				o.idleKillReason = reason
+				o.mu.Unlock()
+				if cancel != nil {
+					cancel()
+				}
+			}
+		}
+	}()
+}
+
+// idleProbe renders the current transcript tail for idle events and kill
+// reasons. Best-effort: history is read without locking, matching
+// BaseOrchestrator.History(); the run loop may append concurrently.
+func (o *BaseOrchestrator) idleProbe() []string {
+	if o.sess == nil {
+		return nil
+	}
+	return lastTranscriptLines(o.sess.History, idleProbeLines)
+}
+
+// lastTranscriptLines renders the last n history entries as short single-line
+// strings ("role: first line") — the transcript probe carried by idle events
+// so the recipient can judge whether the agent is stuck. Assistant messages
+// that only contain tool calls fall back to the tool names.
+func lastTranscriptLines(msgs []client.ChatMessage, n int) []string {
+	if n <= 0 || len(msgs) == 0 {
+		return nil
+	}
+	start := len(msgs) - n
+	if start < 0 {
+		start = 0
+	}
+	lines := make([]string, 0, len(msgs)-start)
+	for _, msg := range msgs[start:] {
+		summary := firstLine(strings.TrimSpace(msg.Content.String()))
+		if summary == "" && len(msg.ToolCalls) > 0 {
+			names := make([]string, 0, len(msg.ToolCalls))
+			for _, tc := range msg.ToolCalls {
+				names = append(names, tc.Function.Name)
+			}
+			summary = "called " + strings.Join(names, ", ")
+		}
+		if summary == "" {
+			continue
+		}
+		lines = append(lines, truncateRunes(fmt.Sprintf("%s: %s", msg.Role, summary), idleProbeLineMaxLen))
+	}
+	return lines
+}
+
+// firstLine returns s up to the first newline.
+func firstLine(s string) string {
+	if idx := strings.IndexAny(s, "\r\n"); idx >= 0 {
+		return s[:idx]
+	}
+	return s
+}
+
+// truncateRunes shortens s to max runes, appending "..." when truncated.
+func truncateRunes(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	if max <= 3 {
+		return string(runes[:max])
+	}
+	return string(runes[:max-3]) + "..."
 }
 
 func (o *BaseOrchestrator) MaxTokens() int {
@@ -228,6 +548,12 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 
 	defer cancel()
 
+	// Fresh idle episode for this run: construction or the previous run's
+	// last activity must not leak into the watchdog's baseline. The watchdog
+	// stops when the deferred cancel above fires.
+	o.MarkActivity()
+	o.startIdleWatchdog(ctx, cancel)
+
 	// Inject orchestrator ID into context for tool interactions
 	ctx = context.WithValue(ctx, common.OrchestratorIDKey, o.id)
 
@@ -284,6 +610,8 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 		onStartTurn,
 		onEndTurn,
 		func(res common.StreamResult) {
+			// Stream progress counts as activity for the idle watchdog.
+			o.MarkActivity()
 			o.mu.Lock()
 			o.acc.Append(res)
 			accCopy := o.acc
@@ -327,7 +655,7 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 			default:
 			}
 		},
-		o.middlewares,
+		o.withActivityMiddleware(),
 	)
 
 	if err != nil {
@@ -363,6 +691,11 @@ func (o *BaseOrchestrator) run() {
 		o.pendingMsgs = nil
 		o.mu.Unlock()
 	}()
+
+	// Fresh idle episode for this run; the watchdog stops when the deferred
+	// cancel above fires.
+	o.MarkActivity()
+	o.startIdleWatchdog(ctx, cancel)
 
 	// Inject orchestrator ID into context for tool interactions
 	ctx = context.WithValue(ctx, common.OrchestratorIDKey, o.id)
@@ -411,6 +744,8 @@ func (o *BaseOrchestrator) run() {
 			onStartTurn,
 			onEndTurn,
 			func(res common.StreamResult) {
+				// Stream progress counts as activity for the idle watchdog.
+				o.MarkActivity()
 				o.mu.Lock()
 				o.acc.Append(res)
 				accCopy := o.acc // Copy for event
@@ -454,7 +789,7 @@ func (o *BaseOrchestrator) run() {
 				default:
 				}
 			},
-			o.middlewares,
+			o.withActivityMiddleware(),
 		)
 
 		// Reset accumulator after finished or ready for next turn

@@ -1687,6 +1687,20 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			if event.ID == m.Focused.ID() {
 				m.updateViewport()
 			}
+		case common.SubagentIdleEvent:
+			// Status line only: the agent is still formally running, so the
+			// State must not change. The event fires once per idle episode.
+			first := ""
+			if len(event.Probe) > 0 {
+				first = event.Probe[0]
+			}
+			if r := []rune(first); len(r) > 80 {
+				first = string(r[:77]) + "..."
+			}
+			s.StatusText = fmt.Sprintf("subagent idle for %s — last: %s", event.IdleFor.Truncate(time.Second), first)
+			if event.ID == m.Focused.ID() {
+				m.updateViewport()
+			}
 		}
 
 		if restoredToast != nil {

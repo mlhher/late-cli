@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadConfig_MissingFileCreatesDefault(t *testing.T) {
@@ -598,6 +599,116 @@ func TestResolveSaveSubagentHistories(t *testing.T) {
 				t.Fatalf("ResolveSaveSubagentHistories() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestResolveSubagentTimeout(t *testing.T) {
+	tests := []struct {
+		name        string
+		cfg         *Config
+		cliExplicit bool
+		cliValue    time.Duration
+		want        time.Duration
+		wantWarning string
+	}{
+		{
+			name:        "explicit flag wins over config",
+			cfg:         &Config{SubagentTimeout: "1h"},
+			cliExplicit: true,
+			cliValue:    2 * time.Minute,
+			want:        2 * time.Minute,
+		},
+		{
+			name:        "explicit zero flag wins over config (unlimited)",
+			cfg:         &Config{SubagentTimeout: "1h"},
+			cliExplicit: true,
+			cliValue:    0,
+			want:        0,
+		},
+		{
+			name: "config parses to the configured budget",
+			cfg:  &Config{SubagentTimeout: "24h"},
+			want: 24 * time.Hour,
+		},
+		{
+			name: "config minutes parse",
+			cfg:  &Config{SubagentTimeout: "45m"},
+			want: 45 * time.Minute,
+		},
+		{
+			name: "config zero passes through as unlimited",
+			cfg:  &Config{SubagentTimeout: "0"},
+			want: 0,
+		},
+		{
+			name: "config negative passes through as unlimited",
+			cfg:  &Config{SubagentTimeout: "-5m"},
+			want: -5 * time.Minute,
+		},
+		{
+			name:        "invalid config warns and falls back to default",
+			cfg:         &Config{SubagentTimeout: "garbage"},
+			want:        DefaultSubagentTimeout,
+			wantWarning: `ignoring invalid config.json subagent_timeout "garbage"; using default 24h`,
+		},
+		{
+			name:        "unitless config value warns and falls back to default",
+			cfg:         &Config{SubagentTimeout: "5"},
+			want:        DefaultSubagentTimeout,
+			wantWarning: `ignoring invalid config.json subagent_timeout "5"; using default 24h`,
+		},
+		{
+			name: "empty config entry uses default",
+			cfg:  &Config{},
+			want: DefaultSubagentTimeout,
+		},
+		{
+			name: "nil config uses default",
+			cfg:  nil,
+			want: DefaultSubagentTimeout,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, warning := ResolveSubagentTimeout(tt.cfg, tt.cliExplicit, tt.cliValue)
+			if got != tt.want {
+				t.Fatalf("ResolveSubagentTimeout() = %v, want %v", got, tt.want)
+			}
+			if warning != tt.wantWarning {
+				t.Fatalf("ResolveSubagentTimeout() warning = %q, want %q", warning, tt.wantWarning)
+			}
+		})
+	}
+}
+
+// TestConfig_SubagentTimeoutJSONRoundTrip pins the config.json key spelling
+// and round-trip behavior of the subagent_timeout entry: omitting it stays
+// omitempty, and a set value survives Marshal/Unmarshal unchanged. The key
+// is snake_case, matching the sibling entries in the config schema.
+func TestConfig_SubagentTimeoutJSONRoundTrip(t *testing.T) {
+	data, err := json.Marshal(&Config{})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if strings.Contains(string(data), "subagent_timeout") {
+		t.Fatalf("empty SubagentTimeout must be omitted, got %s", data)
+	}
+
+	data, err = json.Marshal(&Config{SubagentTimeout: "45m"})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(data), `"subagent_timeout":"45m"`) {
+		t.Fatalf("expected subagent_timeout key in JSON, got %s", data)
+	}
+
+	var back Config
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if back.SubagentTimeout != "45m" {
+		t.Fatalf("round-tripped SubagentTimeout = %q, want %q", back.SubagentTimeout, "45m")
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,6 +28,12 @@ type Session struct {
 	subagentSeq           int
 	saveSubagentHistories *bool
 	Registry              *tool.Registry
+
+	// inFlightToolCancel holds the cancel function of the tool call that is
+	// currently executing (nil when none), so the owning orchestrator — or the
+	// user — can kill a hung tool without killing the whole agent run.
+	// See inflight.go.
+	inFlightToolCancel atomic.Pointer[context.CancelFunc]
 }
 
 func New(c *client.Client, historyPath string, history []client.ChatMessage, systemPrompt string, useTools bool) *Session {

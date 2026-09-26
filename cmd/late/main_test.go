@@ -19,6 +19,100 @@ import (
 	"late/internal/session"
 )
 
+// TestEffectiveSubagentBudget guards the runner's budget precedence:
+// a positive per-spawn override wins; an explicit per-spawn "0" (unlimited)
+// suppresses the global budget; an absent override falls back to the global
+// budget; any non-positive result means unlimited.
+func TestEffectiveSubagentBudget(t *testing.T) {
+	positive := 2 * time.Hour
+	unlimited := time.Duration(0)
+	global := 24 * time.Hour
+
+	tests := []struct {
+		name            string
+		timeoutOverride *time.Duration
+		globalBudget    time.Duration
+		want            time.Duration
+	}{
+		{
+			name:            "absent override falls back to the global budget",
+			timeoutOverride: nil,
+			globalBudget:    global,
+			want:            global,
+		},
+		{
+			name:            "positive per-spawn override wins over the global budget",
+			timeoutOverride: &positive,
+			globalBudget:    global,
+			want:            positive,
+		},
+		{
+			name:            "explicit per-spawn unlimited suppresses the global budget",
+			timeoutOverride: &unlimited,
+			globalBudget:    global,
+			want:            0,
+		},
+		{
+			name:            "per-spawn negative is unlimited",
+			timeoutOverride: &unlimited, // tool normalizes negatives to 0 before this point
+			globalBudget:    global,
+			want:            0,
+		},
+		{
+			name:            "absent override with unlimited global stays unlimited",
+			timeoutOverride: nil,
+			globalBudget:    0,
+			want:            0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := effectiveSubagentBudget(tt.timeoutOverride, tt.globalBudget); got != tt.want {
+				t.Fatalf("effectiveSubagentBudget(%v, %v) = %v, want %v", tt.timeoutOverride, tt.globalBudget, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSubagentTimeoutFlagVisitDetection guards the precedence mechanism used
+// in main(): config.json loads AFTER flag.Parse, so "explicit flag > config"
+// resolution relies on flag.Visit reporting only command-line-set flags. A
+// Duration flag must be reported when passed — even when its value equals the
+// default — and never reported when absent.
+func TestSubagentTimeoutFlagVisitDetection(t *testing.T) {
+	parseExplicit := func(t *testing.T, args []string) map[string]bool {
+		t.Helper()
+		fs := flag.NewFlagSet("late", flag.ContinueOnError)
+		fs.Duration("subagent-timeout", appconfig.DefaultSubagentTimeout, "Max wall-clock time for one subagent run (0 = unlimited)")
+		if err := fs.Parse(args); err != nil {
+			t.Fatalf("Parse(%v): %v", args, err)
+		}
+		explicit := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+		return explicit
+	}
+
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "flag passed is reported", args: []string{"-subagent-timeout=2h"}, want: true},
+		{name: "flag absent is not reported", args: nil, want: false},
+		{name: "flag passed at the default value is still reported", args: []string{"-subagent-timeout=24h"}, want: true},
+		{name: "flag passed as zero is still reported", args: []string{"-subagent-timeout=0"}, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseExplicit(t, tt.args)["subagent-timeout"]; got != tt.want {
+				t.Fatalf(`explicit["subagent-timeout"] = %v, want %v`, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestPluginInlineTool_RequiresConfirmation guards the documented contract
 // that plugin inline tools (arbitrary scripts) go through the normal user
 // confirmation flow. plugin-example.md: "user confirmation still prompts

@@ -178,6 +178,22 @@ Approvals decay over time rather than becoming permanent trust forever.
 
 ---
 
+## Subagent Control
+
+Subagents run under wall-clock budgets and an idle watchdog:
+
+| Flag | Default | Behavior |
+| --- | --- | --- |
+| `--subagent-timeout <dur>` | 24h | Max wall-clock time for one subagent run (`0` = unlimited). Also settable as `subagent_timeout` in `config.json`; the flag wins over the config value. |
+| `--subagent-idle-timeout <dur>` | 15m | Notify when a subagent has been truly idle — no stream progress, no in-flight tool, no nested spawn (`0` = off). |
+| `--subagent-idle-kill-after <dur>` | 0 | Kill a subagent that stays truly idle past this duration (`0` = notify only). |
+
+The orchestrator can also budget a single run: `spawn_subagent` accepts an optional `timeout` argument (e.g. `"45m"`, `"2h"`; `"0"` = unlimited; omitted = the global value).
+
+Every `bash` call accepts an optional per-call `timeout` argument (e.g. `"30m"`; `"0"` = unlimited; omitted = the global default of 10m). Timed-out processes are killed with their whole process group, so runaway pipes and grandchildren cannot hang the session.
+
+---
+
 ## Run Fully Autonomously with Podman
 
 For unattended work, large refactors, or overnight runs, use `late-podman`.
