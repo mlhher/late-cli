@@ -35,6 +35,17 @@ import (
 	"golang.org/x/term"
 )
 
+// forceRevaluateUsage is the -h description of
+// -force-revaluate-dangerous-commands.
+//
+// IMPORTANT: this string must contain no back-quoted word. flag.PrintDefaults
+// renders the first back-quoted word of a usage string as the flag's value
+// name, which would advertise the flag as taking an argument. The OTP code is
+// never passed on the CLI: late generates a random single-use code at runtime
+// and hands it to the agent in the tool-result block message; the agent
+// re-runs the command passing it in the bash tool's otp_code parameter.
+const forceRevaluateUsage = "Unsupervised execution, but the first attempt to run a potentially dangerous command is blocked; late issues the agent a random single-use OTP code, bound to that exact command, which it must pass in the bash tool's otp_code parameter to re-run."
+
 // askForUserApprovalUsage is the -h description of -ask-for-user-approval.
 //
 // This string must contain no back-quoted word: flag.PrintDefaults renders
@@ -109,6 +120,7 @@ func main() {
 	appendSystemPromptReq := flag.String("append-system-prompt", "", "Append this text to the final system prompt.")
 	versionReq := flag.Bool("version", false, "Print the version and exit.")
 	unsupervisedReq := flag.Bool("i-promise-i-have-backups-and-will-not-file-issues", false, "UNSUPPORTED: run every tool without user confirmation.")
+	forceRevaluateReq := flag.Bool("force-revaluate-dangerous-commands", false, forceRevaluateUsage)
 	askForUserApprovalReq := flag.Bool("ask-for-user-approval", false, askForUserApprovalUsage)
 	enableImagesReq := flag.Bool("enable-images", false, "Force-enable image attachments even if the backend does not advertise vision support.")
 	continueReq := flag.Bool("continue", false, "Resume the most recently updated session, regardless of which project directory it was started in.")
@@ -701,9 +713,11 @@ func main() {
 
 		// Create context with InputProvider
 		ctx := context.WithValue(context.Background(), common.InputProviderKey, tui.NewTUIInputProvider(p))
-		switch permissionMode {
-		case appconfig.PermissionModeUnsupervised:
+		if permissionMode == appconfig.PermissionModeUnsupervised || *forceRevaluateReq {
 			ctx = context.WithValue(ctx, common.SkipConfirmationKey, true)
+		}
+		if *forceRevaluateReq {
+			ctx = context.WithValue(ctx, common.ForceRevaluateKey, true)
 		}
 		ctx = context.WithValue(ctx, common.MaxStreamRetriesKey, *maxStreamRetries)
 		rootAgent.SetContext(ctx)

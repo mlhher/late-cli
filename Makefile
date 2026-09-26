@@ -1,4 +1,4 @@
-.PHONY: build test test-podman vet lint vulncheck check clean install run help
+.PHONY: build test test-podman vet lint vulncheck check clean install install-dev run help
 
 # Project variables
 BINARY_NAME=late
@@ -45,6 +45,9 @@ install: build ## Build and install the binary to your Go bin path
 	@go build ${LDFLAGS} -o bin/${BINARY_NAME} ./cmd/late
 	@mv bin/${BINARY_NAME} ~/.local/bin/late
 	@install -m 0755 late-podman ~/.local/bin/late-podman
+
+install-dev: ## Interactive multi-source installer (dev/pinned/fork/upstream/official)
+	@./install-dev.sh
 
 run: build ## Build and run the project
 	@./bin/${BINARY_NAME}

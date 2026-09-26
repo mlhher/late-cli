@@ -207,6 +207,72 @@ export OPENAI_MODEL="model-name"
 
 ---
 
+## Development
+
+### Development installer (`install-dev.sh`)
+`./install-dev.sh` is a strictly **development** installer: it builds from a git
+source and can install the unstable `main` branches. It is interactive by
+default and autodetects platform, current install, remotes and conflicts.
+
+Headless (dev boxes / CI):
+```bash
+./install-dev.sh --choice 1                 # local unstable dev (current branch, symlink)
+./install-dev.sh --choice 6                 # detection report only
+./install-dev.sh --choice 2 --target /tmp/bin --dry-run
+```
+`--choice N` maps to the menu entries (1 local-dev, 2 pinned, 3 fork-main,
+4 upstream-main, 5 official, 6 check), implies `--yes`, and requires no human
+supervision. Safety: the previous binary is archived as `.bak-<timestamp>`,
+brew-owned installs warn, running as root is refused.
+
+The detection report also lists every package manager found (brew, apt-get,
+dnf, pacman, zypper, apk, npm), whether `podman` is installed (with its
+version), and whether the `late-podman` launcher is already installed.
+
+**`late-podman` parity:** `local-dev`, `pinned`, `fork-main` and
+`upstream-main` also install the `late-podman` launcher into the target dir —
+a symlink for `local-dev`, a copy for the others — matching `make install`,
+which ships both commands, with the same `.bak-<timestamp>` archiving on
+transitions. Note that `late-podman`'s *runtime* requires a **Linux host with
+podman**: on macOS the launcher refuses to run (`only Linux hosts are
+supported`); it is meant for Linux machines or Linux containers.
+
+**Uninstalling:** `./install-dev.sh uninstall` removes what the installer
+manages (name-invoked only — it is deliberately *not* in the `--choice`
+menu, because it is destructive):
+
+```bash
+./install-dev.sh uninstall --yes              # remove late + late-podman + .bak archives
+./install-dev.sh uninstall --purge --dry-run  # preview, including user-data removal
+./install-dev.sh uninstall --purge --yes      # also delete user data
+./install-dev.sh uninstall --with-deps        # print (never run) dependency removal commands
+```
+
+Semantics:
+
+* Removes the installed `late` (symlink or copy) in the target dir and
+  `late-podman` in the target dir / `~/.local/bin` — but only the installer's
+  own copies (a symlink into this repo, or a copy matching this repo's
+  launcher). Files inside the brew prefix are **never** deleted; the script
+  prints `brew uninstall late` as advice instead. A symlink pointing into a
+  different repo is removed while that repo is kept.
+* All `late.bak-<timestamp>` / `late-podman.bak-<timestamp>` archives in the
+  target dir are removed too.
+* `--purge` additionally deletes **user data**: the late config dir
+  (`~/Library/Application Support/late` on macOS; `~/.config/late` on Linux,
+  honoring `XDG_CONFIG_HOME` — contains `config.json`, `mcp_config.json`,
+  `plugins/` and `skills/`) and the data dir (`~/.local/share/late`, session
+  history). Every path is printed before deletion; interactive runs confirm
+  with y/N (default **N**), headless runs require `--yes`.
+* `--with-deps` **prints** the exact package-manager removal commands for
+  late-relevant dependencies (`podman`, `go` — e.g. `brew uninstall podman`,
+  `sudo apt remove podman`). It never executes them: those packages are
+  often shared with other projects.
+* Idempotent: uninstalling an already-uninstalled system prints
+  "nothing to uninstall" and exits 0.
+
+---
+
 ## License
 
 Built to create engineering leverage, not to supply free infrastructure for AI startups.

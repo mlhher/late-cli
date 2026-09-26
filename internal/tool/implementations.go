@@ -323,7 +323,8 @@ func (t ShellTool) Parameters() json.RawMessage {
 		"type": "object",
 		"properties": {
 			"command": { "type": "string", "description": "The full %s command to execute." },
-			"cwd": { "type": "string", "description": "Working directory for execution. Use this instead of 'cd' commands to change directories." }
+			"cwd": { "type": "string", "description": "Working directory for execution. Use this instead of 'cd' commands to change directories." },
+			"otp_code": { "type": "string", "description": "One-time code required to re-run a command that was blocked by the -force-revaluate-dangerous-commands re-evaluation gate. Re-run the exact same command passing the issued OTP code here; codes are single-use and bound to the exact command string." }
 		},
 		"required": ["command"]
 	}`, shellDisplayName()))
