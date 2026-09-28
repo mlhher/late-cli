@@ -304,6 +304,51 @@ const maxReadFileChars = 32768
 // Maximum number of characters for shell output to prevent session poisoning
 const maxBashOutputChars = 32768
 
+// defaultShellTimeout bounds every shell invocation unless the caller overrides
+// it with the per-call `timeout` parameter (or disables it with "0"). Tests
+// override it via SetShellTimeout.
+var defaultShellTimeout = 10 * time.Minute
+
+// SetShellTimeout overrides the global default shell timeout.
+func SetShellTimeout(d time.Duration) { defaultShellTimeout = d }
+
+// resolveShellTimeout derives the effective execution context for a shell call
+// from the optional per-call `timeout` parameter:
+//
+//   - absent/empty       → the global default timeout
+//   - "0" (or negative)  → unlimited (no deadline; group-kill + WaitDelay still
+//     apply on explicit context cancellation)
+//   - a valid duration   → a deadline of that duration
+//   - an invalid string  → an error
+//
+// The returned duration is the effective bound in force (0 means unlimited) so
+// callers can report accurate timeouts. The returned cancel func is nil when no
+// deadline was installed.
+func resolveShellTimeout(ctx context.Context, raw string) (context.Context, context.CancelFunc, time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+
+	if raw == "" {
+		if defaultShellTimeout > 0 {
+			execCtx, cancel := context.WithTimeout(ctx, defaultShellTimeout)
+			return execCtx, cancel, defaultShellTimeout, nil
+		}
+		return ctx, nil, 0, nil
+	}
+
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("invalid timeout %q — use a duration like 30m, 2h, or 0 for unlimited", raw)
+	}
+	if d <= 0 {
+		// "0" (or negative) means unlimited: run without a deadline. Explicit
+		// cancellation still kills the process group (see newShellCommand).
+		return ctx, nil, 0, nil
+	}
+
+	execCtx, cancel := context.WithTimeout(ctx, d)
+	return execCtx, cancel, d, nil
+}
+
 // ShellTool executes host-native shell commands with security restrictions.
 type ShellTool struct{}
 
@@ -323,7 +368,8 @@ func (t ShellTool) Parameters() json.RawMessage {
 		"type": "object",
 		"properties": {
 			"command": { "type": "string", "description": "The full %s command to execute." },
-			"cwd": { "type": "string", "description": "Working directory for execution. Use this instead of 'cd' commands to change directories." }
+			"cwd": { "type": "string", "description": "Working directory for execution. Use this instead of 'cd' commands to change directories." },
+			"timeout": { "type": "string", "description": "Optional per-call time bound, e.g. 30m or 2h. 0 means unlimited. Defaults to the configured global timeout." }
 		},
 		"required": ["command"]
 	}`, shellDisplayName()))
@@ -332,9 +378,20 @@ func (t ShellTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	var params struct {
 		Command string `json:"command"`
 		Cwd     string `json:"cwd"`
+		Timeout string `json:"timeout"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", err
+	}
+
+	// Resolve the effective time bound for this call. An invalid timeout is a
+	// tool-level error result: nothing runs and no error sandwich is attached.
+	execCtx, cancel, effectiveTimeout, timeoutErr := resolveShellTimeout(ctx, params.Timeout)
+	if timeoutErr != nil {
+		return fmt.Sprintf("Error: %v", timeoutErr), nil
+	}
+	if cancel != nil {
+		defer cancel()
 	}
 
 	// Validate command before any execution
@@ -366,10 +423,17 @@ func (t ShellTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	}
 
 	// Execute command using a platform-specific shell wrapper.
-	cmd := newShellCommand(ctx, params.Command)
+	cmd := newShellCommand(execCtx, params.Command)
 	cmd.Dir = params.Cwd
 
 	output, err := cmd.CombinedOutput()
+
+	// The deadline fired and the process group was killed: report the timeout
+	// plus whatever output made it out before the kill. Explicit cancellation
+	// (context.Canceled) keeps flowing through the normal error path below.
+	if err != nil && execCtx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("command timed out after %s and was killed (partial output):\n%s", effectiveTimeout, string(output))
+	}
 
 	// If sqz is available, compress the output
 	if IsSqzAvailable() && len(output) > 0 {
