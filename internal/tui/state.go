@@ -66,6 +66,7 @@ var AvailableCommands = []CommandDef{
 	{Name: "/quit", Description: "Exit the application"},
 	{Name: "/rewind", Description: "Rewind conversation history"},
 	{Name: "/themes", Description: "List and switch themes"},
+	{Name: "/timestamps", Description: "Toggle message timestamps"},
 	{Name: "/todos", Description: "Toggle live todo progress pane"},
 }
 
@@ -188,6 +189,12 @@ type Model struct {
 	ShowTodoPane     bool
 	TodoPaneFocused  bool
 	TodoScrollOffset int
+
+	// Timestamps (toggled via /timestamps, persisted as config
+	// show-timestamps). A view-level setting, not per-agent: when set,
+	// every rendered transcript block that carries a message timestamp is
+	// prefixed with its [HH:MM:SS] render of the recorded receive time.
+	ShowTimestamps bool
 
 	// Double-click copy & Toast tracking
 	LastClickX      int

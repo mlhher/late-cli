@@ -161,6 +161,13 @@ When Late creates subagents, each appears in its own tab while it works and disa
 
 ---
 
+## Message Timestamps
+
+* `/timestamps` toggles `[HH:MM:SS]` prefixes on transcript message blocks.
+* The toggle persists to `config.json` (`show-timestamps`).
+
+---
+
 ## Tool Approval
 
 Potentially destructive commands and file changes require approval unless you have already granted permission for that scope.
