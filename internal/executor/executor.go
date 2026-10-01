@@ -68,6 +68,67 @@ func (a *StreamAccumulator) Reset() {
 
 // --- Tool Execution ---
 
+// ArchiveThresholdChars is the tool-result size above which ExecuteToolCalls
+// archives the full output to disk and replaces it in history with the
+// compact reference form (session.FormatReference). Results at or under the
+// threshold enter history inline, unchanged: archiving is local and free, so
+// it casts a wide net over the conversation's history size.
+const ArchiveThresholdChars = 1024
+
+// ArchiveHeadChars is how many leading characters of the original output
+// the archived reference form keeps inline.
+const ArchiveHeadChars = 2000
+
+// toolResultArchiver is the process-wide output archive consulted by
+// ExecuteToolCalls before a tool result enters history. One archive per
+// session folder; the root agent and every subagent share the instance
+// installed for the run, so a child's oversized outputs land in the same
+// session folder.
+var (
+	toolResultArchiverMu sync.RWMutex
+	toolResultArchiver   *session.OutputArchive
+)
+
+// SetToolResultArchiver installs a as the process-wide tool-output archive
+// for ExecuteToolCalls — the root agent and every subagent share it.
+// Install it once at startup (cmd/late) with the archive rooted at the
+// active session's folder. Pass nil to disable archiving.
+func SetToolResultArchiver(a *session.OutputArchive) {
+	toolResultArchiverMu.Lock()
+	defer toolResultArchiverMu.Unlock()
+	toolResultArchiver = a
+}
+
+// maybeArchiveToolResult returns the (possibly archived) form of result for
+// history: an oversized result is written to the archive and replaced by
+// the compact, deterministic reference form. Guards, in order:
+//
+//   - no archive installed → inline unchanged;
+//   - result at or under ArchiveThresholdChars → inline unchanged.
+//
+// Fail-open: an Archive error keeps the full output inline — a full-disk
+// condition must never lose a tool result from the conversation. There is
+// deliberately no log line: ExecuteToolCalls has no safe sink for
+// diagnostics (raw stderr would paint over the TUI's alt-screen), and the
+// failure is self-evident to the user (the conversation keeps the full
+// text). On success the reference form (small) is what history stores; the
+// session.OutputArchive determinism contract guarantees it is
+// byte-identical for identical outputs, and it is generated once here at
+// admission and never regenerated or substituted afterward.
+func maybeArchiveToolResult(toolName, result string) string {
+	toolResultArchiverMu.RLock()
+	a := toolResultArchiver
+	toolResultArchiverMu.RUnlock()
+	if a == nil || len(result) <= ArchiveThresholdChars {
+		return result
+	}
+	archived, err := a.Archive(result)
+	if err != nil {
+		return result
+	}
+	return session.FormatReference(archived, result, ArchiveHeadChars)
+}
+
 // ExecuteToolCalls runs a slice of tool calls against the session.
 // It uses the provided middlewares to wrap the base tool execution.
 // Results are added to the session history.
@@ -107,6 +168,13 @@ func ExecuteToolCalls(ctx context.Context, sess *session.Session, toolCalls []cl
 		if err != nil {
 			result = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, err)
 		}
+		// Output archiving: oversized results are stored on disk and
+		// replaced by the compact reference form BEFORE they enter history.
+		// Determinism (prompt-cache stability): the reference form is
+		// generated once, here, and the bytes stored in history are final —
+		// the request renderer uses history verbatim and nothing ever
+		// substitutes the archived content back in.
+		result = maybeArchiveToolResult(tc.Function.Name, result)
 		if err := sess.AddToolResultMessage(tc.ID, result); err != nil {
 			return err
 		}

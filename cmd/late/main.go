@@ -535,6 +535,33 @@ func main() {
 		}
 	}
 
+	// Tool-output archiving (default behavior, no config key): oversized
+	// tool outputs are written under the session's folder and the
+	// conversation carries only the compact reference form. One archive for
+	// the run — the root agent and every subagent share it. Rooted at the
+	// active session's folder so the archive dies with the session folder
+	// (RemoveSessionFolder); an in-memory session (no derived session ID)
+	// fails the validity check and simply gets no archive — everything
+	// stays inline.
+	toolArchive, archiveDirErr := session.OutputArchiveDir(effectiveSessionID)
+	if archiveDirErr == nil {
+		arch, archErr := session.NewOutputArchive(toolArchive)
+		if archErr != nil {
+			// Archiving is fail-open end to end: ExecuteToolCalls keeps
+			// results inline on any archive error, so a failed setup only
+			// disables the feature.
+			fmt.Fprintf(os.Stderr, "Warning: tool-output archiving disabled (%v)\n", archErr)
+			toolArchive = ""
+		} else {
+			// Root install; the subagent runner below re-installs the same
+			// archive for every spawn so children archive their outputs
+			// even if the root install is ever made conditional.
+			executor.SetToolResultArchiver(arch)
+		}
+	} else {
+		toolArchive = ""
+	}
+
 	// Resolve theme: --theme flag > $LATE_THEME > config.json > bundled base.
 	themeID := *themeReq
 	if themeID == "" {
@@ -752,6 +779,18 @@ func main() {
 				return "", err
 			}
 			child.SetMiddlewares(buildMiddlewares(pluginManager, p, child.Registry()))
+
+			// Tool-output archiving for the child: ExecuteToolCalls reads a
+			// process-wide hook, so the runner re-installs the SAME shared
+			// archive before every spawn. The hook is already in place from
+			// startup (the root install), but the child runs on the same
+			// session folder and must never depend on install ordering —
+			// re-installing the same instance is a no-op semantically.
+			if toolArchive != "" {
+				if arch, archErr := session.NewOutputArchive(toolArchive); archErr == nil {
+					executor.SetToolResultArchiver(arch)
+				}
+			}
 
 			res, err := child.Execute("")
 			if err != nil {

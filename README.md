@@ -201,6 +201,7 @@ export OPENAI_MODEL="model-name"
 * **True cl100k BPE Offline Tokenizer:** Embedded tokenizer calculates real BPE token counts offline with zero heuristic guesswork.
 * **Native Context-Aware Search:** High-performance codebase search with globster filtering that respects `.gitignore` and `.llmignore`.
 * **Agent Skills & MCP Support:** Natively consume external Model Context Protocol (MCP) servers and third-party Agent Skills with zero configuration overhead.
+* **Tool-Output Archiving (default, no config):** Tool outputs over 1024 characters are archived verbatim under the session's folder (`<sessions>/<sessionID>/tool-outputs/<sha256[:16]>.txt`, content-addressed so identical outputs dedupe) and the conversation carries only a deterministic compact reference — the first 2000 characters plus a `[full output archived: <path>]` pointer. The reference is written once at admission and never rewritten (prompt-cache stable), and any archive error fails open to the inline output (see the Quickstart).
 * **Git Worktree Support:** Run independent, parallel agent instances across multiple branches simultaneously with zero context bleeding.
 
 ---
