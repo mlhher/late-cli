@@ -492,6 +492,19 @@ func (o *BaseOrchestrator) run() {
 					o.sess.History = o.sess.History[:len(o.sess.History)-1]
 				}
 				o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: fmt.Errorf("image_unsupported")}
+			} else if errors.Is(err, client.ErrContextExceeded) {
+				// Context exhaustion is NOT a rejected request body even
+				// though providers usually deliver it as a 400: the
+				// conversation, not the message, is what overflowed, and
+				// the executor's context guard has already run (or could
+				// not run) its compaction rounds before this terminal
+				// error surfaced. The plain-400 rollback below would
+				// delete the user's message — input that is still valid,
+				// only too large for the window — and would replace the
+				// typed guidance with the rollback wording, so the typed
+				// error flows through untouched and the TUI renders the
+				// context-limit card.
+				o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: err}
 			} else if isBadRequestStatusError(err) {
 				// The API rejected the request body even after the executor's bad-body
 				// retries. Roll the turn back so the session returns to its pre-submit

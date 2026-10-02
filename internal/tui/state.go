@@ -92,8 +92,9 @@ type RenderBlock struct {
 // common.RetryEvent branch (the same verb the retry status line computes) so
 // the recovery toast can match the class of the failure that was retried.
 const (
-	retryVerbConnectionLost = "connection lost"
-	retryVerbRejectedByAPI  = "request rejected by the API"
+	retryVerbConnectionLost   = "connection lost"
+	retryVerbRejectedByAPI    = "request rejected by the API"
+	retryVerbContextCompacted = "context limit hit — history auto-compacted, retrying"
 )
 
 // RewindEntry represents a user message that can be rewound to.

@@ -39,6 +39,31 @@ type ModelSetting struct {
 	URL   string `json:"url"`
 	Key   string `json:"key"`
 	Model string `json:"model"`
+
+	// ContextSizeTokens declares the model's context window in tokens for
+	// backends that never advertise it. llama.cpp is auto-discovered (the
+	// /props + /v1/models probes read n_ctx), but generic OpenAI-compatible
+	// providers and truncating local gateways return nothing, leaving the
+	// client's context size unknown (-1): the predictive compaction
+	// heuristic and the finish_reason=length context discriminator then
+	// stay dark and oversized requests fail opaquely. Set this to the
+	// model's real window (e.g. 32768) and late behaves as if the backend
+	// had advertised it — the declared value OVERRIDES discovery (a probe
+	// result never clobbers it) and also back-fills when discovery finds
+	// nothing. 0/unset = unknown (auto-discovery only).
+	ContextSizeTokens int `json:"context-size-tokens,omitempty"`
+}
+
+// ContextSizeOverride reports the entry's declared context window. The
+// second return is true only for a usable value (> 0): 0/unset means
+// "unknown — discovery only", and a negative value is ignored (it cannot
+// describe a real window) without a warning, mirroring how the client's
+// SetContextSize treats non-positive input.
+func (m ModelSetting) ContextSizeOverride() (int, bool) {
+	if m.ContextSizeTokens > 0 {
+		return m.ContextSizeTokens, true
+	}
+	return 0, false
 }
 
 // Reference returns the stable value stored in agent_models. Model is retained
@@ -80,6 +105,13 @@ type Config struct {
 	SubagentBaseURL string `json:"subagent_base_url,omitempty"`
 	SubagentAPIKey  string `json:"subagent_api_key,omitempty"`
 	SubagentModel   string `json:"subagent_model,omitempty"`
+
+	// ContextSizeTokens is the single-model fallback for the per-model
+	// models[].context-size-tokens declaration (see ModelSetting): setups
+	// without an agent_models entry (plain openai_* / env-var configs)
+	// declare the window here and it applies to both the orchestrator and
+	// the subagent client. 0/unset = unknown (auto-discovery only).
+	ContextSizeTokens int `json:"context-size-tokens,omitempty"`
 
 	SkillsDir string `json:"skills_dir,omitempty"`
 

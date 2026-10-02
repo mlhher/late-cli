@@ -549,3 +549,47 @@ func TestMaxBadBodyRetriesFromContext(t *testing.T) {
 		})
 	}
 }
+
+// TestClassifyStreamError_ContextExceededNeverRetries pins the Phase B
+// invariant: the typed context-exhaustion sentinel is deterministic — the
+// conversation does not fit the window — so it fails fast on every tier,
+// never drawing from the infra or bad-body budgets. The usual
+// arrival shape is a 400 (which alone would map to retryClassBadBody), so
+// the check must sit ahead of the StatusError tiering; the pin includes the
+// executor's own "stream error: %w" wrap to prove the classification
+// survives it.
+func TestClassifyStreamError_ContextExceededNeverRetries(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"bare 400 wrap", &client.ContextExceededError{Status: &client.StatusError{StatusCode: 400, Body: "maximum context length"}}},
+		{"413 wrap", &client.ContextExceededError{Status: &client.StatusError{StatusCode: 413, Body: "too many tokens"}}},
+		{"429 wrap", &client.ContextExceededError{Status: &client.StatusError{StatusCode: 429, Body: "context window full"}, Reason: "http 429"}},
+		{"empty body", &client.ContextExceededError{Status: &client.StatusError{StatusCode: 400}}},
+		{"through stream-error wrap", fmt.Errorf("stream error: %w", &client.ContextExceededError{Status: &client.StatusError{StatusCode: 400, Body: "maximum context length"}})},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyStreamError(tt.err); got != retryClassNone {
+				t.Errorf("classifyStreamError(%v) = %v, want retryClassNone", tt.err, got)
+			}
+			if isRetryableStreamError(tt.err) {
+				t.Errorf("isRetryableStreamError(%v) = true, want false", tt.err)
+			}
+		})
+	}
+
+	// Contrast pin: a PLAIN 400 with the same shape (no sentinel) still
+	// draws from the bad-body tier — the classification is body/sentinel
+	// driven, not status driven, at the executor layer.
+	plain400 := &client.StatusError{StatusCode: 400, Body: "something else"}
+	if got := classifyStreamError(plain400); got != retryClassBadBody {
+		t.Errorf("classifyStreamError(plain 400) = %v, want retryClassBadBody", got)
+	}
+	// And a plain 413 keeps its explicit fail-fast branch.
+	plain413 := &client.StatusError{StatusCode: 413, Body: "Request body too large"}
+	if got := classifyStreamError(plain413); got != retryClassNone {
+		t.Errorf("classifyStreamError(plain 413) = %v, want retryClassNone", got)
+	}
+}

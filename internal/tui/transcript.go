@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"late/internal/client"
 	"path/filepath"
@@ -555,6 +556,16 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 
 func transcriptError(err error) string {
 	text := err.Error()
+	// Typed context exhaustion (the executor guard's terminal error, the
+	// finish_reason=length wrap, or the provider classification) renders the
+	// dedicated card: the error text itself carries the compaction outcome
+	// ("context limit hit — auto-compacted (saved ~N tokens), …") and the
+	// manual recovery steps, so the card shows what late already tried.
+	if errors.Is(err, client.ErrContextExceeded) {
+		return fmt.Sprintf("**Context Limit Exceeded**\n\n%s", text)
+	}
+	// Legacy text matching: pre-dating the typed sentinel, some surfaces
+	// (saved transcripts, replayed errors) only carry the raw strings.
 	if strings.Contains(text, "exceeds the available context size") || strings.Contains(text, "context_length_exceeded") {
 		return "**Context Limit Exceeded**\n\nThis session has hit the model's absolute context limit. Please **start a new session** to continue your work."
 	}
