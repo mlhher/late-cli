@@ -161,6 +161,13 @@ When Late creates subagents, each appears in its own tab while it works and disa
 
 ---
 
+## Info Bar
+
+* `/infobar` toggles a single-line footer under the status bar: Late version, project folder, focused model, context usage, running subagents, discovered skills, tokens to the context threshold (80% of the model's context size), and session uptime.
+* The toggle persists to `config.json` (`show-info-bar`).
+
+---
+
 ## Tool Approval
 
 Potentially destructive commands and file changes require approval unless you have already granted permission for that scope.
