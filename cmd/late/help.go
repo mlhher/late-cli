@@ -20,7 +20,7 @@ var flagGroups = []struct {
 	{"General", []string{"help", "version"}, ""},
 	{"Session & startup", []string{"continue", "continue-project", "prompt", "theme", "show-cwd"}, ""},
 	{"System prompt", []string{"system-prompt", "system-prompt-file", "append-system-prompt", "inject-cwd", "gemma-thinking"}, ""},
-	{"Model & streaming", []string{"logit-bias", "suppress-thinking-words", "max-stream-retries"}, ""},
+	{"Model & streaming", []string{"logit-bias", "suppress-thinking-words", "max-stream-retries", "max-concurrent-llm-requests"}, ""},
 	{"Subagents", []string{"enable-subagents", "subagent-max-turns", "subagent-logit-bias", "save-subagent-histories"}, ""},
 	{"Tools", []string{"use-tools", "enable-bash", "enable-images", "enable-sqz"}, ""},
 	{"Supervision & safety", []string{"ask-for-user-approval", "i-promise-i-have-backups-and-will-not-file-issues"},

@@ -74,6 +74,70 @@ func TestStreamRetryDelay(t *testing.T) {
 	})
 }
 
+func TestStreamThrottleDelay(t *testing.T) {
+	t.Run("attempt 1 is positive and within base delay", func(t *testing.T) {
+		for i := 0; i < 500; i++ {
+			d := streamThrottleDelay(1)
+			if d <= 0 {
+				t.Fatalf("streamThrottleDelay(1) = %v, want > 0", d)
+			}
+			if d > streamThrottleBaseDelay {
+				t.Fatalf("streamThrottleDelay(1) = %v, want <= %v", d, streamThrottleBaseDelay)
+			}
+		}
+	})
+
+	t.Run("large attempts are capped at the throttle cap", func(t *testing.T) {
+		for _, attempt := range []int{40, 100000} {
+			for i := 0; i < 100; i++ {
+				d := streamThrottleDelay(attempt)
+				if d < 0 {
+					t.Fatalf("streamThrottleDelay(%d) = %v, want >= 0", attempt, d)
+				}
+				if d > streamThrottleMaxDelay {
+					t.Fatalf("streamThrottleDelay(%d) = %v, want <= %v", attempt, d, streamThrottleMaxDelay)
+				}
+			}
+		}
+	})
+
+	t.Run("backoff grows with attempt number", func(t *testing.T) {
+		const draws = 500
+
+		// attempt 1 draws uniformly from [0, 2s], attempt 5 from [0, 32s];
+		// the observed maxima must reflect that growth.
+		maxFirst := time.Duration(0)
+		for i := 0; i < draws; i++ {
+			if d := streamThrottleDelay(1); d > maxFirst {
+				maxFirst = d
+			}
+		}
+		maxFifth := time.Duration(0)
+		for i := 0; i < draws; i++ {
+			if d := streamThrottleDelay(5); d > maxFifth {
+				maxFifth = d
+			}
+		}
+		if maxFifth <= maxFirst {
+			t.Fatalf("expected growth between attempts: max over %d draws was %v for attempt 1, %v for attempt 5", draws, maxFirst, maxFifth)
+		}
+	})
+
+	t.Run("doubling saturates the throttle cap between attempts 6 and 7", func(t *testing.T) {
+		// With the 2s base, attempt 6 draws from [0, 64s] (2s * 2^5, not yet
+		// capped) and attempt 7 from [0, 120s] (2s * 2^6 = 128s > cap). The
+		// per-attempt bounds below pin the saturation point exactly.
+		for i := 0; i < 200; i++ {
+			if d := streamThrottleDelay(6); d > 64*time.Second {
+				t.Fatalf("streamThrottleDelay(6) = %v, want <= 64s (not yet capped)", d)
+			}
+			if d := streamThrottleDelay(7); d > streamThrottleMaxDelay {
+				t.Fatalf("streamThrottleDelay(7) = %v, want <= %v (capped)", d, streamThrottleMaxDelay)
+			}
+		}
+	})
+}
+
 func TestEffectiveRetryDelay(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -206,9 +270,13 @@ func TestIsRetryableStreamError(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "wrapped 429 is retryable",
+			// 429 moved to the dedicated throttle tier (pacing, not a failure
+			// budget), so the INFRA-budget view no longer covers it — it is
+			// still retried, just from the throttle ceiling (see
+			// TestRunLoopThrottleDoesNotConsumeInfraBudget).
+			name: "wrapped 429 is not infra-retryable (throttle tier)",
 			err:  fmt.Errorf("stream error: %w", &client.StatusError{StatusCode: 429, Status: "429 Too Many Requests"}),
-			want: true,
+			want: false,
 		},
 		{
 			name: "wrapped 408 is retryable",
@@ -335,15 +403,23 @@ func TestClassifyStreamError(t *testing.T) {
 			want: retryClassBadBody,
 		},
 
+		// Throttle: 429 gets its own pacing tier, ahead of the 408/5xx infra
+		// branch.
+		{
+			name: "wrapped 429 is throttle",
+			err:  fmt.Errorf("stream error: %w", &client.StatusError{StatusCode: 429, Status: "429 Too Many Requests"}),
+			want: retryClassThrottle,
+		},
+		{
+			name: "double-wrapped 429 is throttle",
+			err:  fmt.Errorf("stream error: %w", fmt.Errorf("attempt failed: %w", &client.StatusError{StatusCode: 429, Status: "429 Too Many Requests"})),
+			want: retryClassThrottle,
+		},
+
 		// Infrastructure: transient server responses.
 		{
 			name: "wrapped 408 is infra",
 			err:  fmt.Errorf("stream error: %w", &client.StatusError{StatusCode: 408, Status: "408 Request Timeout"}),
-			want: retryClassInfra,
-		},
-		{
-			name: "wrapped 429 is infra",
-			err:  fmt.Errorf("stream error: %w", &client.StatusError{StatusCode: 429, Status: "429 Too Many Requests"}),
 			want: retryClassInfra,
 		},
 		{
@@ -545,6 +621,48 @@ func TestMaxBadBodyRetriesFromContext(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := maxBadBodyRetriesFromContext(tt.ctx); got != tt.want {
 				t.Errorf("maxBadBodyRetriesFromContext() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMaxThrottleRetriesFromContext(t *testing.T) {
+	tests := []struct {
+		name string
+		ctx  context.Context
+		want int
+	}{
+		{
+			// Pins the production throttle ceiling: pacing waits, not
+			// failures, so the ceiling only bounds a pathological
+			// infinite-429 provider. A deliberate change to
+			// DefaultMaxThrottleRetries must update this literal and its
+			// docs.
+			name: "absent key falls back to the pinned default (200)",
+			ctx:  context.Background(),
+			want: 200,
+		},
+		{
+			name: "positive override is honored",
+			ctx:  context.WithValue(context.Background(), common.MaxThrottleRetriesKey, 7),
+			want: 7,
+		},
+		{
+			name: "zero disables throttle pacing",
+			ctx:  context.WithValue(context.Background(), common.MaxThrottleRetriesKey, 0),
+			want: 0,
+		},
+		{
+			name: "negative value means disabled",
+			ctx:  context.WithValue(context.Background(), common.MaxThrottleRetriesKey, -3),
+			want: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := maxThrottleRetriesFromContext(tt.ctx); got != tt.want {
+				t.Errorf("maxThrottleRetriesFromContext() = %d, want %d", got, tt.want)
 			}
 		})
 	}

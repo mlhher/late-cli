@@ -8,7 +8,9 @@ package executor
 // The retry budget is kept small via common.MaxStreamRetriesKey so the
 // jittered backoff (full jitter over [0, base*2^(attempt-1)], base 500ms)
 // stays well under the test deadline in every interleaving. Assertions only
-// pin counts and ordering — never exact timings.
+// pin counts and ordering — never exact timings. The 429 throttle tier
+// additionally shrinks its own (production-scale 2s..2min) backoff knobs via
+// shrinkThrottleDelays; see the throttle section below.
 
 import (
 	"context"
@@ -295,8 +297,11 @@ func TestRunLoopHonorsRetryAfter(t *testing.T) {
 	if ev.Attempt != 1 {
 		t.Errorf("RetryEvent.Attempt = %d, want 1", ev.Attempt)
 	}
-	if ev.MaxAttempts != 3 {
-		t.Errorf("RetryEvent.MaxAttempts = %d, want 3 (ctx budget)", ev.MaxAttempts)
+	// A 429 paces on the throttle tier, so MaxAttempts is the throttle
+	// ceiling (the ctx fallback default of 200) — NOT the ctx infra budget
+	// of 3, which must stay untouched by the 429.
+	if ev.MaxAttempts != DefaultMaxThrottleRetries {
+		t.Errorf("RetryEvent.MaxAttempts = %d, want %d (throttle ceiling, not the ctx infra budget of 3)", ev.MaxAttempts, DefaultMaxThrottleRetries)
 	}
 	if ev.Err == nil {
 		t.Fatal("RetryEvent.Err is nil, want the underlying stream error")
@@ -1036,6 +1041,294 @@ func TestRunLoopGlobalDisableAlsoSilencesBadBodyTier(t *testing.T) {
 			}
 
 			// No backoff sleeps: the terminal 400 must surface immediately.
+			if elapsed >= 2*time.Second {
+				t.Errorf("RunLoop took %v, want well under 2s (no backoff sleeps when retries are disabled)", elapsed)
+			}
+		})
+	}
+}
+
+// --- HTTP 429 throttle pacing tier ---
+//
+// RunLoop tiers inner-loop failures into three independent budgets: infra
+// failures (transport, 408/5xx) draw from MaxStreamRetries, bad-body 400s
+// draw from the small bad-body budget, and HTTP 429s pace on the dedicated
+// throttle tier — PACING, not failures. A sustained account/model
+// concurrency limit (e.g. Tencent's "model Concurrency limit 1200") 429s
+// every spawn at the first request until capacity frees up; drawing those
+// waits from the small infra budget killed the turn before the limit ever
+// lifted. The tests below pin that tiering end-to-end.
+//
+// The production throttle curve (full jitter over
+// [0, min(2min, 2s*2^(attempt-1))]) would make a 12-attempt scenario sleep
+// for minutes of wall time, so these tests shrink the throttle knobs to
+// milliseconds via shrinkThrottleDelays. The production-scale CURVE itself
+// is pinned by TestStreamThrottleDelay in stream_retry_test.go.
+
+// shrinkThrottleDelays swaps the throttle backoff knobs for millisecond-scale
+// values and restores the production ones via t.Cleanup. Tests in this
+// package never run in parallel, so the swap is race-free under -race.
+func shrinkThrottleDelays(t *testing.T) {
+	t.Helper()
+	oldBase, oldMax := streamThrottleBaseDelay, streamThrottleMaxDelay
+	streamThrottleBaseDelay, streamThrottleMaxDelay = time.Millisecond, 8*time.Millisecond
+	t.Cleanup(func() {
+		streamThrottleBaseDelay, streamThrottleMaxDelay = oldBase, oldMax
+	})
+}
+
+// TestRunLoopThrottleDoesNotConsumeInfraBudget is the core throttle-tier
+// proof: a server that 429s the first TWELVE attempts then succeeds must
+// survive on the throttle tier even with a tiny infra budget of 2 — before
+// the throttle tier existed, 429s drew from the infra budget and the run died
+// at the third POST. Every RetryEvent must carry the THROTTLE ceiling as
+// MaxAttempts (never the infra budget of 2), proving the 429s consumed zero
+// infra budget. The ctx deliberately carries NO MaxThrottleRetriesKey: the
+// production default (DefaultMaxThrottleRetries = 200) must come from the
+// resolver fallback, exactly as in production.
+func TestRunLoopThrottleDoesNotConsumeInfraBudget(t *testing.T) {
+	shrinkThrottleDelays(t)
+
+	// Declared before newRetryServer so the handler can branch on the
+	// 1-based POST count (the closure only runs once the server is up).
+	var rs *retryServer
+	rs = newRetryServer(t, func(w http.ResponseWriter, r *http.Request) {
+		// The wrapper counts the POST before handlePost runs, so
+		// posts.Load() here is the 1-based number of the current request.
+		if rs.posts.Load() > 12 {
+			// Thirteenth attempt: complete SSE stream.
+			serveOK(w)
+			return
+		}
+		// Attempts 1-12: sustained concurrency-limit 429s, no Retry-After
+		// (providers under a hard concurrency limit rarely send one).
+		serveStatus(w, http.StatusTooManyRequests, "model Concurrency limit 1200")
+	})
+
+	sess := newRetryTestSession(t, rs.server.URL)
+	onRetry, retryEvents := retryCollector(t)
+	onRecover, recoveries := recoveryCollector(t)
+
+	// Infra budget 2 is the pre-fix kill switch: if a regression re-couples
+	// 429s to the infra tier, the run dies at the third POST and the
+	// assertions below fail.
+	ctx, cancel := context.WithTimeout(
+		context.WithValue(context.Background(), common.MaxStreamRetriesKey, 2),
+		15*time.Second,
+	)
+	defer cancel()
+
+	start := time.Now()
+	res, err := RunLoop(ctx, sess, 1, nil, nil, nil, nil, onRetry, onRecover, nil)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("RunLoop returned error after 12 throttled attempts: %v", err)
+	}
+	if !strings.Contains(res, "ok") {
+		t.Errorf("RunLoop result = %q, want it to contain %q", res, "ok")
+	}
+	// With the shrunk knobs the waits are milliseconds; 5s is a generous
+	// sanity bound (counts are pinned, never exact timings).
+	if elapsed > 5*time.Second {
+		t.Errorf("RunLoop took %v to pace through 12 throttle waits, want well under that", elapsed)
+	}
+
+	// One throttle RetryEvent per 429: exactly 12, attempts 1..12, each
+	// carrying the throttle ceiling (200, the ctx fallback default) as
+	// MaxAttempts — never the infra budget of 2. That contrast IS the
+	// tiering proof.
+	events := retryEvents()
+	if len(events) != 12 {
+		t.Fatalf("got %d RetryEvents, want exactly 12 (one per 429): %+v", len(events), events)
+	}
+	for i, ev := range events {
+		if want := i + 1; ev.Attempt != want {
+			t.Errorf("events[%d].Attempt = %d, want %d", i, ev.Attempt, want)
+		}
+		if ev.MaxAttempts != DefaultMaxThrottleRetries {
+			t.Errorf("events[%d].MaxAttempts = %d, want %d (throttle ceiling, not the infra budget of 2)", i, ev.MaxAttempts, DefaultMaxThrottleRetries)
+		}
+		// Full jitter may legitimately draw ~0; only a negative delay (or
+		// one beyond the Retry-After ceiling) would be a bug.
+		if ev.Delay < 0 {
+			t.Errorf("events[%d].Delay = %v, want >= 0", i, ev.Delay)
+		}
+		if ev.Delay > retryAfterCeiling {
+			t.Errorf("events[%d].Delay = %v, want <= %v", i, ev.Delay, retryAfterCeiling)
+		}
+		if ev.Err == nil {
+			t.Errorf("events[%d].Err is nil, want the underlying stream error", i)
+			continue
+		}
+		var statusErr *client.StatusError
+		if !errors.As(ev.Err, &statusErr) || statusErr.StatusCode != http.StatusTooManyRequests {
+			t.Errorf("events[%d].Err = %v, want it to wrap *client.StatusError with 429", i, ev.Err)
+		}
+	}
+
+	// 12 throttled attempts + one successful retry.
+	if got := rs.postCount(); got != 13 {
+		t.Errorf("server got %d POSTs, want 13 (12 throttled 429s + successful retry)", got)
+	}
+
+	// The throttle tier recovers too: the successful retry produced a
+	// response, so exactly one recovery for this turn.
+	if got := recoveries(); got != 1 {
+		t.Errorf("onRecover fired %d times, want exactly 1 (once per retried turn)", got)
+	}
+
+	// Failed attempts commit nothing; only the successful turn appends its
+	// assistant message to the seeded history.
+	if len(sess.History) != 2 {
+		t.Fatalf("history length = %d, want 2 (seeded user msg + committed assistant msg)", len(sess.History))
+	}
+	last := sess.History[len(sess.History)-1]
+	if last.Role != "assistant" {
+		t.Errorf("last history role = %q, want assistant", last.Role)
+	}
+	if last.Content.String() != "ok" {
+		t.Errorf("last history content = %q, want %q", last.Content.String(), "ok")
+	}
+}
+
+// TestRunLoopThrottleCeilingTerminal pins the pathological edge: an
+// always-429 server with the throttle ceiling set to 3 must fail TERMINALLY
+// after 1 initial attempt + 3 throttle retries = 4 POSTs, surfacing the 429
+// (status and provider message) in the terminal error. The ceiling exists
+// only to bound a pathological infinite-429 provider; the run budget (e.g.
+// the 24h subagent budget) is the real bound in production, so the test uses
+// a tiny test-scale ceiling.
+func TestRunLoopThrottleCeilingTerminal(t *testing.T) {
+	shrinkThrottleDelays(t)
+
+	rs := newRetryServer(t, func(w http.ResponseWriter, r *http.Request) {
+		serveStatus(w, http.StatusTooManyRequests, "model Concurrency limit 1200")
+	})
+
+	sess := newRetryTestSession(t, rs.server.URL)
+	onRetry, retryEvents := retryCollector(t)
+	onRecover, recoveries := recoveryCollector(t)
+
+	// Ceiling 3 (test-scale; production default is 200). The infra budget is
+	// left at its default of 10: the 429s must never touch it.
+	ctx, cancel := context.WithTimeout(
+		context.WithValue(context.Background(), common.MaxThrottleRetriesKey, 3),
+		15*time.Second,
+	)
+	defer cancel()
+
+	start := time.Now()
+	_, err := RunLoop(ctx, sess, 1, nil, nil, nil, nil, onRetry, onRecover, nil)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("RunLoop returned nil error, want terminal failure at the throttle ceiling")
+	}
+	// The terminal error carries the 429 status and the provider's message.
+	var statusErr *client.StatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("RunLoop error = %v, want it to wrap *client.StatusError with 429", err)
+	}
+	if !strings.Contains(err.Error(), "API error (429)") {
+		t.Errorf("RunLoop error = %v, want it to contain %q", err, "API error (429)")
+	}
+	if !strings.Contains(err.Error(), "Concurrency limit") {
+		t.Errorf("RunLoop error = %v, want the provider's 429 message to propagate", err)
+	}
+	// Worst case with the shrunk knobs is milliseconds; 5s is a generous
+	// sanity bound.
+	if elapsed > 5*time.Second {
+		t.Errorf("RunLoop took %v to hit the throttle ceiling, want well under that", elapsed)
+	}
+
+	events := retryEvents()
+	if len(events) != 3 {
+		t.Fatalf("got %d RetryEvents, want exactly 3: %+v", len(events), events)
+	}
+	for i, ev := range events {
+		if want := i + 1; ev.Attempt != want {
+			t.Errorf("events[%d].Attempt = %d, want %d", i, ev.Attempt, want)
+		}
+		if ev.MaxAttempts != 3 {
+			t.Errorf("events[%d].MaxAttempts = %d, want 3 (ctx throttle ceiling)", i, ev.MaxAttempts)
+		}
+		if ev.Delay < 0 {
+			t.Errorf("events[%d].Delay = %v, want >= 0", i, ev.Delay)
+		}
+		if ev.Err == nil {
+			t.Errorf("events[%d].Err is nil, want the underlying stream error", i)
+		}
+	}
+
+	// Initial attempt + exactly 3 throttle retries, then terminal.
+	if got := rs.postCount(); got != 4 {
+		t.Errorf("server got %d POSTs, want 4 (initial attempt + 3 throttle retries)", got)
+	}
+
+	if len(sess.History) != 1 {
+		t.Errorf("history length = %d, want 1 (nothing committed)", len(sess.History))
+	}
+
+	// Exhaustion is not recovery: no attempt ever produced a response.
+	if got := recoveries(); got != 0 {
+		t.Errorf("onRecover fired %d times, want 0 (throttle exhaustion is not recovery)", got)
+	}
+}
+
+// TestRunLoopGlobalDisableAlsoSilencesThrottleTier pins the global-disable
+// contract for the third tier: a global disable (--max-stream-retries=0 or
+// negative, or the ctx key) must zero the throttle ceiling too — otherwise
+// the resolver fallback (DefaultMaxThrottleRetries = 200) would keep pacing
+// 429s despite the advertised "retries disabled" contract. With the disable
+// in effect, an always-429 server sees exactly one POST — the initial
+// attempt, zero retries, zero backoff sleeps — and the run fails with the
+// terminal 429. The positive-ceiling contrast is pinned by
+// TestRunLoopThrottleCeilingTerminal above.
+func TestRunLoopGlobalDisableAlsoSilencesThrottleTier(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		budget int
+	}{
+		{name: "zero_budget", budget: 0},
+		{name: "negative_budget", budget: -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rs := newRetryServer(t, func(w http.ResponseWriter, r *http.Request) {
+				serveStatus(w, http.StatusTooManyRequests, "model Concurrency limit 1200")
+			})
+
+			sess := newRetryTestSession(t, rs.server.URL)
+			onRetry, retryEvents := retryCollector(t)
+
+			// Only the global budget is set; the throttle ceiling is absent
+			// and must be zeroed by the global-disable coupling in RunLoop,
+			// not by an explicit ctx value.
+			ctx, cancel := runLoopCtx(tc.budget, 15*time.Second)
+			defer cancel()
+
+			start := time.Now()
+			_, err := RunLoop(ctx, sess, 1, nil, nil, nil, nil, onRetry, nil, nil)
+			elapsed := time.Since(start)
+
+			if err == nil {
+				t.Fatal("RunLoop returned nil error, want the terminal 429 despite retries being disabled")
+			}
+			var statusErr *client.StatusError
+			if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusTooManyRequests {
+				t.Fatalf("RunLoop error = %v, want it to wrap *client.StatusError with 429", err)
+			}
+
+			// Exactly one POST: the initial attempt. Zero retries from any
+			// tier — the global disable silences the throttle tier too.
+			if got := rs.postCount(); got != 1 {
+				t.Errorf("server got %d POSTs, want exactly 1 (initial attempt, zero retries)", got)
+			}
+			if events := retryEvents(); len(events) != 0 {
+				t.Errorf("got %d RetryEvents, want 0 (retries disabled): %+v", len(events), events)
+			}
+
+			// No backoff sleeps: the terminal 429 must surface immediately.
 			if elapsed >= 2*time.Second {
 				t.Errorf("RunLoop took %v, want well under 2s (no backoff sleeps when retries are disabled)", elapsed)
 			}

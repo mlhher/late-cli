@@ -30,6 +30,7 @@ func newHelpTestFlagSet(t *testing.T) *flag.FlagSet {
 	}
 	fs.Int("subagent-max-turns", 500, "usage of subagent-max-turns")
 	fs.Int("max-stream-retries", 100, "usage of max-stream-retries")
+	fs.Int("max-concurrent-llm-requests", 6, "usage of max-concurrent-llm-requests")
 	return fs
 }
 
