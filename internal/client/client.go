@@ -135,7 +135,14 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 	}
 
 	var chatResp ChatCompletionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+	body, err = io.ReadAll(io.LimitReader(resp.Body, maxCompletionBodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	// Tolerate a UTF-8 BOM prepended by gateways/proxies: encoding/json
+	// rejects it, which would surface as a confusing parse error.
+	body = bytes.TrimPrefix(body, []byte(utf8BOM))
+	if err := json.Unmarshal(body, &chatResp); err != nil {
 		return nil, err
 	}
 	return &chatResp, nil
@@ -206,10 +213,19 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 		scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 		for scanner.Scan() {
 			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
+			// Tolerate a UTF-8 BOM glued to the first line by gateways and
+			// proxies: unstripped, it breaks the "data:" prefix match below
+			// and the line is silently dropped.
+			line = strings.TrimPrefix(line, "\ufeff")
+			// SSE data field: the spec makes the space after the colon
+			// optional ("data: {...}" and "data:{...}" are both legal), so
+			// match on the colon and strip a single optional space. Matching
+			// on "data: " alone silently dropped no-space lines — the chunks
+			// vanished without any error, so no retry tier ever saw them.
+			if !strings.HasPrefix(line, "data:") {
 				continue
 			}
-			data := strings.TrimPrefix(line, "data: ")
+			data := strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " ")
 
 			// Handle [DONE] sentinel (OpenAI standard)
 			if data == "[DONE]" {
@@ -275,7 +291,12 @@ func (c *Client) Completion(ctx context.Context, req CompletionRequest) (*Comple
 	}
 
 	var completionResp CompletionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&completionResp); err != nil {
+	body, err = io.ReadAll(io.LimitReader(resp.Body, maxCompletionBodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	body = bytes.TrimPrefix(body, []byte(utf8BOM))
+	if err := json.Unmarshal(body, &completionResp); err != nil {
 		return nil, err
 	}
 	return &completionResp, nil
@@ -673,6 +694,17 @@ const (
 	// maxErrorMessageBytes bounds the diagnostic text stored on StatusError,
 	// for both the structured JSON message and the sanitized text fallback.
 	maxErrorMessageBytes = 1024
+	// maxCompletionBodyBytes bounds a non-streaming 200 response body before
+	// decoding, mirroring the error-path bound above: a broken or hostile
+	// server streaming an unbounded success body must not be able to exhaust
+	// memory through the decoder. 8 MiB is generous — far above any real
+	// completion response.
+	maxCompletionBodyBytes = 8 << 20
+	// utf8BOM is the UTF-8 byte order mark. Some gateways and proxies glue
+	// it to response bodies; encoding/json rejects it outright, so it is
+	// stripped before decoding. (Written as an escape: the character itself
+	// is invisible.)
+	utf8BOM = "\ufeff"
 )
 
 // formatError converts a non-2xx response into a *StatusError. The error body
