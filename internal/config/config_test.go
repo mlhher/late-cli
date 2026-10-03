@@ -638,6 +638,36 @@ func TestConfig_GetModelForAgent(t *testing.T) {
 	}
 }
 
+func TestConfig_ResolveShowTodoPane(t *testing.T) {
+	closed := false
+	open := true
+
+	var absentEntry Config
+	if err := json.Unmarshal([]byte(`{"theme":"late"}`), &absentEntry); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	tests := []struct {
+		name string
+		cfg  *Config
+		want bool
+	}{
+		{"nil config defaults to open", nil, true},
+		{"absent show-todo-pane entry defaults to open", &absentEntry, true},
+		{"zero-value config defaults to open", &Config{}, true},
+		{"explicit false starts with the pane closed", &Config{ShowTodoPane: &closed}, false},
+		{"explicit true keeps the pane open", &Config{ShowTodoPane: &open}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.ResolveShowTodoPane(); got != tt.want {
+				t.Errorf("ResolveShowTodoPane() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConfig_GetModelForAgentUsesStableID(t *testing.T) {
 	cfg := &Config{
 		Models: []ModelSetting{
