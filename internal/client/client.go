@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -135,7 +136,14 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 	}
 
 	var chatResp ChatCompletionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+	body, err = io.ReadAll(io.LimitReader(resp.Body, maxCompletionBodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	// Tolerate a UTF-8 BOM prepended by gateways/proxies: encoding/json
+	// rejects it, which would surface as a confusing parse error.
+	body = bytes.TrimPrefix(body, []byte(utf8BOM))
+	if err := json.Unmarshal(body, &chatResp); err != nil {
 		return nil, err
 	}
 	return &chatResp, nil
@@ -206,10 +214,19 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 		scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 		for scanner.Scan() {
 			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
+			// Tolerate a UTF-8 BOM glued to the first line by gateways and
+			// proxies: unstripped, it breaks the "data:" prefix match below
+			// and the line is silently dropped.
+			line = strings.TrimPrefix(line, "\ufeff")
+			// SSE data field: the spec makes the space after the colon
+			// optional ("data: {...}" and "data:{...}" are both legal), so
+			// match on the colon and strip a single optional space. Matching
+			// on "data: " alone silently dropped no-space lines — the chunks
+			// vanished without any error, so no retry tier ever saw them.
+			if !strings.HasPrefix(line, "data:") {
 				continue
 			}
-			data := strings.TrimPrefix(line, "data: ")
+			data := strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " ")
 
 			// Handle [DONE] sentinel (OpenAI standard)
 			if data == "[DONE]" {
@@ -275,7 +292,12 @@ func (c *Client) Completion(ctx context.Context, req CompletionRequest) (*Comple
 	}
 
 	var completionResp CompletionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&completionResp); err != nil {
+	body, err = io.ReadAll(io.LimitReader(resp.Body, maxCompletionBodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	body = bytes.TrimPrefix(body, []byte(utf8BOM))
+	if err := json.Unmarshal(body, &completionResp); err != nil {
 		return nil, err
 	}
 	return &completionResp, nil
@@ -651,6 +673,44 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("status: %d", e.StatusCode)
 }
 
+// ErrPayloadTooLarge is the stable sentinel carried by every HTTP 413
+// (Request Entity Too Large) API error: the provider rejected the request
+// BODY outright, so resending the identical body can never succeed. Callers
+// classify with errors.Is and must never retry — the executor's stream
+// retry tiers all treat it as fail-fast — and the TUI surfaces the recovery
+// guidance carried in the error text (PayloadTooLargeGuidance).
+var ErrPayloadTooLarge = errors.New("payload too large")
+
+// PayloadTooLargeGuidance is the actionable message rendered for 413
+// failures. It travels inside the error text itself, so every surface that
+// prints the error (TUI error box, logs) carries the recovery steps without
+// any special-casing on the display side.
+const PayloadTooLargeGuidance = "request body exceeds this provider's limit (413): compact the context with /jev-compact-context (consider raising compaction-threshold in config.json) or start a new session with /new"
+
+// PayloadTooLargeError marks an HTTP 413 response. It wraps the underlying
+// StatusError so errors.As still recovers the status/body/code details, and
+// it carries ErrPayloadTooLarge so errors.Is classifies it anywhere in the
+// (executor's "stream error: %w") wrap chain. Its Error text is the
+// actionable guidance, not the legacy "API error (413): ..." line: a 413 is
+// always operator-actionable, and the provider's raw body (which only
+// repeats the verdict or names the byte cap) is appended for diagnostics.
+type PayloadTooLargeError struct {
+	Status *StatusError
+}
+
+func (e *PayloadTooLargeError) Error() string {
+	if e.Status != nil && e.Status.Body != "" {
+		return PayloadTooLargeGuidance + " (provider: " + e.Status.Body + ")"
+	}
+	return PayloadTooLargeGuidance
+}
+
+// Unwrap exposes both the sentinel (for errors.Is classification) and the
+// underlying StatusError (for errors.As recovery of StatusCode/Body/Type).
+func (e *PayloadTooLargeError) Unwrap() []error {
+	return []error{ErrPayloadTooLarge, e.Status}
+}
+
 // StreamInterruptedError reports a transport failure while reading a
 // 200-OK response body mid-stream: connection reset, HTTP/2 RST_STREAM
 // or GOAWAY, truncated body. The server already accepted the request,
@@ -673,6 +733,17 @@ const (
 	// maxErrorMessageBytes bounds the diagnostic text stored on StatusError,
 	// for both the structured JSON message and the sanitized text fallback.
 	maxErrorMessageBytes = 1024
+	// maxCompletionBodyBytes bounds a non-streaming 200 response body before
+	// decoding, mirroring the error-path bound above: a broken or hostile
+	// server streaming an unbounded success body must not be able to exhaust
+	// memory through the decoder. 8 MiB is generous — far above any real
+	// completion response.
+	maxCompletionBodyBytes = 8 << 20
+	// utf8BOM is the UTF-8 byte order mark. Some gateways and proxies glue
+	// it to response bodies; encoding/json rejects it outright, so it is
+	// stripped before decoding. (Written as an escape: the character itself
+	// is invisible.)
+	utf8BOM = "\ufeff"
 )
 
 // formatError converts a non-2xx response into a *StatusError. The error body
@@ -714,6 +785,13 @@ func (c *Client) formatError(resp *http.Response) error {
 	}
 	if ra := parseRetryAfter(resp.Header.Get("Retry-After")); ra > 0 {
 		se.RetryAfter = ra
+	}
+	// 413 is classified, not just reported: the request body itself exceeded
+	// the provider's limit, so the error carries the ErrPayloadTooLarge
+	// sentinel and the actionable guidance instead of the generic status
+	// line. RetryAfter stays parsed (harmless: no retry tier consumes a 413).
+	if resp.StatusCode == http.StatusRequestEntityTooLarge {
+		return &PayloadTooLargeError{Status: se}
 	}
 	return se
 }

@@ -149,3 +149,74 @@ func TestCalculateHistoryTokens(t *testing.T) {
 		})
 	}
 }
+
+// fixtureHistory builds a history dense in tool calls — the shape the old
+// CalculateHistoryTokensFast undercounted, since it skipped ToolCall tokens —
+// plus a multimodal-free tool result and a reasoning message.
+func fixtureHistory() []client.ChatMessage {
+	return []client.ChatMessage{
+		{Role: "user", Content: client.TextContent("Please analyze this build log.")},
+		{
+			Role:             "assistant",
+			Content:          client.TextContent("Running the build."),
+			ReasoningContent: "The build failed before; check the logs.",
+			ToolCalls: []client.ToolCall{
+				{Index: 0, ID: "call_1", Type: "function", Function: client.FunctionCall{Name: "Bash", Arguments: `{"cmd":"make build","target":"all"}`}},
+				{Index: 1, ID: "call_2", Type: "function", Function: client.FunctionCall{Name: "Read", Arguments: `{"path":"internal/session/compact.go"}`}},
+			},
+		},
+		{Role: "tool", ToolCallID: "call_1", Content: client.TextContent("make: *** [build] Error 1\nverbose failure output line 2")},
+		{Role: "assistant", Content: client.TextContent("The build failed because of a missing dependency in the module graph.")},
+	}
+}
+
+// TestCalculateHistoryTokensFastAgreesStructurally pins the structural
+// reconciliation: once the BPE vocabulary is loaded (the warm-up call blocks
+// on it), EstimateTokenCountFast and EstimateTokenCount return identical
+// counts for every string, so the fast and slow history walks — which share
+// one calculateHistoryTokens structure — must return the SAME total for a
+// fixture dense in tool calls. (Before the reconciliation the fast walk
+// skipped ToolCall tokens and disagreed by construction.)
+func TestCalculateHistoryTokensFastAgreesStructurally(t *testing.T) {
+	// Warm the BPE: EstimateTokenCount blocks until the embedded vocab is
+	// loaded, after which bpeIfReady() is non-nil and the fast estimator IS
+	// the exact one.
+	EstimateTokenCount("warm up the vocabulary")
+	if bpeIfReady() == nil {
+		t.Fatal("BPE did not load; the structural comparison below would be meaningless")
+	}
+
+	history := fixtureHistory()
+	systemPrompt := "You are Late, a coding agent."
+	tools := []client.ToolDefinition{
+		{Function: client.FunctionDefinition{Name: "Bash", Description: "Run a shell command", Parameters: []byte(`{"type":"object","properties":{"cmd":{"type":"string"}}}`)}},
+		{Function: client.FunctionDefinition{Name: "Read", Description: "Read a file", Parameters: []byte(`{"type":"object","properties":{"path":{"type":"string"}}}`)}},
+	}
+
+	fast := CalculateHistoryTokensFast(history, systemPrompt, tools)
+	slow := CalculateHistoryTokens(history, systemPrompt, tools)
+	if fast != slow {
+		t.Errorf("CalculateHistoryTokensFast() = %d; CalculateHistoryTokens() = %d — the walks must agree structurally (only per-token precision may differ)", fast, slow)
+	}
+
+	// The tool calls actually carry weight in the fixture: the shared
+	// per-message walk must count them (name + arguments), so a message with
+	// tool calls costs more than the same message without them.
+	withCalls := estimateMessageTokensWith(fixtureHistory()[1], EstimateTokenCount)
+	stripped := fixtureHistory()[1]
+	stripped.ToolCalls = nil
+	withoutCalls := estimateMessageTokensWith(stripped, EstimateTokenCount)
+	if withCalls <= withoutCalls {
+		t.Errorf("tool calls must contribute tokens: with = %d, without = %d", withCalls, withoutCalls)
+	}
+
+	// The slow public API is a one-line parameterization of the same walk:
+	// EstimateMessageTokens and EstimateToolDefinitionTokens must match their
+	// shared-walk forms exactly.
+	if got, want := EstimateMessageTokens(history[1]), estimateMessageTokensWith(history[1], EstimateTokenCount); got != want {
+		t.Errorf("EstimateMessageTokens() = %d; shared walk = %d", got, want)
+	}
+	if got, want := EstimateToolDefinitionTokens(tools), estimateToolDefinitionTokensWith(tools, EstimateTokenCount); got != want {
+		t.Errorf("EstimateToolDefinitionTokens() = %d; shared walk = %d", got, want)
+	}
+}

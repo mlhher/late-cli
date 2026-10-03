@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,6 +28,56 @@ type Session struct {
 	subagentSeq           int
 	saveSubagentHistories *bool
 	Registry              *tool.Registry
+
+	// historyMu guards the History slice header: appends and other slice
+	// writes hold it for the duration of the write only — persistence in
+	// saveAndNotify copies under it and stays outside the lock for marshal
+	// and disk I/O — so concurrent readers (StartStream, PersistHistory)
+	// copy the history without racing a live writer and without blocking
+	// the writer on marshal or disk I/O.
+	historyMu sync.Mutex
+
+	// historyGen counts history mutations (appends, truncations, pops,
+	// append-to-last, conversation resets). Every writer that persists the
+	// history — a commit-path saveAndNotify, the mid-turn snapshot, an
+	// out-of-package PersistHistory — captures the generation together with
+	// its history copy (both under historyMu) and, immediately before the
+	// rename, skips the write when the generation has moved on. This closes
+	// the stale-write race the lock alone cannot: marshal and disk I/O run
+	// outside historyMu, so a slow snapshot taken before a commit could
+	// otherwise finish writing AFTER the commit's save and revert the file
+	// to the pre-commit bytes — dropping a committed message from disk, or
+	// resurrecting a popped/rolled-back turn for --continue to reload.
+	historyGen atomic.Uint64
+
+	// persistMu serializes the final write of every history writer — the
+	// generation check and the atomic rename happen inside it — so two
+	// writers can never interleave their writes to the same history file.
+	// Marshaling stays outside (marshal cost must not serialize writers);
+	// the lock is held only for the short rename-atomic write.
+	persistMu sync.Mutex
+
+	// compactionHighWater is the history compaction high-water mark: the
+	// monotonic message index below which the frozen prefix ends. The
+	// compactor (compact.go) never re-scores or rewrites a message with a
+	// smaller index, so previously frozen bytes — the prompt-cache anchor —
+	// never change between runs. It is guarded by compactionMu the same way
+	// client guards clientMu; it round-trips through SessionMeta
+	// (GenerateSessionMeta) so it survives save/reload.
+	compactionHighWater int
+	compactionMu        sync.Mutex
+
+	// retrievedBlock holds the ephemeral retrieved-context block staged by
+	// InjectRetrieved (retrieve.go) for the NEXT stream request: StartStream
+	// appends it as the LAST outgoing message — the tail of the message list
+	// is the work area; the frozen prefix (the head) is never touched. It is
+	// request-scoped by contract: it exists only in the outgoing request
+	// copy, never in History and never on disk, and every InjectRetrieved
+	// call overwrites it (an empty result clears it). Guarded by
+	// retrievedMu, so a staged block is also safe against the TUI's
+	// cross-goroutine paths.
+	retrievedMu    sync.Mutex
+	retrievedBlock string
 }
 
 func New(c *client.Client, historyPath string, history []client.ChatMessage, systemPrompt string, useTools bool) *Session {
@@ -94,6 +145,73 @@ func (s *Session) UpdateSubagentSeq(seq int) error {
 	return nil
 }
 
+// CompactionHighWater returns the history compaction high-water mark: the
+// monotonic message index below which the frozen prefix ends (compact.go).
+func (s *Session) CompactionHighWater() int {
+	s.compactionMu.Lock()
+	defer s.compactionMu.Unlock()
+	return s.compactionHighWater
+}
+
+// SetCompactionHighWater sets the in-memory high-water mark without
+// persisting. The resume path (cmd/late) restores the persisted mark into a
+// freshly constructed session with it, the reset paths (StartNewConversation)
+// zero it with it, and tests use it to pin frozen-prefix behavior.
+// Negative values clamp to zero.
+func (s *Session) SetCompactionHighWater(n int) {
+	if n < 0 {
+		n = 0
+	}
+	s.compactionMu.Lock()
+	defer s.compactionMu.Unlock()
+	s.compactionHighWater = n
+}
+
+// UpdateCompactionHighWater durably advances the high-water mark to n —
+// monotonic: a value at or below the current mark is a no-op — and persists
+// it through the session meta sidecar, mirroring UpdateSubagentSeq:
+// in-memory sessions (no history path) and subagent sessions (no sidecar)
+// keep the mark in memory only, and a failed metadata write rolls the
+// in-memory advance back so memory and disk never disagree.
+func (s *Session) UpdateCompactionHighWater(n int) error {
+	s.compactionMu.Lock()
+	if n <= s.compactionHighWater {
+		s.compactionMu.Unlock()
+		return nil
+	}
+	previous := s.compactionHighWater
+	s.compactionHighWater = n
+	s.compactionMu.Unlock()
+
+	if s.skipMetadata || s.HistoryPath == "" {
+		return nil
+	}
+	if err := s.UpdateSessionMetadata(); err != nil {
+		s.compactionMu.Lock()
+		s.compactionHighWater = previous
+		s.compactionMu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// ClampCompactionHighWater lowers the in-memory high-water mark to at most
+// maxIndex — the reset-path hook (rewind, pop, new conversation): the frozen
+// prefix never outlives the history it froze, or a stale mark would freeze
+// messages that no longer exist. The caller's own metadata write
+// (UpdateSessionMetadata) persists the clamp; in-memory sessions need no
+// persistence at all.
+func (s *Session) ClampCompactionHighWater(maxIndex int) {
+	if maxIndex < 0 {
+		maxIndex = 0
+	}
+	s.compactionMu.Lock()
+	defer s.compactionMu.Unlock()
+	if s.compactionHighWater > maxIndex {
+		s.compactionHighWater = maxIndex
+	}
+}
+
 // ExecuteTool executes a tool call and returns the response as a string.
 func (s *Session) ExecuteTool(ctx context.Context, tc client.ToolCall) (string, error) {
 	// First check registry
@@ -104,24 +222,76 @@ func (s *Session) ExecuteTool(ctx context.Context, tc client.ToolCall) (string, 
 	return t.Execute(ctx, json.RawMessage(tc.Function.Arguments))
 }
 
+// persistHistorySnapshot is the shared persistence tail of every history
+// writer (commit saves, out-of-package PersistHistory). The write is
+// generation-checked: under persistMu, immediately before the write, the
+// current historyGen must still equal capturedGen. If a concurrent mutation
+// moved the generation, this writer's bytes are stale — a newer writer
+// either already wrote or is about to write the newer state (both writers
+// go through persistMu, so their writes cannot interleave and the newest
+// state always lands last) — and the write is skipped. (On this branch the
+// bytes go through SaveHistory, which marshals internally; unlike the
+// upstream writeAtomic form, that marshal therefore runs under persistMu —
+// a deliberate, documented deviation: correctness first, writes are rare.)
+func (s *Session) persistHistorySnapshot(snapshot []client.ChatMessage, capturedGen uint64) error {
+	if s.HistoryPath == "" {
+		return nil // in-memory session: nothing to persist
+	}
+	if len(snapshot) == 0 {
+		return nil
+	}
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
+	if s.historyGen.Load() != capturedGen {
+		// Stale: the history changed between the copy and this write; the
+		// mutation's own save persists the newer state.
+		return nil
+	}
+	return SaveHistory(s.HistoryPath, snapshot)
+}
+
+// PersistHistory saves the session's current history to its history path —
+// the concurrency-safe persistence entry point for out-of-package writers
+// (rewind, the compaction runner) that used to read sess.History directly.
+// The history is copied under historyMu and written generation-checked like
+// every other writer; the .meta.json sidecar is NOT refreshed (callers that
+// move the metadata — rewind's clamp, the compaction high-water — write it
+// explicitly).
+func (s *Session) PersistHistory() error {
+	s.historyMu.Lock()
+	snapshot := make([]client.ChatMessage, len(s.History))
+	copy(snapshot, s.History)
+	gen := s.historyGen.Load()
+	s.historyMu.Unlock()
+	return s.persistHistorySnapshot(snapshot, gen)
+}
+
+// AddToolResultMessage adds a tool response message to history.
+
 // AddToolResultMessage adds a tool response message to history.
 func (s *Session) AddToolResultMessage(toolCallID, content string) error {
+	s.historyMu.Lock()
 	s.History = append(s.History, client.ChatMessage{
 		Role:       "tool",
 		ToolCallID: toolCallID,
 		Content:    client.TextContent(content),
 	})
+	s.historyGen.Add(1) // invalidates stale in-flight snapshots (see persistHistorySnapshot)
+	s.historyMu.Unlock()
 	return s.saveAndNotify()
 }
 
 // AddAssistantMessageWithTools adds an assistant message with tool calls.
 func (s *Session) AddAssistantMessageWithTools(content string, reasoning string, toolCalls []client.ToolCall) error {
+	s.historyMu.Lock()
 	s.History = append(s.History, client.ChatMessage{
 		Role:             "assistant",
 		Content:          client.TextContent(content),
 		ReasoningContent: reasoning,
 		ToolCalls:        toolCalls,
 	})
+	s.historyGen.Add(1) // invalidates stale in-flight snapshots (see persistHistorySnapshot)
+	s.historyMu.Unlock()
 	return s.saveAndNotify()
 }
 
@@ -143,23 +313,32 @@ func (s *Session) GetToolDefinitions() []client.ToolDefinition {
 
 // AddUserMessage adds a user message to history and persists it.
 func (s *Session) AddUserMessage(content string) error {
+	s.historyMu.Lock()
 	s.History = append(s.History, client.ChatMessage{Role: "user", Content: client.TextContent(content)})
+	s.historyGen.Add(1) // invalidates stale in-flight snapshots (see persistHistorySnapshot)
+	s.historyMu.Unlock()
 	return s.saveAndNotify()
 }
 
 // AddMessage adds an arbitrary message to history and persists it.
 func (s *Session) AddMessage(msg client.ChatMessage) error {
+	s.historyMu.Lock()
 	s.History = append(s.History, msg)
+	s.historyGen.Add(1) // invalidates stale in-flight snapshots (see persistHistorySnapshot)
+	s.historyMu.Unlock()
 	return s.saveAndNotify()
 }
 
 // AddAssistantMessage adds an assistant message to history and persists it.
 func (s *Session) AddAssistantMessage(content, reasoning string) error {
+	s.historyMu.Lock()
 	s.History = append(s.History, client.ChatMessage{
 		Role:             "assistant",
 		Content:          client.TextContent(content),
 		ReasoningContent: reasoning,
 	})
+	s.historyGen.Add(1) // invalidates stale in-flight snapshots (see persistHistorySnapshot)
+	s.historyMu.Unlock()
 	return s.saveAndNotify()
 }
 
@@ -168,10 +347,18 @@ func (s *Session) AddAssistantMessage(content, reasoning string) error {
 // removed (false = no-op: empty history or non-user tail). The error is a
 // persistence error, returned only when a change was made.
 func (s *Session) PopLastUserMessage() (bool, error) {
+	s.historyMu.Lock()
 	if len(s.History) == 0 || s.History[len(s.History)-1].Role != "user" {
+		s.historyMu.Unlock()
 		return false, nil
 	}
 	s.History = s.History[:len(s.History)-1]
+	s.historyGen.Add(1) // invalidates stale in-flight snapshots (see persistHistorySnapshot)
+	s.historyMu.Unlock()
+	// The frozen prefix never outlives the history it froze: the high-water
+	// mark clamps to the truncated length, and the metadata write below
+	// persists the clamp.
+	s.ClampCompactionHighWater(len(s.History))
 
 	// Popping the first-and-only message empties the history. saveAndNotify()
 	// treats empty history as "nothing to persist" (its empty-guard exists so
@@ -201,28 +388,41 @@ func (s *Session) PopLastUserMessage() (bool, error) {
 
 // AppendToLastMessage appends content to the last message (continuation).
 func (s *Session) AppendToLastMessage(content, reasoning string) error {
+	s.historyMu.Lock()
 	if len(s.History) == 0 {
+		s.historyMu.Unlock()
 		return fmt.Errorf("no history to append to")
 	}
 	lastIdx := len(s.History) - 1
 	if len(s.History[lastIdx].Content.Parts) > 0 {
+		// Clone the parts slice before mutating: History[lastIdx].Content.Parts
+		// shares its backing array with the struct copy a concurrent reader
+		// holds (the locked copies take the slice of structs under historyMu,
+		// but slice FIELDS still alias the same array), so an in-place
+		// Parts[i].Text write here would race that reader's marshal, which
+		// runs outside the lock. Rebinding the header leaves the reader's
+		// array untouched; Text and ReasoningContent are strings (immutable,
+		// rebind-only) and need no clone.
 		// If it's multimodal, we append to the last text part if it exists, or add a new one
 		// For now, let's just append to the simple text field if it's used, or the last part.
 		// Actually, let's keep it simple: if Parts is not empty, append to the last part if it's text.
+		parts := make([]client.ContentPart, len(s.History[lastIdx].Content.Parts))
+		copy(parts, s.History[lastIdx].Content.Parts)
 		found := false
-		for i := len(s.History[lastIdx].Content.Parts) - 1; i >= 0; i-- {
-			if s.History[lastIdx].Content.Parts[i].Type == client.ContentPartText {
-				s.History[lastIdx].Content.Parts[i].Text += content
+		for i := len(parts) - 1; i >= 0; i-- {
+			if parts[i].Type == client.ContentPartText {
+				parts[i].Text += content
 				found = true
 				break
 			}
 		}
 		if !found {
-			s.History[lastIdx].Content.Parts = append(s.History[lastIdx].Content.Parts, client.ContentPart{
+			parts = append(parts, client.ContentPart{
 				Type: client.ContentPartText,
 				Text: content,
 			})
 		}
+		s.History[lastIdx].Content.Parts = parts
 	} else {
 		s.History[lastIdx].Content.Text += content
 	}
@@ -233,6 +433,9 @@ func (s *Session) AppendToLastMessage(content, reasoning string) error {
 			s.History[lastIdx].ReasoningContent = reasoning
 		}
 	}
+	s.historyGen.Add(1) // invalidates stale in-flight snapshots (see persistHistorySnapshot)
+	// Persistence runs with the lock released.
+	s.historyMu.Unlock()
 	return s.saveAndNotify()
 }
 
@@ -243,8 +446,16 @@ func (s *Session) StartStream(ctx context.Context, extraBody map[string]any, onC
 	outCh := make(chan common.StreamResult)
 	errCh := make(chan error, 1)
 
+	// Copy the history under historyMu — StartStream can be invoked while a
+	// concurrent mutator (append, truncate, pop) holds historyMu for its
+	// slice write; SanitizeForRequest then works on the pinned copy.
+	s.historyMu.Lock()
+	currentHistory := make([]client.ChatMessage, len(s.History))
+	copy(currentHistory, s.History)
+	s.historyMu.Unlock()
+
 	// Prepare messages with system prompt
-	messages := make([]client.ChatMessage, 0, len(s.History)+1)
+	messages := make([]client.ChatMessage, 0, len(currentHistory)+1)
 	if s.systemPrompt != "" {
 		messages = append(messages, client.ChatMessage{Role: "system", Content: client.TextContent(s.systemPrompt)})
 	}
@@ -253,7 +464,20 @@ func (s *Session) StartStream(ctx context.Context, extraBody map[string]any, onC
 	// which strict OpenAI-compatible endpoints reject with HTTP 400. The
 	// sanitizer repairs the copy sent to the API; the saved history is
 	// intentionally left untouched.
-	messages = append(messages, SanitizeForRequest(s.History)...)
+	messages = append(messages, SanitizeForRequest(currentHistory)...)
+
+	// Retrieved context (Step 17, compaction-retrieval): the block staged by
+	// InjectRetrieved is appended LAST, so it lands in the work area — after
+	// the frozen prefix by construction — and is ephemeral: it lives only in
+	// this request copy, never in s.History, never on disk, and the TUI
+	// transcript (which renders History) never shows it. Role "system" marks
+	// it as harness-injected context rather than a user turn.
+	if block := s.retrievedBlockForRequest(); block != "" {
+		messages = append(messages, client.ChatMessage{
+			Role:    retrievedContextRole,
+			Content: client.TextContent(block),
+		})
+	}
 
 	var onConn func()
 	if len(onConnect) > 0 && onConnect[0] != nil {
@@ -399,6 +623,7 @@ func (s *Session) GenerateSessionMeta() SessionMeta {
 		SubagentSeq:           s.subagentSeq,
 		SaveSubagentHistories: s.saveSubagentHistories,
 		WorkingDir:            s.workingDir,
+		CompactionHighWater:   s.CompactionHighWater(),
 	}
 }
 
@@ -415,8 +640,14 @@ func (s *Session) UpdateSessionMetadata() error {
 // session to a fresh history file. The new file is created when the first
 // message is saved, matching startup behavior for an empty session.
 func (s *Session) StartNewConversation() error {
-	if s.HistoryPath != "" && len(s.History) > 0 {
-		if err := SaveHistory(s.HistoryPath, s.History); err != nil {
+	// Copy the preserved conversation under historyMu (concurrent appends and
+	// snapshots hold the same lock).
+	s.historyMu.Lock()
+	preserved := make([]client.ChatMessage, len(s.History))
+	copy(preserved, s.History)
+	s.historyMu.Unlock()
+	if s.HistoryPath != "" && len(preserved) > 0 {
+		if err := SaveHistory(s.HistoryPath, preserved); err != nil {
 			return err
 		}
 		if err := s.UpdateSessionMetadata(); err != nil {
@@ -436,7 +667,20 @@ func (s *Session) StartNewConversation() error {
 	now := time.Now()
 	sessionID := fmt.Sprintf("session-%s-%09d", now.Format("20060102-150405"), now.Nanosecond())
 	s.HistoryPath = filepath.Join(dir, sessionID+".json")
+	// historyMu guards the slice header against concurrent readers and
+	// writers. The generation bump matters most here: an in-flight writer
+	// that copied the history before the reset would otherwise write the
+	// OLD conversation's bytes into the NEW history path
+	// (persistHistorySnapshot reads HistoryPath at write time); the bump
+	// makes its write a no-op.
+	s.historyMu.Lock()
 	s.History = []client.ChatMessage{}
+	s.historyGen.Add(1)
+	s.historyMu.Unlock()
+	// A fresh conversation has no frozen prefix: the compaction high-water
+	// mark resets with the history (the sidecar of the preserved old
+	// conversation keeps its own mark for when it is resumed).
+	s.SetCompactionHighWater(0)
 	return nil
 }
 
@@ -446,13 +690,25 @@ func (s *Session) SystemPrompt() string {
 }
 
 func (s *Session) saveAndNotify() error {
+	// Copy under historyMu: saveAndNotify runs on whatever goroutine mutated
+	// the history, but other goroutines may truncate/append concurrently —
+	// reading s.History unlocked here was a data race (and the copy pins the
+	// exact state the captured generation belongs to).
+	s.historyMu.Lock()
 	if len(s.History) == 0 {
+		s.historyMu.Unlock()
 		return nil
 	}
 	if s.HistoryPath == "" {
+		s.historyMu.Unlock()
 		return nil // Skip saving if no path provided (e.g., in-memory sessions, subagents without history opt-in)
 	}
-	if err := SaveHistory(s.HistoryPath, s.History); err != nil {
+	snapshot := make([]client.ChatMessage, len(s.History))
+	copy(snapshot, s.History)
+	gen := s.historyGen.Load()
+	s.historyMu.Unlock()
+
+	if err := s.persistHistorySnapshot(snapshot, gen); err != nil {
 		return err
 	}
 	return s.UpdateSessionMetadata()

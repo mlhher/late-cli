@@ -44,7 +44,12 @@ func (a *StreamAccumulator) Append(res common.StreamResult) {
 
 	for _, delta := range res.ToolCalls {
 		index := delta.Index
-		if index < len(a.ToolCalls) {
+		// Merge into a slot only when the slot exists AND belongs to this
+		// index: a malformed negative index would otherwise panic (index out
+		// of range), and an out-of-order index would splice its arguments
+		// into another tool call's slot. Deltas that match no slot are
+		// appended as new entries instead, preserving the data.
+		if index >= 0 && index < len(a.ToolCalls) && a.ToolCalls[index].Index == index {
 			a.ToolCalls[index].Function.Arguments += delta.Function.Arguments
 			if delta.Function.Name != "" {
 				a.ToolCalls[index].Function.Name = delta.Function.Name
@@ -67,6 +72,68 @@ func (a *StreamAccumulator) Reset() {
 }
 
 // --- Tool Execution ---
+
+// MinCompactToolResultChars is the tool-result size above which
+// ExecuteToolCalls offers the result to the compaction stage (staged
+// rollout stage 2 of the jev-compaction port). Smaller results enter
+// history untouched: scoring them costs latency and their segments are
+// rarely worth eliding.
+const MinCompactToolResultChars = 4000
+
+// ToolResultCompactor is the compaction stage consulted by ExecuteToolCalls
+// before a tool result enters history. Implemented by *compaction.Pipeline
+// (CompactToolResult). Install it with SetToolResultCompactor when
+// compaction-mode is shadow or enabled; leave it unset for off.
+type ToolResultCompactor interface {
+	CompactToolResult(ctx context.Context, toolName, result string) string
+}
+
+var (
+	toolResultCompactorMu sync.RWMutex
+	toolResultCompactor   ToolResultCompactor
+)
+
+// SetToolResultCompactor installs c as the process-wide compaction stage for
+// ExecuteToolCalls — the root agent and every subagent share it, mirroring
+// the shared pipeline it wraps. Pass nil to switch compaction off.
+func SetToolResultCompactor(c ToolResultCompactor) {
+	toolResultCompactorMu.Lock()
+	defer toolResultCompactorMu.Unlock()
+	toolResultCompactor = c
+}
+
+// maybeCompactToolResult returns the (possibly compacted) form of result for
+// history. Fail-safe: an oversized result of the expand tool is never
+// re-compacted (expand exists to return originals — compacting them again
+// would make them unreachable), and results at or under the size threshold
+// pass through untouched.
+func maybeCompactToolResult(ctx context.Context, toolName, result string) string {
+	toolResultCompactorMu.RLock()
+	c := toolResultCompactor
+	toolResultCompactorMu.RUnlock()
+	if c == nil || len(result) <= MinCompactToolResultChars || toolName == tool.ExpandToolName {
+		return result
+	}
+	return c.CompactToolResult(ctx, toolName, result)
+}
+
+// runToolCall invokes one wrapped tool runner with panic containment: a
+// panicking tool implementation (a buggy builtin, plugin, or MCP bridge) is
+// converted into a regular error return instead of unwinding the executor's
+// run-loop goroutine — an unwind that would kill the whole process, taking
+// the root agent, every other subagent, and the TUI down with it. The
+// recover is deliberately scoped to the SINGLE tool call, so all harness
+// bookkeeping around it (in-flight-tool registration, per-call contexts,
+// history commits, the remaining calls in the batch) runs outside the
+// panicking stack and stays untouched.
+func runToolCall(runner common.ToolRunner, ctx context.Context, tc client.ToolCall) (result string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("tool %s panicked: %v", tc.Function.Name, r)
+		}
+	}()
+	return runner(ctx, tc)
+}
 
 // ExecuteToolCalls runs a slice of tool calls against the session.
 // It uses the provided middlewares to wrap the base tool execution.
@@ -103,10 +170,15 @@ func ExecuteToolCalls(ctx context.Context, sess *session.Session, toolCalls []cl
 			}
 		}
 
-		result, err := runner(ctx, tc)
+		result, err := runToolCall(runner, ctx, tc)
 		if err != nil {
 			result = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, err)
 		}
+		// Compaction (stage 2): oversized results may be relocated into the
+		// compaction store before they enter history. Shadow mode scores and
+		// logs without changing the result; off mode has no compactor
+		// installed and passes through.
+		result = maybeCompactToolResult(ctx, tc.Function.Name, result)
 		if err := sess.AddToolResultMessage(tc.ID, result); err != nil {
 			return err
 		}

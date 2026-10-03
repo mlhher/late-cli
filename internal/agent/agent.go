@@ -119,7 +119,12 @@ func NewSubagentOrchestrator(
 	}
 	executor.RegisterTools(sess.Registry, subagentTools)
 
-	// 3. Construct Initial Context
+	// 3. Construct Initial Context. Unreadable ctx_files are NAMED, not
+	// silently skipped: a dropped entry used to leave "Context Files:" with
+	// nothing under it while the model believed the file's contents were
+	// attached — a silent context loss the child then rediscovered (or
+	// reported as done). The annotation keeps the spawn alive and tells the
+	// child exactly which path is missing.
 	initialMsg := fmt.Sprintf("Goal: %s", goal)
 	if len(ctxFiles) > 0 {
 		initialMsg += "\n\nContext Files:\n"
@@ -127,6 +132,8 @@ func NewSubagentOrchestrator(
 			content, err := os.ReadFile(f)
 			if err == nil {
 				initialMsg += fmt.Sprintf("- %s:\n```\n%s\n```\n", f, string(content))
+			} else {
+				initialMsg += fmt.Sprintf("- %s: (could not be read: %v)\n", f, err)
 			}
 		}
 	}

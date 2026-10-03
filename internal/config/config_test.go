@@ -811,6 +811,429 @@ func TestResolvePermissionMode(t *testing.T) {
 	}
 }
 
+func TestResolveCompactionThreshold(t *testing.T) {
+	cases := []struct {
+		name        string
+		cfg         *Config
+		want        int
+		wantWarning []string
+	}{
+		{
+			name: "nil config uses default",
+			cfg:  nil,
+			want: DefaultCompactionThresholdPercent,
+		},
+		{
+			name: "unset uses default",
+			cfg:  &Config{},
+			want: DefaultCompactionThresholdPercent,
+		},
+		{
+			name: "valid value honored",
+			cfg:  &Config{CompactionThresholdPercent: 65},
+			want: 65,
+		},
+		{
+			name: "one is valid",
+			cfg:  &Config{CompactionThresholdPercent: 1},
+			want: 1,
+		},
+		{
+			name: "hundred is valid",
+			cfg:  &Config{CompactionThresholdPercent: 100},
+			want: 100,
+		},
+		{
+			name:        "negative value invalid",
+			cfg:         &Config{CompactionThresholdPercent: -5},
+			want:        DefaultCompactionThresholdPercent,
+			wantWarning: []string{"invalid", "-5"},
+		},
+		{
+			name:        "over hundred invalid",
+			cfg:         &Config{CompactionThresholdPercent: 250},
+			want:        DefaultCompactionThresholdPercent,
+			wantWarning: []string{"invalid", "250"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, warning := ResolveCompactionThreshold(tc.cfg)
+			if got != tc.want {
+				t.Fatalf("ResolveCompactionThreshold() = %d, want %d", got, tc.want)
+			}
+			if len(tc.wantWarning) == 0 {
+				if warning != "" {
+					t.Fatalf("warning = %q, want empty", warning)
+				}
+				return
+			}
+			if warning == "" {
+				t.Fatal("warning is empty, want a warning")
+			}
+			for _, substring := range tc.wantWarning {
+				if !strings.Contains(warning, substring) {
+					t.Fatalf("warning = %q, want it to contain %q", warning, substring)
+				}
+			}
+		})
+	}
+}
+
+// TestResolveCompactionMode mirrors TestResolveCompactionThreshold: the
+// staged rollout modes validate to off|shadow|enabled, empty means the
+// default (shadow), and anything else warns and falls back to the default.
+func TestResolveCompactionMode(t *testing.T) {
+	cases := []struct {
+		name        string
+		cfg         *Config
+		want        string
+		wantWarning []string
+	}{
+		{
+			name: "nil config uses default",
+			cfg:  nil,
+			want: DefaultCompactionMode,
+		},
+		{
+			name: "unset uses default",
+			cfg:  &Config{},
+			want: DefaultCompactionMode,
+		},
+		{
+			name: "off honored",
+			cfg:  &Config{CompactionMode: CompactionModeOff},
+			want: CompactionModeOff,
+		},
+		{
+			name: "shadow honored",
+			cfg:  &Config{CompactionMode: CompactionModeShadow},
+			want: CompactionModeShadow,
+		},
+		{
+			name: "enabled honored",
+			cfg:  &Config{CompactionMode: CompactionModeEnabled},
+			want: CompactionModeEnabled,
+		},
+		{
+			name:        "invalid value warns and falls back",
+			cfg:         &Config{CompactionMode: "aggressive"},
+			want:        DefaultCompactionMode,
+			wantWarning: []string{"invalid", "aggressive", DefaultCompactionMode},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, warning := ResolveCompactionMode(tc.cfg)
+			if got != tc.want {
+				t.Fatalf("ResolveCompactionMode() = %q, want %q", got, tc.want)
+			}
+			if len(tc.wantWarning) == 0 {
+				if warning != "" {
+					t.Fatalf("warning = %q, want empty", warning)
+				}
+				return
+			}
+			if warning == "" {
+				t.Fatal("warning is empty, want a warning")
+			}
+			for _, substring := range tc.wantWarning {
+				if !strings.Contains(warning, substring) {
+					t.Fatalf("warning = %q, want it to contain %q", warning, substring)
+				}
+			}
+		})
+	}
+
+	for _, valid := range []string{CompactionModeOff, CompactionModeShadow, CompactionModeEnabled} {
+		if !IsValidCompactionMode(valid) {
+			t.Errorf("IsValidCompactionMode(%q) = false, want true", valid)
+		}
+	}
+	for _, invalid := range []string{"", "Aggressive", "shadow ", "elided"} {
+		if IsValidCompactionMode(invalid) {
+			t.Errorf("IsValidCompactionMode(%q) = true, want false", invalid)
+		}
+	}
+}
+
+// TestResolveCompactionMaxElidePercent mirrors TestResolveCompactionThreshold
+// for the elide-fraction tripwire knob: 0 (unset) means the reference default,
+// 1-100 are honored, anything else warns and falls back.
+func TestResolveCompactionMaxElidePercent(t *testing.T) {
+	cases := []struct {
+		name        string
+		cfg         *Config
+		want        int
+		wantWarning []string
+	}{
+		{
+			name: "nil config uses default",
+			cfg:  nil,
+			want: DefaultCompactionMaxElidePercent,
+		},
+		{
+			name: "unset uses default",
+			cfg:  &Config{},
+			want: DefaultCompactionMaxElidePercent,
+		},
+		{
+			name: "valid value honored",
+			cfg:  &Config{CompactionMaxElidePercent: 50},
+			want: 50,
+		},
+		{
+			name: "one is valid",
+			cfg:  &Config{CompactionMaxElidePercent: 1},
+			want: 1,
+		},
+		{
+			name: "hundred is valid",
+			cfg:  &Config{CompactionMaxElidePercent: 100},
+			want: 100,
+		},
+		{
+			name:        "negative value invalid",
+			cfg:         &Config{CompactionMaxElidePercent: -10},
+			want:        DefaultCompactionMaxElidePercent,
+			wantWarning: []string{"invalid", "-10"},
+		},
+		{
+			name:        "over hundred invalid",
+			cfg:         &Config{CompactionMaxElidePercent: 101},
+			want:        DefaultCompactionMaxElidePercent,
+			wantWarning: []string{"invalid", "101"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, warning := ResolveCompactionMaxElidePercent(tc.cfg)
+			if got != tc.want {
+				t.Fatalf("ResolveCompactionMaxElidePercent() = %d, want %d", got, tc.want)
+			}
+			assertResolverWarning(t, warning, tc.wantWarning)
+		})
+	}
+}
+
+// TestResolveCompactionProtectedFloor mirrors TestResolveCompactionThreshold
+// for the protected-kind floor knob: 0 (unset) means the reference default,
+// 1-100 are honored, anything else warns and falls back.
+func TestResolveCompactionProtectedFloor(t *testing.T) {
+	cases := []struct {
+		name        string
+		cfg         *Config
+		want        int
+		wantWarning []string
+	}{
+		{
+			name: "nil config uses default",
+			cfg:  nil,
+			want: DefaultCompactionProtectedFloorPercent,
+		},
+		{
+			name: "unset uses default",
+			cfg:  &Config{},
+			want: DefaultCompactionProtectedFloorPercent,
+		},
+		{
+			name: "valid value honored",
+			cfg:  &Config{CompactionProtectedFloor: 20},
+			want: 20,
+		},
+		{
+			name: "one is valid",
+			cfg:  &Config{CompactionProtectedFloor: 1},
+			want: 1,
+		},
+		{
+			name: "hundred is valid",
+			cfg:  &Config{CompactionProtectedFloor: 100},
+			want: 100,
+		},
+		{
+			name:        "negative value invalid",
+			cfg:         &Config{CompactionProtectedFloor: -3},
+			want:        DefaultCompactionProtectedFloorPercent,
+			wantWarning: []string{"invalid", "-3"},
+		},
+		{
+			name:        "over hundred invalid",
+			cfg:         &Config{CompactionProtectedFloor: 250},
+			want:        DefaultCompactionProtectedFloorPercent,
+			wantWarning: []string{"invalid", "250"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, warning := ResolveCompactionProtectedFloor(tc.cfg)
+			if got != tc.want {
+				t.Fatalf("ResolveCompactionProtectedFloor() = %d, want %d", got, tc.want)
+			}
+			assertResolverWarning(t, warning, tc.wantWarning)
+		})
+	}
+}
+
+// assertResolverWarning checks a resolver's warning against the expected
+// substrings (empty means the warning must be empty too).
+func assertResolverWarning(t *testing.T, warning string, wantSubstrings []string) {
+	t.Helper()
+	if len(wantSubstrings) == 0 {
+		if warning != "" {
+			t.Fatalf("warning = %q, want empty", warning)
+		}
+		return
+	}
+	if warning == "" {
+		t.Fatal("warning is empty, want a warning")
+	}
+	for _, substring := range wantSubstrings {
+		if !strings.Contains(warning, substring) {
+			t.Fatalf("warning = %q, want it to contain %q", warning, substring)
+		}
+	}
+}
+
+// TestLoadConfig_CompactionMode covers the config-file path: valid modes
+// parse through, invalid ones survive loading so ResolveCompactionMode can
+// warn and fall back to the default.
+func TestLoadConfig_CompactionMode(t *testing.T) {
+	t.Run("valid mode parses", func(t *testing.T) {
+		configRoot := t.TempDir()
+		setUserConfigEnv(t, configRoot)
+		configPath := lateConfigPath(t)
+		if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(configPath, []byte(`{"enabled_tools": {"bash": true}, "compaction-mode": "enabled"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := LoadConfig()
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		if cfg.CompactionMode != CompactionModeEnabled {
+			t.Fatalf("CompactionMode = %q, want %q", cfg.CompactionMode, CompactionModeEnabled)
+		}
+	})
+
+	t.Run("invalid mode warns via resolver", func(t *testing.T) {
+		configRoot := t.TempDir()
+		setUserConfigEnv(t, configRoot)
+		configPath := lateConfigPath(t)
+		if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(configPath, []byte(`{"enabled_tools": {"bash": true}, "compaction-mode": "yolo"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := LoadConfig()
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		mode, warning := ResolveCompactionMode(cfg)
+		if mode != DefaultCompactionMode {
+			t.Fatalf("resolved mode = %q, want %q", mode, DefaultCompactionMode)
+		}
+		if !strings.Contains(warning, "yolo") || !strings.Contains(warning, DefaultCompactionMode) {
+			t.Fatalf("warning = %q, want it to name the invalid value and the fallback", warning)
+		}
+	})
+}
+
+// TestConfig_CompactionModeJSONRoundTrip: the field marshals under its
+// config key and stays omitted when unset.
+func TestConfig_CompactionModeJSONRoundTrip(t *testing.T) {
+	original := Config{CompactionMode: CompactionModeEnabled}
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	var decoded Config
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if decoded.CompactionMode != CompactionModeEnabled {
+		t.Fatalf("CompactionMode after round trip = %q, want %q", decoded.CompactionMode, CompactionModeEnabled)
+	}
+
+	emptyData, err := json.Marshal(Config{})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(emptyData, &raw); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if _, ok := raw["compaction-mode"]; ok {
+		t.Fatalf("empty config should not marshal a compaction-mode key, got %s", emptyData)
+	}
+}
+
+func TestLoadConfig_ParsesCompactionThresholdPercent(t *testing.T) {
+	configRoot := t.TempDir()
+	setUserConfigEnv(t, configRoot)
+	configPath := lateConfigPath(t)
+
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := `{
+		"enabled_tools": {"bash": true},
+		"compaction-threshold-percent": 65
+	}`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.CompactionThresholdPercent != 65 {
+		t.Fatalf("CompactionThresholdPercent = %d, want 65", cfg.CompactionThresholdPercent)
+	}
+}
+
+func TestConfig_CompactionThresholdPercentJSONRoundTrip(t *testing.T) {
+	original := Config{CompactionThresholdPercent: 65}
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var decoded Config
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if decoded.CompactionThresholdPercent != 65 {
+		t.Fatalf("CompactionThresholdPercent after round trip = %d, want 65", decoded.CompactionThresholdPercent)
+	}
+
+	// Zero values must not emit keys (omitempty), keeping config.json clean
+	// for users who never touched the new settings.
+	emptyData, err := json.Marshal(Config{})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(emptyData, &raw); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	for _, key := range []string{"compaction-threshold-percent"} {
+		if _, ok := raw[key]; ok {
+			t.Fatalf("empty config should not marshal a %s key, got %s", key, emptyData)
+		}
+	}
+}
+
 func TestConfig_PermissionModeJSONRoundTrip(t *testing.T) {
 	original := Config{PermissionMode: PermissionModeUnsupervised}
 	data, err := json.Marshal(original)
@@ -838,3 +1261,264 @@ func TestConfig_PermissionModeJSONRoundTrip(t *testing.T) {
 		t.Fatalf("empty config should not marshal a permission-mode key, got %s", emptyData)
 	}
 }
+
+// TestResolveAutocompact mirrors TestResolveCompactionThreshold: the switch
+// is a plain boolean (absent = disabled) and the percentage validates 1-100,
+// with 0 (unset) meaning the default and anything else warning and falling
+// back to the default.
+func TestResolveAutocompact(t *testing.T) {
+	cases := []struct {
+		name             string
+		cfg              *Config
+		wantEnabled      bool
+		wantPercent      int
+		wantWarningParts []string
+	}{
+		{
+			name:        "nil config uses defaults",
+			cfg:         nil,
+			wantEnabled: false,
+			wantPercent: DefaultJevAutocompactPercent,
+		},
+		{
+			name:        "unset uses defaults",
+			cfg:         &Config{},
+			wantEnabled: false,
+			wantPercent: DefaultJevAutocompactPercent,
+		},
+		{
+			name:        "enabled with default percent",
+			cfg:         &Config{JevAutocompact: true},
+			wantEnabled: true,
+			wantPercent: DefaultJevAutocompactPercent,
+		},
+		{
+			name:        "valid percent honored",
+			cfg:         &Config{JevAutocompact: true, JevAutocompactPercent: 90},
+			wantEnabled: true,
+			wantPercent: 90,
+		},
+		{
+			name:        "one is valid",
+			cfg:         &Config{JevAutocompactPercent: 1},
+			wantEnabled: false,
+			wantPercent: 1,
+		},
+		{
+			name:        "hundred is valid",
+			cfg:         &Config{JevAutocompactPercent: 100},
+			wantEnabled: false,
+			wantPercent: 100,
+		},
+		{
+			name:             "negative percent invalid",
+			cfg:              &Config{JevAutocompact: true, JevAutocompactPercent: -5},
+			wantEnabled:      true,
+			wantPercent:      DefaultJevAutocompactPercent,
+			wantWarningParts: []string{"invalid", "-5"},
+		},
+		{
+			name:             "over hundred percent invalid",
+			cfg:              &Config{JevAutocompactPercent: 250},
+			wantEnabled:      false,
+			wantPercent:      DefaultJevAutocompactPercent,
+			wantWarningParts: []string{"invalid", "250"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotEnabled, gotPercent, warning := ResolveAutocompact(tc.cfg)
+			if gotEnabled != tc.wantEnabled {
+				t.Fatalf("ResolveAutocompact() enabled = %v, want %v", gotEnabled, tc.wantEnabled)
+			}
+			if gotPercent != tc.wantPercent {
+				t.Fatalf("ResolveAutocompact() percent = %d, want %d", gotPercent, tc.wantPercent)
+			}
+			if len(tc.wantWarningParts) == 0 {
+				if warning != "" {
+					t.Fatalf("warning = %q, want empty", warning)
+				}
+				return
+			}
+			if warning == "" {
+				t.Fatal("warning is empty, want a warning")
+			}
+			for _, substring := range tc.wantWarningParts {
+				if !strings.Contains(warning, substring) {
+					t.Fatalf("warning = %q, want it to contain %q", warning, substring)
+				}
+			}
+		})
+	}
+}
+
+func TestConfig_AutocompactJSONRoundTrip(t *testing.T) {
+	original := Config{JevAutocompact: true, JevAutocompactPercent: 90}
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var decoded Config
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if !decoded.JevAutocompact {
+		t.Fatal("JevAutocompact after round trip = false, want true")
+	}
+	if decoded.JevAutocompactPercent != 90 {
+		t.Fatalf("JevAutocompactPercent after round trip = %d, want 90", decoded.JevAutocompactPercent)
+	}
+
+	// Zero values must not emit keys (omitempty), keeping config.json clean
+	// for users who never touched the new settings.
+	emptyData, err := json.Marshal(Config{})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(emptyData, &raw); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	for _, key := range []string{"jev-autocompact", "jev-autocompact-percent"} {
+		if _, ok := raw[key]; ok {
+			t.Fatalf("empty config should not marshal a %s key, got %s", key, emptyData)
+		}
+	}
+}
+
+// TestModelSetting_AutocompactPercentOverride pins the per-model override
+// accessor: 1-100 is the override, 0/unset (and anything out of range) means
+// "no override — use the global".
+func TestModelSetting_AutocompactPercentOverride(t *testing.T) {
+	cases := []struct {
+		name      string
+		setting   ModelSetting
+		wantValue int
+		wantOK    bool
+	}{
+		{name: "unset is not an override", setting: ModelSetting{}, wantValue: 0, wantOK: false},
+		{name: "one is the smallest override", setting: ModelSetting{JevAutocompactPercent: 1}, wantValue: 1, wantOK: true},
+		{name: "fifty-five honored", setting: ModelSetting{JevAutocompactPercent: 55}, wantValue: 55, wantOK: true},
+		{name: "hundred is the largest override", setting: ModelSetting{JevAutocompactPercent: 100}, wantValue: 100, wantOK: true},
+		{name: "negative is ignored", setting: ModelSetting{JevAutocompactPercent: -5}, wantValue: 0, wantOK: false},
+		{name: "over hundred is ignored", setting: ModelSetting{JevAutocompactPercent: 250}, wantValue: 0, wantOK: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := tc.setting.AutocompactPercentOverride()
+			if ok != tc.wantOK || got != tc.wantValue {
+				t.Fatalf("AutocompactPercentOverride() = (%d, %v), want (%d, %v)", got, ok, tc.wantValue, tc.wantOK)
+			}
+		})
+	}
+}
+
+// TestConfig_AutocompactPercentForAgent pins the resolution order for the
+// JEV auto-compaction trigger: the agent's model entry override (1-100) >
+// the global jev-autocompact-percent > nothing else (the caller passes the
+// already-normalized global). The lookup is Config.GetModelForAgent, so
+// agent_models routing (stable id or legacy model name) decides which entry
+// applies.
+func TestConfig_AutocompactPercentForAgent(t *testing.T) {
+	cfg := &Config{
+		JevAutocompactPercent: 99, // the global threshold
+		Models: []ModelSetting{
+			{ID: "small-ctx", URL: "http://a:8080", Key: "k", Model: "model-a", JevAutocompactPercent: 55},
+			{ID: "huge-ctx", URL: "http://b:8080", Key: "k", Model: "model-b", JevAutocompactPercent: 100},
+			{ID: "no-override", URL: "http://c:8080", Key: "k", Model: "model-c"},
+			{ID: "bad-override", URL: "http://d:8080", Key: "k", Model: "model-d", JevAutocompactPercent: 400},
+		},
+		AgentModels: map[string]string{
+			"orchestrator": "no-override",
+			"researcher":   "small-ctx",
+			"coder":        "huge-ctx",
+			"reviewer":     "bad-override",
+			"legacy":       "model-a", // legacy name-based routing still resolves
+		},
+	}
+
+	cases := []struct {
+		agentType string
+		want      int
+	}{
+		{"researcher", 55},   // valid per-model override wins
+		{"coder", 100},       // boundary values are honored too
+		{"orchestrator", 99}, // no override: the global applies
+		{"reviewer", 99},     // out-of-range override is ignored: the global applies
+		{"legacy", 55},       // name-based agent_models routing resolves the entry
+		{"unrouted", 99},     // agent type with no agent_models entry: the global
+	}
+	for _, tc := range cases {
+		t.Run(tc.agentType, func(t *testing.T) {
+			if got := cfg.AutocompactPercentForAgent(tc.agentType, 99); got != tc.want {
+				t.Fatalf("AutocompactPercentForAgent(%q, 99) = %d, want %d", tc.agentType, got, tc.want)
+			}
+		})
+	}
+
+	// A different global flows through whenever no override applies.
+	if got := cfg.AutocompactPercentForAgent("researcher", 70); got != 55 {
+		t.Fatalf("override must win over a non-default global: got %d, want 55", got)
+	}
+	if got := cfg.AutocompactPercentForAgent("orchestrator", 70); got != 70 {
+		t.Fatalf("no override must pass the global through: got %d, want 70", got)
+	}
+}
+
+// TestConfig_AutocompactPercentForAgentNilSafe pins the nil-receiver and
+// degenerate-input guards: a nil config, a config without the models
+// sections, and an empty agent type all fall back to the global.
+func TestConfig_AutocompactPercentForAgentNilSafe(t *testing.T) {
+	if got := (*Config)(nil).AutocompactPercentForAgent("orchestrator", 99); got != 99 {
+		t.Fatalf("nil config = %d, want the global 99", got)
+	}
+	if got := (&Config{}).AutocompactPercentForAgent("orchestrator", 99); got != 99 {
+		t.Fatalf("empty config = %d, want the global 99", got)
+	}
+	cfg := &Config{Models: []ModelSetting{{ID: "m", JevAutocompactPercent: 55}}}
+	if got := cfg.AutocompactPercentForAgent("orchestrator", 99); got != 99 {
+		t.Fatalf("no agent_models routing = %d, want the global 99", got)
+	}
+	if got := cfg.AutocompactPercentForAgent("", 99); got != 99 {
+		t.Fatalf("empty agent type = %d, want the global 99", got)
+	}
+}
+
+// TestConfig_AutocompactWarnings pins the startup warning path for
+// out-of-range per-model jev-autocompact-percent values: one warning per bad
+// entry, naming the model (id, else model name) and the value, and saying
+// the global applies. Valid and unset values never warn.
+func TestConfig_AutocompactWarnings(t *testing.T) {
+	cfg := &Config{
+		Models: []ModelSetting{
+			{ID: "good", Model: "model-good", JevAutocompactPercent: 55},
+			{ID: "too-low", Model: "model-low", JevAutocompactPercent: -3},
+			{Model: "no-id-bad", JevAutocompactPercent: 101},
+			{ID: "unset", Model: "model-unset"},
+		},
+	}
+	warnings := cfg.AutocompactWarnings()
+	if len(warnings) != 2 {
+		t.Fatalf("AutocompactWarnings() = %#v, want exactly 2 warnings", warnings)
+	}
+	first := warnings[0]
+	for _, substring := range []string{"too-low", "-3", "global"} {
+		if !strings.Contains(first, substring) {
+			t.Fatalf("warning %q does not mention %q", first, substring)
+		}
+	}
+	if !strings.Contains(warnings[1], "no-id-bad") || !strings.Contains(warnings[1], "101") {
+		t.Fatalf("second warning %q must name the model (no id set) and the bad value 101", warnings[1])
+	}
+
+	if got := (&Config{}).AutocompactWarnings(); got != nil {
+		t.Fatalf("config without models = %#v, want nil", got)
+	}
+	if got := (*Config)(nil).AutocompactWarnings(); got != nil {
+		t.Fatalf("nil config = %#v, want nil", got)
+	}
+}
+
+

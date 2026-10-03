@@ -42,6 +42,14 @@ type BaseOrchestrator struct {
 
 	// Max turns configuration
 	maxTurns int
+
+	// retrievalHookFn runs at every turn start — right before that turn's
+	// stream request — when installed (main wires it behind the
+	// compaction-retrieval config switch to Session.InjectRetrieved). The
+	// hook owns its failures: it must never panic the turn, and a retrieval
+	// that found nothing or failed simply stages no context. Guarded by mu;
+	// nil (the default) is the plain no-hook behavior.
+	retrievalHookFn func(context.Context)
 }
 
 func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.ToolMiddleware, maxTurns int) *BaseOrchestrator {
@@ -86,6 +94,26 @@ func (o *BaseOrchestrator) SetMaxTurns(maxTurns int) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.maxTurns = maxTurns
+}
+
+// SetRetrievalHook installs h as this orchestrator's retrieval hook: it
+// runs at every turn start, right before that turn's stream request, after
+// the pending messages joined history (so a retrieval scored against the
+// just-submitted task sees it). main installs it behind the
+// compaction-retrieval switch, closing over the compaction pipeline, the
+// shared record store, and the agent's session (Session.InjectRetrieved).
+// Must be called before the first run; passing nil removes the hook.
+func (o *BaseOrchestrator) SetRetrievalHook(h func(context.Context)) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.retrievalHookFn = h
+}
+
+// retrievalHook returns the installed hook or nil (thread-safe).
+func (o *BaseOrchestrator) retrievalHook() func(context.Context) {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.retrievalHookFn
 }
 
 func (o *BaseOrchestrator) MaxTokens() int {
@@ -189,7 +217,15 @@ func (o *BaseOrchestrator) Submit(text string, images []string) error {
 	if o.isRunning {
 		o.pendingMsgs = append(o.pendingMsgs, msg)
 		o.mu.Unlock()
-		o.eventCh <- common.MessageQueuedEvent{ID: o.id, Text: text}
+		// Transient queued-message notice: non-blocking. The queued message
+		// itself is already safely stored in pendingMsgs above; a stalled
+		// consumer must not wedge the Submit caller (the TUI input path) on
+		// a cosmetic event — the next turn-boundary or terminal event
+		// refreshes the viewport anyway.
+		select {
+		case o.eventCh <- common.MessageQueuedEvent{ID: o.id, Text: text}:
+		default:
+		}
 		return nil
 	}
 
@@ -233,6 +269,18 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 
 	if strings.TrimSpace(text) != "" {
 		if err := o.sess.AddUserMessage(text); err != nil {
+			// The run never started, but isRunning was already set and the
+			// watchdog is live. Undo the flag HERE — the terminal defer
+			// below is not registered yet — or every later Execute fails
+			// with "orchestrator is already running" and every Submit
+			// queues into a run that will never start (the terminal-error
+			// hang class). The cancel() defer above still stops the
+			// watchdog; the terminal status resolves a waiting consumer
+			// out of its running state.
+			o.mu.Lock()
+			o.isRunning = false
+			o.mu.Unlock()
+			o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: err}
 			return "", err
 		}
 	}
@@ -241,8 +289,12 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 	defer func() {
 		o.mu.Lock()
 		o.isRunning = false
-		o.pendingMsgs = nil
 		o.mu.Unlock()
+		// Queued messages are deliberately PRESERVED (same contract as
+		// run()): a message submitted while this run executed must not be
+		// silently dropped at completion. A later run's first turn
+		// (onStartTurn) drains them; interrupting before that restores
+		// them to the input via DrainQueuedMessages.
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"}
 	}()
 
@@ -262,6 +314,16 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 
 		for _, msg := range msgs {
 			_ = o.sess.AddMessage(msg)
+		}
+
+		// Retrieval read side (Step 17): the hook — installed by main behind
+		// compaction-retrieval — scores the compaction store against the
+		// task and stages the retrieved block; Session.StartStream appends
+		// it last (the work area). It runs after the pending messages joined
+		// history so the just-submitted task is what gets scored against.
+		// The hook owns its failures: it never aborts the turn.
+		if h := o.retrievalHook(); h != nil {
+			h(ctx)
 		}
 
 		o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
@@ -360,8 +422,11 @@ func (o *BaseOrchestrator) run() {
 	defer func() {
 		o.mu.Lock()
 		o.isRunning = false
-		o.pendingMsgs = nil
 		o.mu.Unlock()
+		// Queued messages are deliberately PRESERVED (same contract as
+		// Execute()): a message submitted while this run executed must not
+		// be silently dropped at completion. A later run's first turn
+		// (onStartTurn) drains them.
 	}()
 
 	// Inject orchestrator ID into context for tool interactions
@@ -386,6 +451,12 @@ func (o *BaseOrchestrator) run() {
 
 			for _, msg := range msgs {
 				_ = o.sess.AddMessage(msg)
+			}
+
+			// Retrieval read side (Step 17): same hook as Execute's turn
+			// start — this is the run()/Submit path's stream request.
+			if h := o.retrievalHook(); h != nil {
+				h(ctx)
 			}
 
 			o.eventCh <- common.StatusEvent{ID: o.id, Status: "thinking"}
@@ -487,9 +558,17 @@ func (o *BaseOrchestrator) run() {
 			if strings.Contains(errStr, "image input is not supported") ||
 				strings.Contains(errStr, "image_input") ||
 				strings.Contains(errStr, "does not support image") {
-				// Remove the last user message from history
-				if len(o.sess.History) > 0 && o.sess.History[len(o.sess.History)-1].Role == "user" {
-					o.sess.History = o.sess.History[:len(o.sess.History)-1]
+				// PopLastUserMessage does the tail-user check, the truncate
+				// and the high-water clamp atomically under historyMu — and,
+				// unlike the old truncate-only rollback, it PERSISTS the
+				// removal. The user message was already on disk when the
+				// request failed (AddUserMessage saved it), so a memory-only
+				// rollback left the poisoned image turn in the file and
+				// --continue reloaded it into the same terminal error on the
+				// next run. A persistence failure is logged, never fatal: the
+				// run is already terminating with the error status below.
+				if popped, popErr := o.sess.PopLastUserMessage(); popped && popErr != nil {
+					common.LogErrorf("orchestrator", "rolling back unsupported-image user message: %v", popErr)
 				}
 				o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: fmt.Errorf("image_unsupported")}
 			} else if isBadRequestStatusError(err) {
@@ -633,8 +712,15 @@ func (o *BaseOrchestrator) Rewind(index int) error {
 		return fmt.Errorf("invalid history index")
 	}
 	o.sess.History = o.sess.History[:index]
+	// The frozen prefix never outlives the history it froze: the compaction
+	// high-water mark clamps to the truncated length, and the metadata write
+	// below persists the clamp.
+	o.sess.ClampCompactionHighWater(index)
 	if o.sess.HistoryPath != "" {
-		if err := session.SaveHistory(o.sess.HistoryPath, o.sess.History); err != nil {
+		// PersistHistory copies under historyMu (a plain SaveHistory of
+		// sess.History read the slice header unlocked) and is
+		// generation-checked against concurrent writers.
+		if err := o.sess.PersistHistory(); err != nil {
 			return err
 		}
 		return o.sess.UpdateSessionMetadata()

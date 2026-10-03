@@ -75,31 +75,39 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 		}
 	}
 
+	// JEV auto-compaction plumbing: ResolveAutocompact also normalizes an
+	// invalid configured percent back to the default. The warning it returns
+	// for an invalid value is surfaced once at startup by cmd/late/main.go;
+	// the TUI only needs the normalized values.
+	autocompactEnabled, autocompactPercent, _ := config.ResolveAutocompact(cfg)
+
 	m := Model{
-		Mode:                ViewChat,
-		Root:                root,
-		Focused:             root,
-		Input:               ti,
-		Viewport:            vp,
-		Renderer:            renderer,
-		Width:               80,
-		Height:              24, // Default start height
-		AgentStates:         make(map[string]*AppState),
-		InspectingTool:      false,
+		Mode:           ViewChat,
+		Root:           root,
+		Focused:        root,
+		Input:          ti,
+		Viewport:       vp,
+		Renderer:       renderer,
+		Width:          80,
+		Height:         24, // Default start height
+		AgentStates:    make(map[string]*AppState),
+		InspectingTool: false,
 		Spinner: spinner.New(spinner.WithSpinner(spinner.Spinner{
 			Frames: spinner.Dot.Frames,
 			FPS:    40 * time.Millisecond,
 		})),
-		InputHistory:        make([]string, 0),
-		HistoryIndex:        -1,
-		CWD:                 cwd,
-		ShowCWD:             true,
-		GitBranch:           git.CurrentBranch(cwd),
-		cachedRendererWidth: -1, // Force first creation
-		Pastes:              make(map[string]string),
-		AppConfig:           cfg,
-		SelectedTheme:       "default",
-		activeThemeStyles:   LateTheme,
+		InputHistory:          make([]string, 0),
+		HistoryIndex:          -1,
+		CWD:                   cwd,
+		ShowCWD:               true,
+		GitBranch:             git.CurrentBranch(cwd),
+		cachedRendererWidth:   -1, // Force first creation
+		Pastes:                make(map[string]string),
+		AppConfig:             cfg,
+		SelectedTheme:         "default",
+		activeThemeStyles:     LateTheme,
+		JevAutocompact:        autocompactEnabled,
+		JevAutocompactPercent: autocompactPercent,
 	}
 
 	fp := filepicker.New()

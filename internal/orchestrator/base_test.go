@@ -82,6 +82,24 @@ func TestBaseOrchestrator_Rewind(t *testing.T) {
 	if updatedHistory[1].Content.String() != "Reply 1" {
 		t.Errorf("Expected second message 'Reply 1', got %q", updatedHistory[1].Content.String())
 	}
+
+	// (Step 14) Rewinding clamps the compaction high-water mark to the
+	// truncated history — the frozen prefix never outlives the history it
+	// froze — and the clamp persists through the metadata write.
+	sess.SetCompactionHighWater(4)
+	if err := o.Rewind(1); err != nil {
+		t.Fatalf("Failed to rewind to 1: %v", err)
+	}
+	if got, want := sess.CompactionHighWater(), 1; got != want {
+		t.Errorf("CompactionHighWater after rewind to 1 = %d, want %d", got, want)
+	}
+	meta, err := session.LoadSessionMeta("history")
+	if err != nil || meta == nil {
+		t.Fatalf("LoadSessionMeta(history) = (%v, %v)", meta, err)
+	}
+	if meta.CompactionHighWater != 1 {
+		t.Errorf("persisted CompactionHighWater after rewind = %d, want 1", meta.CompactionHighWater)
+	}
 }
 
 func TestBaseOrchestrator_ResetStartsNewConversation(t *testing.T) {

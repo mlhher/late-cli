@@ -49,44 +49,79 @@ func EstimateTokenCountFast(text string) int {
 
 // CalculateHistoryTokensFast calculates token count quickly without blocking on BPE load,
 // ensuring the initial TUI frame renders immediately with a populated token bar.
+//
+// It walks exactly the same fields as CalculateHistoryTokens — message
+// Content + ReasoningContent + every tool call's name and arguments, plus
+// the system prompt, tool definitions, and the per-message/per-block
+// overhead constants — through the shared calculateHistoryTokens walk; the
+// ONLY divergence from the slow path is per-token precision:
+// EstimateTokenCountFast falls back to the ~3.5 chars/token heuristic while
+// the BPE vocabulary is still loading in the background. Acceptable for the
+// pre-discovery frame the async token-count traffic replaces (update.go
+// recomputes with CalculateHistoryTokens); do not use this for any
+// accounting that persists or gates.
 func CalculateHistoryTokensFast(history []client.ChatMessage, systemPrompt string, tools []client.ToolDefinition) int {
-	total := EstimateTokenCountFast(systemPrompt) + 10 // System prompt + overhead
-	for _, t := range tools {
-		total += EstimateTokenCountFast(t.Function.Name) + EstimateTokenCountFast(t.Function.Description)
-		total += len(t.Function.Parameters) / 4
-	}
-	if len(tools) > 0 {
-		total += 10
-	}
-	for _, msg := range history {
-		total += EstimateTokenCountFast(msg.Content.String()) + EstimateTokenCountFast(msg.ReasoningContent) + 4
-	}
-	return total
+	return calculateHistoryTokens(history, systemPrompt, tools, EstimateTokenCountFast)
 }
 
 // EstimateToolDefinitionTokens estimates tokens used by tool definitions.
 func EstimateToolDefinitionTokens(tools []client.ToolDefinition) int {
+	return estimateToolDefinitionTokensWith(tools, EstimateTokenCount)
+}
+
+// tokenEstimator is the per-string estimator the shared token walks are
+// parameterized by: the exact cl100k_base BPE count (the slow path) or the
+// fast heuristic used while the BPE vocabulary is still loading.
+type tokenEstimator func(string) int
+
+// estimateMessageTokensWith walks one message's token-bearing fields —
+// Content, ReasoningContent, and every tool call's name and arguments —
+// counting each string with est and adding the per-message overhead for
+// roles and delimiters (approx 4 tokens). It is the single structural
+// definition the slow (EstimateMessageTokens) and fast first-paint walks
+// share, so the two can only ever disagree on per-token precision, never on
+// which fields count.
+func estimateMessageTokensWith(msg client.ChatMessage, est tokenEstimator) int {
+	tokens := est(msg.Content.String()) + est(msg.ReasoningContent)
+	for _, tc := range msg.ToolCalls {
+		tokens += est(tc.Function.Name) + est(tc.Function.Arguments)
+	}
+	return tokens + 4
+}
+
+// estimateToolDefinitionTokensWith estimates tokens used by tool
+// definitions, counting name and description with est and the JSON
+// parameters as raw bytes/4, plus the base overhead for the tools block
+// (none when there are no tools).
+func estimateToolDefinitionTokensWith(tools []client.ToolDefinition, est tokenEstimator) int {
 	if len(tools) == 0 {
 		return 0
 	}
-	// Simplified: estimate based on JSON representation overhead
 	total := 0
 	for _, t := range tools {
-		total += EstimateTokenCount(t.Function.Name) + EstimateTokenCount(t.Function.Description)
-		// Parameters are more complex, but we can estimate them too
+		total += est(t.Function.Name) + est(t.Function.Description)
 		total += len(t.Function.Parameters) / 4
 	}
 	return total + 10 // Base overhead for tools block
 }
 
+// calculateHistoryTokens is the shared history walk both public counters are
+// one-line parameterizations of: system prompt + overhead, the tool
+// definitions, and every message walked by estimateMessageTokensWith — the
+// same fields for every estimator, so CalculateHistoryTokens and
+// CalculateHistoryTokensFast agree structurally by construction.
+func calculateHistoryTokens(history []client.ChatMessage, systemPrompt string, tools []client.ToolDefinition, est tokenEstimator) int {
+	total := est(systemPrompt) + 10 // System prompt + overhead
+	total += estimateToolDefinitionTokensWith(tools, est)
+	for _, msg := range history {
+		total += estimateMessageTokensWith(msg, est)
+	}
+	return total
+}
+
 // EstimateMessageTokens estimates tokens for a full chat message including tool calls and role overhead.
 func EstimateMessageTokens(msg client.ChatMessage) int {
-	tokens := EstimateTokenCount(msg.Content.String()) + EstimateTokenCount(msg.ReasoningContent)
-	for _, tc := range msg.ToolCalls {
-		tokens += EstimateTokenCount(tc.Function.Name) + EstimateTokenCount(tc.Function.Arguments)
-	}
-	// Per-message overhead for roles and delimiters (approx 4 tokens)
-	return tokens + 4
+	return estimateMessageTokensWith(msg, EstimateTokenCount)
 }
 
 // EstimateEventTokens estimates tokens for a content event.
@@ -96,11 +131,5 @@ func EstimateEventTokens(event ContentEvent) int {
 
 // CalculateHistoryTokens calculates the total token count from history, system prompt, and tools.
 func CalculateHistoryTokens(history []client.ChatMessage, systemPrompt string, tools []client.ToolDefinition) int {
-	total := EstimateTokenCount(systemPrompt) + 10 // System prompt + overhead
-	total += EstimateToolDefinitionTokens(tools)
-
-	for _, msg := range history {
-		total += EstimateMessageTokens(msg)
-	}
-	return total
+	return calculateHistoryTokens(history, systemPrompt, tools, EstimateTokenCount)
 }
