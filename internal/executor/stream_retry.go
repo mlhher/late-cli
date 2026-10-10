@@ -36,18 +36,45 @@ const (
 	// deliberately much smaller than the infrastructure budget
 	// (DefaultMaxStreamRetries). Not exposed as a CLI flag.
 	DefaultMaxBadBodyRetries = 3
+	// DefaultMaxThrottleRetries is the ceiling for the dedicated HTTP 429
+	// throttle tier. Throttle waits are pacing, not failures — the ceiling
+	// only bounds a pathological infinite-429 provider; the run budget
+	// (e.g. the 24h subagent budget) is the real bound. A sustained
+	// account/model concurrency limit (e.g. Tencent's "model Concurrency
+	// limit 1200") 429s every spawn at the first request until capacity
+	// frees up, which exhausts the small infrastructure budget
+	// (DefaultMaxStreamRetries) long before the limit lifts and kills the
+	// turn; the throttle tier keeps pacing instead. Not exposed as a CLI
+	// flag; RunLoop additionally zeroes it when the global stream-retry
+	// budget is disabled, so a global disable silences every tier.
+	DefaultMaxThrottleRetries = 200
 	// streamRetryBaseDelay is the backoff for the first retry.
 	streamRetryBaseDelay = 500 * time.Millisecond
 	// streamRetryMaxDelay caps a single backoff interval.
 	streamRetryMaxDelay = 30 * time.Second
 )
 
+// Throttle-tier backoff knobs. Deliberately vars (not consts) solely so
+// tests can shrink the production curve: a dozen throttle waits at the
+// production scale (2s base, 2min cap) would make the RunLoop integration
+// tests take minutes. Production code must never reassign them.
+var (
+	// streamThrottleBaseDelay is the throttle-tier backoff for the first
+	// retry. A throttle wait is pacing, not failure recovery, so it starts
+	// well above the infra base: 2s.
+	streamThrottleBaseDelay = 2 * time.Second
+	// streamThrottleMaxDelay caps a single throttle backoff interval — well
+	// above the infra cap, because sustained 429 pacing needs longer waits.
+	streamThrottleMaxDelay = 120 * time.Second
+)
+
 // streamRetryClass buckets a failed stream attempt into a retry tier:
 // retryClassNone fails fast, retryClassInfra draws from the infrastructure
-// budget (transport/5xx/429/408), and retryClassBadBody draws from the
-// separate, much smaller bad-body budget (HTTP 400 body-parse rejections,
-// frequently transient on strict OpenAI-compatible gateways such as
-// z.ai/GLM).
+// budget (transport/5xx/408), retryClassThrottle paces HTTP 429s on their
+// own much larger ceiling without consuming either failure budget, and
+// retryClassBadBody draws from the separate, much smaller bad-body budget
+// (HTTP 400 body-parse rejections, frequently transient on strict
+// OpenAI-compatible gateways such as z.ai/GLM).
 type streamRetryClass int
 
 const (
@@ -56,8 +83,14 @@ const (
 	retryClassNone streamRetryClass = iota
 	// retryClassInfra covers infrastructure-style failures: network-level
 	// errors (timeouts, refused/reset connections, mid-body disconnects) and
-	// transient server responses (408/429/5xx).
+	// transient server responses (408/5xx).
 	retryClassInfra
+	// retryClassThrottle covers HTTP 429 responses: a dedicated pacing tier
+	// that does NOT consume the infra or bad-body failure budgets. A
+	// sustained account/model concurrency limit 429s every attempt until
+	// capacity frees up; drawing those waits from the small infra budget
+	// kills the turn long before the limit lifts.
+	retryClassThrottle
 	// retryClassBadBody covers HTTP 400 body-parse rejections, which strict
 	// OpenAI-compatible gateways often emit transiently.
 	retryClassBadBody
@@ -81,6 +114,27 @@ func streamRetryDelay(attempt int) time.Duration {
 	backoff := streamRetryBaseDelay * (1 << (attempt - 1))
 	if backoff > streamRetryMaxDelay || backoff <= 0 { // <=0 guards shift overflow
 		backoff = streamRetryMaxDelay
+	}
+	return rand.N(backoff)
+}
+
+// streamThrottleDelay returns the exponentially growing, jittered wait before
+// throttle retry attempt `attempt` (1-based): full jitter over
+// [0, min(streamThrottleMaxDelay, streamThrottleBaseDelay*2^(attempt-1))].
+// It mirrors streamRetryDelay at a longer base (2s) and cap (2min): the first
+// throttle wait is ~0-2s and the doubling saturates the 120s cap at attempt 7
+// (2s * 2^6 = 128s > 120s), so every later attempt draws from [0, 2min]. The
+// knobs are vars solely for test injection; see their declaration above.
+func streamThrottleDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	if attempt > maxStreamRetryAttempt {
+		attempt = maxStreamRetryAttempt
+	}
+	backoff := streamThrottleBaseDelay * (1 << (attempt - 1))
+	if backoff > streamThrottleMaxDelay || backoff <= 0 { // <=0 guards shift overflow
+		backoff = streamThrottleMaxDelay
 	}
 	return rand.N(backoff)
 }
@@ -109,13 +163,32 @@ func effectiveRetryDelay(local time.Duration, retryAfter time.Duration) time.Dur
 	return retryAfter
 }
 
+// retryAfterFrom extracts the server-requested Retry-After delay from a
+// *client.StatusError anywhere in the error chain — every retry tier can
+// carry one (408/5xx infra, 400 bad-body, 429 throttle) — and 0 when the
+// error carries no StatusError (the header parse itself already yields 0 for
+// absent or invalid values).
+func retryAfterFrom(err error) time.Duration {
+	var se *client.StatusError
+	if errors.As(err, &se) {
+		return se.RetryAfter
+	}
+	return 0
+}
+
 // classifyStreamError buckets a failed LLM stream attempt into a retry tier.
 // retryClassInfra covers infrastructure-style failures that draw from the
 // main retry budget: network-level errors (timeouts, refused/reset
 // connections, mid-body disconnects), mid-stream transport failures surfaced
 // as *client.StreamInterruptedError (HTTP/2 RST_STREAM, GOAWAY, connection
 // resets, truncated bodies — the request was accepted with 200 and the body
-// then died), and transient server responses (408/429/5xx).
+// then died), and transient server responses (408/5xx).
+// retryClassThrottle isolates HTTP 429 responses into their own pacing tier:
+// a sustained account/model concurrency limit (e.g. Tencent's "model
+// Concurrency limit 1200") 429s every attempt until capacity frees up, so
+// throttle waits must not consume the small infra failure budget — they pace
+// on the much larger throttle ceiling instead. The 429 branch is checked
+// BEFORE the 408/5xx infra branch for exactly that reason.
 // A *url.Error is infra-tier UNLESS its underlying cause is permanent —
 // TLS certificate/trust failures, non-TLS bytes on a TLS connection, or an
 // unsupported URL scheme — in which case retrying cannot help and it maps
@@ -170,7 +243,12 @@ func classifyStreamError(err error) streamRetryClass {
 		if se.StatusCode == 400 {
 			return retryClassBadBody
 		}
-		if se.StatusCode == 408 || se.StatusCode == 429 || se.StatusCode >= 500 {
+		// 429 before the 408/5xx infra branch: a throttle response paces on
+		// its own tier and must never consume the infra failure budget.
+		if se.StatusCode == 429 {
+			return retryClassThrottle
+		}
+		if se.StatusCode == 408 || se.StatusCode >= 500 {
 			return retryClassInfra
 		}
 		return retryClassNone
@@ -208,7 +286,9 @@ func isPermanentNetworkError(ue *url.Error) bool {
 
 // isRetryableStreamError reports whether a failed LLM stream attempt should
 // be automatically retried from the infrastructure budget. See
-// classifyStreamError for the tiering.
+// classifyStreamError for the tiering; HTTP 429s are retried too, but from
+// the dedicated throttle tier (pacing, not failures), so they are not
+// "infra-retryable".
 func isRetryableStreamError(err error) bool {
 	return classifyStreamError(err) == retryClassInfra
 }
@@ -236,4 +316,19 @@ func maxBadBodyRetriesFromContext(ctx context.Context) int {
 		return v
 	}
 	return DefaultMaxBadBodyRetries
+}
+
+// maxThrottleRetriesFromContext resolves the throttle-tier ceiling from ctx,
+// falling back to DefaultMaxThrottleRetries. Negative values mean "disabled"
+// (the first 429 fails the turn). RunLoop additionally zeroes the ceiling
+// whenever the global stream-retry budget is disabled, so a global disable
+// silences every tier.
+func maxThrottleRetriesFromContext(ctx context.Context) int {
+	if v, ok := ctx.Value(common.MaxThrottleRetriesKey).(int); ok {
+		if v < 0 {
+			return 0
+		}
+		return v
+	}
+	return DefaultMaxThrottleRetries
 }

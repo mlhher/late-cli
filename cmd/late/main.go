@@ -104,6 +104,12 @@ func main() {
 		}
 	}
 	maxStreamRetries := flag.Int("max-stream-retries", maxStreamRetriesDefault, "Retries for LLM stream errors with backoff; 0 disables. Env: LATE_MAX_STREAM_RETRIES")
+	// maxConcurrentLLM backs the process-wide LLM concurrency limiter in
+	// internal/client: the root agent and every subagent share one bound, so
+	// parallel agents queue instead of stampeding the provider's
+	// account-level concurrency limit (429s).
+	maxConcurrentLLM := flag.Int("max-concurrent-llm-requests", 6, "Process-wide cap on concurrent in-flight LLM requests across all agents and subagents (0 = unlimited)")
+
 	saveSubagentHistoriesReq := flag.Bool("save-subagent-histories", false, "Persist subagent histories to disk (overrides session and config).")
 	enableSqzReq := flag.Bool("enable-sqz", false, "Compress bash tool output with the external 'sqz' binary if available.")
 	appendSystemPromptReq := flag.String("append-system-prompt", "", "Append this text to the final system prompt.")
@@ -124,6 +130,12 @@ func main() {
 		writeHelp(os.Stderr, flag.CommandLine)
 	}
 	flag.Parse()
+
+	// Activate the process-wide LLM concurrency limiter before anything else
+	// runs: every client created below (main agent, subagents, model
+	// switcher) shares this one bound, so it must be configured before the
+	// first request can be issued.
+	client.SetLLMConcurrency(*maxConcurrentLLM)
 
 	tool.SetSqzEnabled(*enableSqzReq)
 
