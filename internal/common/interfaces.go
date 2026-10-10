@@ -135,6 +135,7 @@ const (
 	OrchestratorIDKey    contextKey = "orchestrator_id"
 	SkipConfirmationKey  contextKey = "skip_confirmation"
 	ToolApprovalKey      contextKey = "tool_approval"
+	ForceRevaluateKey    contextKey = "force_revaluate"
 	MaxStreamRetriesKey  contextKey = "max_stream_retries"
 	MaxBadBodyRetriesKey contextKey = "max_bad_body_retries"
 )

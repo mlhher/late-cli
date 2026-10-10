@@ -113,6 +113,13 @@ func newASTAnalyzer(platform ast.Platform, cwd string, allowed map[string]map[st
 func (a *astAnalyzer) Analyze(command string) CommandAnalysis {
 	ir, err := a.parser.Parse(command)
 	if err != nil {
+		// Fail closed on any parse error — and keep hard blocks hard: scan
+		// the raw command for the policy's hard-block signatures (cd,
+		// unsafe output redirects) so unparseable input cannot slip past
+		// them (e.g. into the force-revaluate OTP flow).
+		if blockErr := parseErrorHardBlock(command); blockErr != nil {
+			return CommandAnalysis{IsBlocked: true, NeedsConfirmation: true, BlockReason: blockErr}
+		}
 		// Fail closed on any parse error.
 		return CommandAnalysis{NeedsConfirmation: true}
 	}

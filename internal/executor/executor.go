@@ -44,7 +44,12 @@ func (a *StreamAccumulator) Append(res common.StreamResult) {
 
 	for _, delta := range res.ToolCalls {
 		index := delta.Index
-		if index < len(a.ToolCalls) {
+		// Merge into a slot only when the slot exists AND belongs to this
+		// index: a malformed negative index would otherwise panic (index out
+		// of range), and an out-of-order index would splice its arguments
+		// into another tool call's slot. Deltas that match no slot are
+		// appended as new entries instead, preserving the data.
+		if index >= 0 && index < len(a.ToolCalls) && a.ToolCalls[index].Index == index {
 			a.ToolCalls[index].Function.Arguments += delta.Function.Arguments
 			if delta.Function.Name != "" {
 				a.ToolCalls[index].Function.Name = delta.Function.Name
