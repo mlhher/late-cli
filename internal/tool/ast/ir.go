@@ -66,6 +66,16 @@ const (
 	// These require user confirmation but are distinct from dynamic-evaluation
 	// risks (ReasonInvokeExpr).
 	ReasonDestructive ReasonCode = "destructive"
+
+	// ReasonReadOnly indicates that every invocation in the statement is a
+	// recognized read-only operation (issue #1, suggestion #2: read/write
+	// split by subcommand — e.g. gh pr view, gh api without write verbs,
+	// git log/diff/status). The policy engine auto-approves these without
+	// confirmation or OTP re-evaluation because they cannot mutate state.
+	// Adapters emit the flag only when ALL commands in the statement classify
+	// as read-only; unknown subcommands, mutating flags, dynamic content and
+	// pipes into write-capable programs keep the normal gating.
+	ReasonReadOnly ReasonCode = "read_only"
 )
 
 // ParsedIR is the compact, JSON-safe intermediate representation emitted by

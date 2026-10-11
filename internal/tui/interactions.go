@@ -92,6 +92,14 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 				// Mark approved context if unsupervised or explicitly whitelisted
 				if skip, ok := ctx.Value(common.SkipConfirmationKey).(bool); ok && skip {
 					if !(runtime.GOOS == "windows" && tc.Function.Name == "bash") {
+						// -force-revaluate-dangerous-commands: gate dangerous bash
+						// commands behind a single-use OTP instead of auto-approving.
+						if gateCtx, gateTC, blockMsg, handled := handleForceRevaluate(ctx, reg, tc); handled {
+							if blockMsg != "" {
+								return blockMsg, nil
+							}
+							return next(gateCtx, gateTC)
+						}
 						ctx = context.WithValue(ctx, common.ToolApprovalKey, true)
 					}
 				} else if reg != nil {

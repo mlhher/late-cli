@@ -31,6 +31,11 @@ func (u *UnixParser) Parse(command string) (ParsedIR, error) {
 	seenRisk := map[ReasonCode]bool{}
 	seenCmdFlags := map[string]map[string]bool{} // command → flag → seen
 
+	// readOnlyAll tracks whether every invocation seen so far is a recognized
+	// read-only operation (issue #1, suggestion #2: read/write split). It is
+	// cleared by any mutating, unknown, or dynamically-argumented command.
+	readOnlyAll := true
+
 	// Multiple top-level statements imply ';' as a separator.
 	if len(f.Stmts) > 1 {
 		addStringUnique(&ir.Operators, seenOps, ";")
@@ -66,6 +71,13 @@ func (u *UnixParser) Parse(command string) (ParsedIR, error) {
 					addStringUnique(&ir.Commands, seenCmds, cmdKey)
 					if name == "cd" {
 						addRiskFlag(&ir, seenRisk, ReasonCd)
+					}
+					// Issue #1, suggestion #2: read/write split by subcommand.
+					// A statement qualifies as read-only only when EVERY
+					// invocation in it does; any mutating, unknown, or
+					// dynamic-argument command clears the marking.
+					if !unixInvocationReadOnly(name, n.Args[1:]) {
+						readOnlyAll = false
 					}
 					// Collect flags for policy engine allow-list matching.
 					if _, ok := seenCmdFlags[cmdKey]; !ok {
@@ -141,7 +153,32 @@ func (u *UnixParser) Parse(command string) (ParsedIR, error) {
 		return true
 	})
 
+	// Issue #1, suggestion #2: when every invocation in the statement is a
+	// recognized read-only operation, tag the IR so the policy engine can
+	// auto-approve without confirmation or OTP re-evaluation. Hard blocks and
+	// dynamic-content signals recorded above (redirect, subshell, expansion,
+	// …) still take precedence in Decide.
+	if readOnlyAll && len(ir.Commands) > 0 {
+		addRiskFlag(&ir, seenRisk, ReasonReadOnly)
+	}
+
 	return ir, nil
+}
+
+// unixInvocationReadOnly statically resolves the argument words of a single
+// invocation and reports whether the operation is a recognized read-only one
+// (issue #1, suggestion #2). Any word that cannot be resolved statically
+// (variable, substitution, tilde, …) keeps the current confirmation gate.
+func unixInvocationReadOnly(name string, words []*syntax.Word) bool {
+	args := make([]string, 0, len(words))
+	for _, w := range words {
+		a := unixResolveWord(w)
+		if a == "" {
+			return false
+		}
+		args = append(args, a)
+	}
+	return unixCommandIsReadOnly(name, args)
 }
 
 // unixResolveWord attempts to statically resolve a syntax.Word to a plain

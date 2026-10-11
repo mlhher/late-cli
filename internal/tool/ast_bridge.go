@@ -1,6 +1,8 @@
 package tool
 
 import (
+	"strings"
+
 	"late/internal/tool/ast"
 )
 
@@ -77,6 +79,18 @@ type astAnalyzer struct {
 	parser ast.Parser
 	policy *ast.PolicyEngine
 	cwd    string
+	// exactAllowed holds the full allow-list store keys (exactCommandKeyPrefix
+	// + cwd + NUL + command string) that carry an exact-string approval in the
+	// persistent allow-list store (issue #1). Such approvals are written by
+	// SaveExactAllowedCommand after a gated command executed with a valid OTP,
+	// and they bypass the confirmation gate for that exact command IN THE SAME
+	// EXECUTION CWD in every late instance — relative paths in the command
+	// resolve against the cwd, so the same argv from a different directory is
+	// a different command — while never bypassing hard blocks (cd, unsafe
+	// redirects, parse-error hard refusals). Nil/empty disables the bypass.
+	// Lookups go through ExactCommandKey so the cwd is canonicalized the same
+	// way at save and lookup time.
+	exactAllowed map[string]bool
 }
 
 func newASTAnalyzer(platform ast.Platform, cwd string, allowed map[string]map[string]bool) *astAnalyzer {
@@ -103,20 +117,59 @@ func newASTAnalyzer(platform ast.Platform, cwd string, allowed map[string]map[st
 		}
 	}
 
+	// Exact-string approvals (issue #1) ride in the same merged allow-list
+	// under the reserved exactCommandKeyPrefix key namespace (cwd + command
+	// pairs); extract them into a dedicated lookup so Analyze can grant the
+	// bypass for an exact (cwd, command string) pair without touching
+	// per-command flag semantics.
+	exactAllowed := make(map[string]bool)
+	for key := range allowed {
+		if strings.HasPrefix(key, exactCommandKeyPrefix) {
+			exactAllowed[key] = true
+		}
+	}
+
 	return &astAnalyzer{
-		parser: ast.NewParser(platform, cwd),
-		policy: &ast.PolicyEngine{AllowedCommands: allowed},
-		cwd:    cwd,
+		parser:       ast.NewParser(platform, cwd),
+		policy:       &ast.PolicyEngine{AllowedCommands: allowed},
+		cwd:          cwd,
+		exactAllowed: exactAllowed,
 	}
 }
 
 func (a *astAnalyzer) Analyze(command string) CommandAnalysis {
 	ir, err := a.parser.Parse(command)
 	if err != nil {
+		// Fail closed on any parse error — and keep hard blocks hard: scan
+		// the raw command for the policy's hard-block signatures (cd,
+		// unsafe output redirects) so unparseable input cannot slip past
+		// them (e.g. into the force-revaluate OTP flow).
+		if blockErr := parseErrorHardBlock(command); blockErr != nil {
+			return CommandAnalysis{IsBlocked: true, NeedsConfirmation: true, BlockReason: blockErr}
+		}
+		// Issue #1: an exact-string approval also covers commands that do
+		// not parse — the same (cwd, command) pair already executed once
+		// with a valid OTP, and hard-block signatures were checked above.
+		// Everything else about the string is known, so the gate must not
+		// re-prompt.
+		if a.exactAllowed[ExactCommandKey(a.cwd, command)] {
+			return CommandAnalysis{NeedsConfirmation: false}
+		}
 		// Fail closed on any parse error.
 		return CommandAnalysis{NeedsConfirmation: true}
 	}
 	d := a.policy.Decide(ir)
+
+	// Issue #1: an exact-string approval clears the soft confirmation gate
+	// for this exact command string executed in the analyzer's cwd (never a
+	// hard block). This is what makes "approved once with an OTP → never
+	// gated again" hold in every late instance: the approval lives in the
+	// persistent allow-list store that every process reloads here, and both
+	// the approval and this lookup resolve the cwd through ExactCommandKey,
+	// so a re-run from a different directory stays gated.
+	if d.NeedsConfirmation && !d.IsBlocked && a.exactAllowed[ExactCommandKey(a.cwd, command)] {
+		d.NeedsConfirmation = false
+	}
 
 	// Unsupervised mode: auto-approve mkdir/New-Item (new-path operations)
 	// without any restrictions. The operation is allowed regardless of

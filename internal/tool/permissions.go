@@ -186,11 +186,71 @@ const (
 	sessionBaseMarker        = "__base__"
 )
 
+// Exact-string approval entries (issue #1): once a command has been executed
+// with a valid OTP, that exact command string must never be gated again in
+// ANY late instance, so the approval is persisted into the allow-list store
+// every process reloads.
+//
+// Exact entries share the allowed_commands.json file and entry shape with
+// flag-scoped approvals, but they live under a reserved key namespace and
+// carry a reserved flag marker so they can never widen (or be widened by)
+// the per-command/per-flag allowances produced by SaveAllowedCommand:
+//
+//   - key   = exactCommandKeyPrefix + <cwd> + exactCommandKeySeparator +
+//     <command string>. Parsed command keys ("rm", "git log") can never
+//     start with ":", so the namespaces are disjoint in both directions.
+//     The cwd component scopes the approval to the directory the command
+//     actually executes in (the shell tool's resolved cmd.Dir): relative
+//     paths in the command resolve against it, so "rm -rf ./bin" run in
+//     /tmp is a DIFFERENT approval than the same string run in the home
+//     directory. The separator is NUL because a directory path can never
+//     contain NUL on any supported platform, and encoding/json escapes NUL
+//     in object keys as \u0000, so the JSON store stays valid; split keys
+//     with splitExactCommandKey (first-NUL cut after the prefix). Keys
+//     written before cwd scoping (no separator) simply no longer match any
+//     lookup and re-gate.
+//   - flags = [exactCommandFlagMarker]. allCommandsAllowlisted only ever
+//     looks up parsed keys, so the marker is never consulted as a flag.
+//   - cwd   = the canonical cwd from the key, mirrored into the entry's
+//     "cwd" field so humans reading allowed_commands.json see what the
+//     approval is scoped to.
+//
+// Normalization: the command string is trimmed of leading/trailing whitespace
+// before storage AND at lookup time (JSON object keys must not carry invisible
+// boundary whitespace). Interior whitespace stays significant — "rm  -rf x"
+// and "rm -rf x" remain different commands, matching the byte-for-byte rule
+// of the pending-OTP registry. The cwd is canonicalized by ExactCommandKey
+// (absolute, symlink-resolved, cleaned) so equivalent spellings of the same
+// directory share one entry. Path SPELLING inside the command stays
+// significant by design: "rm -rf ./bin" and "rm -rf /abs/bin" are separate
+// entries even in the same cwd — the raw argv is what was approved.
+const (
+	exactCommandKeyPrefix  = "::exact::"
+	exactCommandFlagMarker = "__exact__"
+	// exactCommandKeySeparator joins the cwd and command components of an
+	// exact-entry key. NUL cannot occur in a directory path, so the split
+	// is unambiguous.
+	exactCommandKeySeparator = "\x00"
+)
+
 type persistedCommandEntry struct {
 	Flags     []string `json:"flags"`
 	SavedAt   string   `json:"saved_at,omitempty"`
 	ExpiresAt string   `json:"expires_at,omitempty"`
 	Version   string   `json:"version,omitempty"`
+	// Cwd records the canonical working directory an EXACT-string approval
+	// is scoped to (parsed from the entry key on write). It is informational
+	// — the key is authoritative — and exists so humans reading
+	// allowed_commands.json can see which directory the approval covers.
+	// Optional and omitted for flag-scoped entries, so pre-existing files
+	// stay byte-compatible.
+	Cwd string `json:"cwd,omitempty"`
+	// TimesApproved counts how many times this entry's command string was
+	// approved and (re)persisted. Only exact-string approvals increment it
+	// today; the force-revaluate gate message reports it so the agent can
+	// see how often the command was approved before. Optional and omitted
+	// when zero, so pre-existing files stay byte-compatible.
+	TimesApproved int `json:"times_approved,omitempty"`
 }
 
 type persistedCommandsFile struct {
@@ -453,6 +513,61 @@ func LoadAllAllowedCommands() (map[string]map[string]bool, error) {
 	return merged, nil
 }
 
+// writeAllowedCommandsFile rebuilds and persists the allow-list file at path
+// from the merged allowed flag-map. Touched entries get a fresh TTL and
+// metadata (an explicit approval always refreshes expiry); every other entry
+// preserves its stored metadata (saved_at, expires_at, version and
+// times_approved) so unrelated approvals are not refreshed. countBumps (may
+// be nil) increments TimesApproved for the given keys — used by exact-string
+// approvals to record how often a command has been approved. This is the
+// single write path for both flag-scoped approvals (SaveAllowedCommand) and
+// exact-string approvals (SaveExactAllowedCommand).
+func writeAllowedCommandsFile(path string, allowed map[string]map[string]bool, touched map[string]bool, existingFile persistedCommandsFile, expiresAt time.Time, countBumps map[string]int) error {
+	file := persistedCommandsFile{
+		Version: common.Version,
+		Entries: make(map[string]persistedCommandEntry),
+	}
+	for cmd, flagMap := range allowed {
+		var flagList []string
+		for flag := range flagMap {
+			flagList = append(flagList, flag)
+		}
+		entry := persistedCommandEntry{
+			Flags:         flagList,
+			SavedAt:       nowFunc().UTC().Format(time.RFC3339),
+			ExpiresAt:     expiresAt.UTC().Format(time.RFC3339),
+			Version:       common.Version,
+			TimesApproved: existingFile.Entries[cmd].TimesApproved,
+		}
+		// Exact entries record their scoping cwd visibly: the key is
+		// authoritative, the field is for humans reading the store.
+		if cwd, _, isExact := splitExactCommandKey(cmd); isExact {
+			entry.Cwd = cwd
+		}
+		if bump := countBumps[cmd]; bump != 0 {
+			entry.TimesApproved += bump
+		}
+		if existingEntry, ok := existingFile.Entries[cmd]; ok && !touched[cmd] {
+			entry.SavedAt = existingEntry.SavedAt
+			entry.ExpiresAt = existingEntry.ExpiresAt
+			entry.Version = existingEntry.Version
+		}
+		file.Entries[cmd] = entry
+	}
+
+	data, err := json.MarshalIndent(file, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, data, 0644)
+}
+
 // SaveAllowedCommand adds a command string to the specified allow-list (local or global).
 func SaveAllowedCommand(command string, global bool) error {
 	commands := ParseCommandsForAllowList(command)
@@ -485,44 +600,144 @@ func SaveAllowedCommand(command string, global bool) error {
 		}
 	}
 
-	file := persistedCommandsFile{
-		Version: common.Version,
-		Entries: make(map[string]persistedCommandEntry),
-	}
 	expiresAt := nowFunc().Add(projectApprovalTTL)
 	if global {
 		expiresAt = nowFunc().Add(globalApprovalTTL)
 	}
-	for cmd, flagMap := range allowed {
-		var flagList []string
-		for flag := range flagMap {
-			flagList = append(flagList, flag)
+	return writeAllowedCommandsFile(path, allowed, touched, existingFile, expiresAt, nil)
+}
+
+// canonicalExecCwd normalizes an execution cwd for the exact-allowlist key.
+// "" means the process working directory, relative paths resolve against it
+// (mirroring os/exec's handling of a relative cmd.Dir), and symlinks in the
+// nearest existing ancestor are resolved so /tmp and /private/tmp (macOS)
+// land on the same key as os.Getwd's result. Best-effort: when resolution
+// fails (e.g. a cwd that vanished mid-run), the cleaned absolute input is
+// used so keys remain stable within the process.
+func canonicalExecCwd(cwd string) string {
+	if strings.TrimSpace(cwd) == "" {
+		abs, err := filepath.Abs(".")
+		if err != nil {
+			return ""
 		}
-		entry := persistedCommandEntry{
-			Flags:     flagList,
-			SavedAt:   nowFunc().UTC().Format(time.RFC3339),
-			ExpiresAt: expiresAt.UTC().Format(time.RFC3339),
-			Version:   common.Version,
-		}
-		if existingEntry, ok := existingFile.Entries[cmd]; ok && !touched[cmd] {
-			entry.SavedAt = existingEntry.SavedAt
-			entry.ExpiresAt = existingEntry.ExpiresAt
-			entry.Version = existingEntry.Version
-		}
-		file.Entries[cmd] = entry
+		cwd = abs
+	} else if abs, err := filepath.Abs(cwd); err == nil {
+		cwd = abs
+	}
+	if canonical, err := canonicalizePath(cwd); err == nil {
+		return canonical
+	}
+	return filepath.Clean(cwd)
+}
+
+// ExactCommandKey returns the allow-list store key under which the exact
+// command string (trimmed of leading/trailing whitespace) is persisted by
+// SaveExactAllowedCommand, scoped to the directory the command executes in:
+// the key is prefix + canonical cwd + NUL + command. The cwd scoping exists
+// because relative paths in the command resolve against it — the same argv
+// in a different cwd is a different command. The cwd is canonicalized so
+// equivalent spellings of the same directory (os.Getwd's symlink-resolved
+// result, a caller-supplied path through a symlink, a relative path, or ""
+// meaning the process working directory) all collapse to one entry.
+// Exposed so other packages can inspect or fixture the store without
+// duplicating the reserved-key format.
+func ExactCommandKey(cwd, command string) string {
+	return exactCommandKeyPrefix + canonicalExecCwd(cwd) + exactCommandKeySeparator + strings.TrimSpace(command)
+}
+
+// splitExactCommandKey splits a stored exact-entry key into its canonical
+// cwd and command components. The cwd can never contain the NUL separator,
+// so the first separator byte after the reserved prefix is the boundary.
+func splitExactCommandKey(key string) (cwd, command string, ok bool) {
+	rest, ok := strings.CutPrefix(key, exactCommandKeyPrefix)
+	if !ok {
+		return "", "", false
+	}
+	cwd, command, found := strings.Cut(rest, exactCommandKeySeparator)
+	if !found {
+		return "", "", false
+	}
+	return cwd, command, true
+}
+
+// SaveExactAllowedCommand persists an EXACT command-string approval (issue #1)
+// into the allow-list store. It is called when a gated command is re-run with
+// a valid OTP and executes: from then on the exact command string must be
+// auto-allowed by every future late instance, in any session, so the approval
+// is written to the persistent GLOBAL store (global=true) that every process
+// reloads on startup.
+//
+// The approval is scoped to cwd (the execution cwd as resolved by
+// ResolveShellExecCwd — explicit cwd param > worktree > process CWD): the
+// stored key pairs the canonical cwd with the trimmed command string, so the
+// same argv executed in a different directory gates again and needs its own
+// OTP approval. cwd may be "" (the process working directory); it is
+// canonicalized by ExactCommandKey.
+//
+// Storage format: see the exactCommandKeyPrefix/exactCommandFlagMarker
+// constants — the trimmed command string becomes a reserved-key entry with
+// the single "__exact__" flag marker (plus a human-readable "cwd" field),
+// which the AST analyzer turns into an exact-(cwd, string) bypass that never
+// touches flag-level allowances. Each save refreshes the TTL and increments
+// the entry's times_approved counter so the gate message can report how many
+// times the command was approved before.
+func SaveExactAllowedCommand(cwd, command string, global bool) error {
+	cmd := strings.TrimSpace(command)
+	if cmd == "" {
+		return nil
 	}
 
-	data, err := json.MarshalIndent(file, "", "  ")
+	path := getFilePath(localAllowedCommandsFile, commandsFileName, global)
+	existingFile, err := loadPersistedCommandsFile(path)
 	if err != nil {
 		return err
 	}
 
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	allowed, err := LoadAllowedCommands(global)
+	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0644)
+	key := ExactCommandKey(cwd, cmd)
+	if _, ok := allowed[key]; !ok {
+		allowed[key] = make(map[string]bool)
+	}
+	allowed[key][exactCommandFlagMarker] = true
+
+	expiresAt := nowFunc().Add(projectApprovalTTL)
+	if global {
+		expiresAt = nowFunc().Add(globalApprovalTTL)
+	}
+	touched := map[string]bool{key: true}
+	bumps := map[string]int{key: 1}
+	return writeAllowedCommandsFile(path, allowed, touched, existingFile, expiresAt, bumps)
+}
+
+// CountExactCommandApprovals returns how many times the exact command string
+// (trimmed of leading/trailing whitespace), executed in the given cwd, has
+// been approved and persisted via SaveExactAllowedCommand, summed across the
+// global and local stores. The cwd participates in the lookup exactly as it
+// does in the stored key, so counters are per (cwd, command). Entries that
+// have since expired or were invalidated by a version change still count:
+// they represent past approvals, even though they no longer grant an
+// allowance (the rebuild-on-write drops them only at the next save). A
+// non-zero count therefore means "gated again after previous approvals",
+// which is exactly what the force-revaluate block message reports.
+func CountExactCommandApprovals(cwd, command string) int {
+	cmd := strings.TrimSpace(command)
+	if cmd == "" {
+		return 0
+	}
+	key := ExactCommandKey(cwd, cmd)
+	total := 0
+	for _, global := range []bool{true, false} {
+		file, err := loadPersistedCommandsFile(getFilePath(localAllowedCommandsFile, commandsFileName, global))
+		if err != nil {
+			continue
+		}
+		total += file.Entries[key].TimesApproved
+	}
+	return total
 }
 
 // LoadAllowedTools loads the list of tools that are always allowed (local or global).

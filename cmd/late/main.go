@@ -42,6 +42,17 @@ import (
 // this boolean flag as taking an argument.
 const askForUserApprovalUsage = "Require explicit user approval before running potentially dangerous commands (default; overrides config.json permission-mode)."
 
+// forceRevaluateUsage is the -h description of
+// -force-revaluate-dangerous-commands.
+//
+// IMPORTANT: this string must contain no back-quoted word. flag.PrintDefaults
+// renders the first back-quoted word of a usage string as the flag's value
+// name, which would advertise the flag as taking an argument. The OTP code is
+// never passed on the CLI: late generates a random single-use code at runtime
+// and hands it to the agent in the tool-result block message; the agent
+// re-runs the command passing it in the bash tool's otp_code parameter.
+const forceRevaluateUsage = "Unsupervised execution, but the first attempt to run a potentially dangerous command is blocked; late issues the agent a random single-use OTP code, bound to that exact command, which it must pass in the bash tool's otp_code parameter to re-run."
+
 // pluginInlineTool adapts a plugin.InlineTool (defined in internal/plugin/tools.go)
 // into a common.Tool so the CLI's session registry can dispatch invocations to
 // plugin-declared runners. It exists because upstream repurposed
@@ -110,6 +121,7 @@ func main() {
 	versionReq := flag.Bool("version", false, "Print the version and exit.")
 	unsupervisedReq := flag.Bool("i-promise-i-have-backups-and-will-not-file-issues", false, "UNSUPPORTED: run every tool without user confirmation.")
 	askForUserApprovalReq := flag.Bool("ask-for-user-approval", false, askForUserApprovalUsage)
+	forceRevaluateReq := flag.Bool("force-revaluate-dangerous-commands", false, forceRevaluateUsage)
 	enableImagesReq := flag.Bool("enable-images", false, "Force-enable image attachments even if the backend does not advertise vision support.")
 	continueReq := flag.Bool("continue", false, "Resume the most recently updated session, regardless of which project directory it was started in.")
 	continueProjectReq := flag.Bool("continue-project", false, "Resume the most recently updated session for the current project (git repo root of the working directory, or the working directory outside a repo); mutually exclusive with -continue.")
@@ -541,6 +553,27 @@ func main() {
 		}
 	}
 
+	// Tool-output archiving (default behavior, no config key): oversized
+	// tool outputs are written under the session's folder and the
+	// conversation carries only the compact reference form. One archive for
+	// the run — the root agent and every subagent share it. Rooted at the
+	// active session's folder so the archive dies with the session folder
+	// (RemoveSessionFolder); an in-memory session (no derived session ID)
+	// fails the validity check and simply gets no archive — everything
+	// stays inline.
+	toolArchiveDir, archiveDirErr := session.OutputArchiveDir(effectiveSessionID)
+	if archiveDirErr == nil {
+		arch, archErr := session.NewOutputArchive(toolArchiveDir)
+		if archErr != nil {
+			// Archiving is fail-open end to end: ExecuteToolCalls keeps
+			// results inline on any archive error, so a failed setup only
+			// disables the feature.
+			fmt.Fprintf(os.Stderr, "Warning: tool-output archiving disabled (%v)\n", archErr)
+		} else {
+			executor.SetToolResultArchiver(arch)
+		}
+	}
+
 	// Resolve theme: --theme flag > $LATE_THEME > config.json > bundled base.
 	themeID := *themeReq
 	if themeID == "" {
@@ -742,6 +775,13 @@ func main() {
 		switch permissionMode {
 		case appconfig.PermissionModeUnsupervised:
 			ctx = context.WithValue(ctx, common.SkipConfirmationKey, true)
+		}
+		if *forceRevaluateReq {
+			// Force-revaluate runs unsupervised, but the first attempt of
+			// every dangerous command is still gated behind a single-use OTP
+			// the agent must echo back (see internal/tool/otp.go).
+			ctx = context.WithValue(ctx, common.SkipConfirmationKey, true)
+			ctx = context.WithValue(ctx, common.ForceRevaluateKey, true)
 		}
 		ctx = context.WithValue(ctx, common.MaxStreamRetriesKey, *maxStreamRetries)
 		rootAgent.SetContext(ctx)

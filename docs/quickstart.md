@@ -161,6 +161,13 @@ When Late creates subagents, each appears in its own tab while it works and disa
 
 ---
 
+## Tool-Output Archiving
+
+Independent of any other context management (default behavior, no config): tool outputs over 1024 characters are archived verbatim under the session's folder (`<sessions>/<sessionID>/tool-outputs/<sha256[:16]>.txt`). What enters the conversation depends on size — the rule is hysteresis-free (fixed byte-length bands, no state): at or under 3072 characters the full text stays inline (the archive is only a durability backup, no marker is added); above 3072 it is replaced by a compact reference form — the first 2000 characters, a `…[output truncated: N chars total. Head above / tail below. Full output archived: <path> — read_file it to view everything]` marker carrying the total size, and the last 500 characters, so the end of the output (errors, summaries) is visible without a second read. The marker names the sanctioned retrieval tool (`read_file <path>`); `cat`/`grep` are gated, and `read_file` accepts the absolute archive path as-is. The reference is content-addressed and deterministic (identical output → identical bytes), it is written once and never rewritten, and on any archive error the full output stays inline.
+
+
+---
+
 ## Tool Approval
 
 Potentially destructive commands and file changes require approval unless you have already granted permission for that scope.

@@ -137,6 +137,7 @@ const (
 	ToolApprovalKey      contextKey = "tool_approval"
 	MaxStreamRetriesKey  contextKey = "max_stream_retries"
 	MaxBadBodyRetriesKey contextKey = "max_bad_body_retries"
+	ForceRevaluateKey    contextKey = "force_revaluate"
 )
 
 // MainAgentID is the orchestrator ID of the root/main agent.

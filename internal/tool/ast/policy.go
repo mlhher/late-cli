@@ -1,9 +1,15 @@
 package ast
 
 import (
-	"fmt"
+	"errors"
 	"strings"
 )
+
+// BlockReasonCD is the hard-block message returned for `cd` usage.
+const BlockReasonCD = "Do not use `cd` to change directories. Use the `cwd` parameter in the shell tool instead."
+
+// BlockReasonRedirect is the hard-block message returned for unsafe output redirection.
+const BlockReasonRedirect = "Output redirection (>) is blocked. Use `write_file` or `target_edit` to modify files."
 
 // tier2Commands is the set of commands that have mandatory subcommands.
 // The AST adapters should emit compound command keys (e.g. "git log", "go mod")
@@ -41,9 +47,10 @@ type PolicyEngine struct {
 //  5. Dynamic invocation (Invoke-Expression / iex) → NeedsConfirmation.
 //  6. Subshell / command substitution → NeedsConfirmation.
 //  7. Variable/parameter expansion → NeedsConfirmation.
-//  8. Destructive filesystem operation (Remove-Item, Copy-Item, etc.) → NeedsConfirmation.
-//  9. Shell operators (&&, ||, ;, |) with any non-allow-listed command → NeedsConfirmation.
-//  10. All commands in ir.Commands are allow-listed + no blocking signals
+//  8. Read-only statement (every invocation classified read-only) → auto-approve (issue #1, suggestion #2).
+//  9. Destructive filesystem operation (Remove-Item, Copy-Item, etc.) → NeedsConfirmation.
+//  10. Shell operators (&&, ||, ;, |) with any non-allow-listed command → NeedsConfirmation.
+//  11. All commands in ir.Commands are allow-listed + no blocking signals
 //     → auto-approve (NeedsConfirmation = false).
 func (p *PolicyEngine) Decide(ir ParsedIR) Decision {
 	d := Decision{ReasonCodes: ir.RiskFlags}
@@ -64,8 +71,7 @@ func (p *PolicyEngine) Decide(ir ParsedIR) Decision {
 	if hasRisk(ir, ReasonCd) {
 		d.IsBlocked = true
 		d.NeedsConfirmation = true
-		d.BlockReason = fmt.Errorf(
-			"Do not use `cd` to change directories. Use the `cwd` parameter in the shell tool instead.")
+		d.BlockReason = errors.New(BlockReasonCD)
 		return d
 	}
 
@@ -73,8 +79,7 @@ func (p *PolicyEngine) Decide(ir ParsedIR) Decision {
 	if hasRisk(ir, ReasonRedirect) {
 		d.IsBlocked = true
 		d.NeedsConfirmation = true
-		d.BlockReason = fmt.Errorf(
-			"Output redirection (>) is blocked. Use `write_file` or `target_edit` to modify files.")
+		d.BlockReason = errors.New(BlockReasonRedirect)
 		return d
 	}
 
@@ -112,6 +117,22 @@ func (p *PolicyEngine) Decide(ir ParsedIR) Decision {
 			d.NeedsConfirmation = true
 			return d
 		}
+	}
+
+	// Read-only operations (issue #1, suggestion #2; header rule 8): when the adapters
+	// classified EVERY invocation in the statement as read-only (gh/git
+	// read-only subcommands or plain text filters), the statement cannot
+	// mutate state: auto-approve without confirmation or OTP re-evaluation.
+	// This overrides only the operator and unknown-command gates — syntax
+	// errors, cd, unsafe redirects, deletion, subshells, dynamic invocation
+	// and expansions are all handled above and keep their existing gates, so
+	// e.g. `gh pr view $(cmd)` or `gh pr view && rm -rf` still gate. The
+	// bypass also yields to explicit allow-list entries: when a command HAS
+	// an entry whose stored flag set does not cover the flags actually used
+	// (strict flag matching, see allCommandsAllowlisted), the entry wins and
+	// the statement keeps the gate.
+	if hasRisk(ir, ReasonReadOnly) && !p.allowListContradicts(ir) {
+		return d
 	}
 
 	// 7. Allow-list check: if every command is explicitly allow-listed, approve.
@@ -163,4 +184,27 @@ func (p *PolicyEngine) allCommandsAllowlisted(ir ParsedIR) bool {
 		}
 	}
 	return true
+}
+
+// allowListContradicts reports whether any command in ir has an allow-list
+// entry whose stored flag set does NOT cover the flags actually used. Such a
+// stricter stored approval must keep gating (flag validation stays strict):
+// the read-only bypass (issue #1, suggestion #2) widens only commands with no
+// contradicting entry — it never supersedes an explicit user approval.
+func (p *PolicyEngine) allowListContradicts(ir ParsedIR) bool {
+	if len(p.AllowedCommands) == 0 {
+		return false
+	}
+	for _, cmd := range ir.Commands {
+		allowedFlags, ok := p.AllowedCommands[cmd]
+		if !ok {
+			continue // no entry: the read-only classification is free to apply
+		}
+		for _, flag := range ir.CommandArgs[cmd] {
+			if !allowedFlags[flag] {
+				return true
+			}
+		}
+	}
+	return false
 }
