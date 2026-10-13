@@ -18,7 +18,7 @@ import (
 func TestSupportsVisionOverride(t *testing.T) {
 	// Case 1: Config without EnableImages, and supportsVision is false
 	c1 := NewClient(Config{
-		BaseURL:      "http://localhost:8080",
+		BaseURL:      "http://localhost:9931",
 		EnableImages: false,
 	})
 	if c1.SupportsVision() {
@@ -27,7 +27,7 @@ func TestSupportsVisionOverride(t *testing.T) {
 
 	// Case 2: Config with EnableImages = true
 	c2 := NewClient(Config{
-		BaseURL:      "http://localhost:8080",
+		BaseURL:      "http://localhost:9931",
 		EnableImages: true,
 	})
 	if !c2.SupportsVision() {
@@ -36,7 +36,7 @@ func TestSupportsVisionOverride(t *testing.T) {
 
 	// Case 3: Config without EnableImages, but supportsVision is true
 	c3 := NewClient(Config{
-		BaseURL: "http://localhost:8080",
+		BaseURL: "http://localhost:9931",
 	})
 	c3.supportsVision = true
 	if !c3.SupportsVision() {
@@ -110,10 +110,10 @@ func TestClient_Headers(t *testing.T) {
 	t.Run("custom UserAgent override", func(t *testing.T) {
 		customUA := "custom-agent/1.0"
 		c := NewClient(Config{
-			BaseURL:   "http://localhost:8080",
+			BaseURL:   "http://localhost:9931",
 			UserAgent: customUA,
 		})
-		req, _ := http.NewRequestWithContext(context.Background(), "POST", "http://localhost:8080", nil)
+		req, _ := http.NewRequestWithContext(context.Background(), "POST", "http://localhost:9931", nil)
 		c.applyHeaders(req)
 
 		if got := req.Header.Get("User-Agent"); got != customUA {
@@ -586,8 +586,10 @@ func TestChatCompletionStream_MidBodyDisconnectErrorType(t *testing.T) {
 		// io.ErrUnexpectedEOF (verified against this Go version; an RST-style
 		// close would surface *net.OpError instead and is deliberately
 		// avoided). The trailing empty line of a normal SSE frame is
-		// deliberately omitted: the loop treats an empty data line as a clean
-		// end-of-stream and would miss the transport error entirely.
+		// deliberately omitted so the unterminated line is the last thing the
+		// scanner sees: since empty data lines (keepalives) are skipped rather
+		// than treated as end-of-stream, the omission keeps the truncation —
+		// not a benign keepalive — the event under test.
 		head := "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 1000\r\n\r\n"
 		complete := "data: " + sampleChunkHello + "\n"
 		partial := "data: " + sampleChunkWorld // no trailing newline
@@ -655,5 +657,90 @@ func TestChatCompletionStream_MidBodyDisconnectErrorType(t *testing.T) {
 	// fmt.Errorf("stream interrupted: %w", err).
 	if got, want := streamErr.Error(), "stream interrupted: unexpected EOF"; got != want {
 		t.Errorf("error message = %q, want %q", got, want)
+	}
+}
+
+// llamaStreamServer is a minimal llama-server stand-in: /props identifies it
+// (when props is true) and chat completions record the request body and answer
+// with the given SSE chunks.
+func llamaStreamServer(t *testing.T, props bool, body *string, chunks ...string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/props"):
+			if !props {
+				http.NotFound(w, r)
+				return
+			}
+			fmt.Fprint(w, `{"default_generation_settings":{"n_ctx":8192}}`)
+		case strings.HasSuffix(r.URL.Path, "/chat/completions"):
+			raw, _ := io.ReadAll(r.Body)
+			*body = string(raw)
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, sseChunks(chunks...), "data: [DONE]\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+func TestChatCompletionStream_AsksLlamaCppForTimingsAndProgress(t *testing.T) {
+	var body string
+	srv := llamaStreamServer(t, true, &body,
+		`{"choices":[{"index":0,"delta":{"content":""}}],"prompt_progress":{"total":2000,"cache":500,"processed":1250,"time_ms":250.5}}`,
+		`{"choices":[{"index":0,"delta":{"content":"hi"}}],"timings":{"cache_n":500,"prompt_n":1500,"prompt_ms":300,"prompt_per_second":5000,"predicted_n":1,"predicted_ms":20,"predicted_per_second":50}}`,
+	)
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL})
+	chunks, err := collectStream(t, context.Background(), c, ChatCompletionRequest{
+		Messages: []ChatMessage{{Role: "user", Content: TextContent("hi")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range []string{`"timings_per_token":true`, `"return_progress":true`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("request body is missing %s: %s", want, body)
+		}
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("got %d chunks", len(chunks))
+	}
+	p := chunks[0].PromptProgress
+	if p == nil || p.Total != 2000 || p.Cache != 500 || p.Processed != 1250 || p.TimeMS != 250.5 {
+		t.Errorf("prompt progress = %+v", p)
+	}
+	tm := chunks[1].Timings
+	if tm.PredictedPerSecond != 50 || tm.PromptN != 1500 || tm.CacheN != 500 || tm.PromptPerSecond != 5000 {
+		t.Errorf("timings = %+v", tm)
+	}
+}
+
+func TestChatCompletionStream_DoesNotSendLlamaFieldsToOtherBackends(t *testing.T) {
+	var body string
+	srv := llamaStreamServer(t, false, &body, `{"choices":[{"index":0,"delta":{"content":"hi"}}]}`)
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL})
+	if _, err := collectStream(t, context.Background(), c, ChatCompletionRequest{
+		Messages: []ChatMessage{{Role: "user", Content: TextContent("hi")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(body, "timings_per_token") || strings.Contains(body, "return_progress") {
+		t.Errorf("llama.cpp-only fields leaked to a generic backend: %s", body)
+	}
+}
+
+func TestWithLlamaTelemetryKeepsCallerValues(t *testing.T) {
+	in := map[string]any{"return_progress": false, "top_k": 40}
+	out := withLlamaTelemetry(in)
+	if out["return_progress"] != false || out["timings_per_token"] != true || out["top_k"] != 40 {
+		t.Errorf("out = %v", out)
+	}
+	if _, touched := in["timings_per_token"]; touched {
+		t.Error("the caller's map must not be modified")
 	}
 }

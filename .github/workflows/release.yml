@@ -17,7 +17,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.27'
+          go-version: '1.27.2'
           cache: true
 
       - name: Run Tests
@@ -31,12 +31,12 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13.2
+          version: latest
 
       - name: Run govulncheck
         uses: golang/govulncheck-action@v1
         with:
-          go-version-input: '1.27'
+          go-version-input: '1.27.2'
           go-package: ./...
 
   build-and-release:
@@ -64,7 +64,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.27'
+          go-version: '1.27.2'
 
       - name: Build Binary
         env:
@@ -75,7 +75,7 @@ jobs:
           if [ "${{ matrix.os }}" = "windows" ]; then
             OUTPUT_NAME="${OUTPUT_NAME}.exe"
           fi
-          go build -ldflags "-X late/internal/common.Version=${{ github.ref_name }}" -o $OUTPUT_NAME ./cmd/late
+          go build -ldflags "-X late/internal/common.Version=${{ github.ref_name }} -X late/internal/common.BuildNumber=${{ github.run_number }} -X late/internal/common.Commit=${{ github.sha }} -X 'late/internal/common.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" -o $OUTPUT_NAME ./cmd/late
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2

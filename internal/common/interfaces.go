@@ -41,6 +41,7 @@ type Orchestrator interface {
 	MaxTokens() int
 	SupportsVision() bool
 	QueuedMessages() []string
+	DrainQueuedMessages() []string
 }
 
 // Event represents something that happened in the orchestrator.
@@ -56,6 +57,11 @@ type ContentEvent struct {
 	ToolCalls        []client.ToolCall
 	Usage            client.Usage
 	Completed        bool // Assistant message has been saved to history.
+
+	// Timings and Progress are the latest speed numbers the server reported
+	// for this stream (llama.cpp); zero / nil when the backend sends none.
+	Timings  client.Timings
+	Progress *client.PromptProgress
 }
 
 func (e ContentEvent) OrchestratorID() string { return e.ID }

@@ -113,7 +113,8 @@ Unlike systems where subagent delegation is merely prompt-recommended or optiona
 
 ## llama.cpp Integration
 
-- **Automatic Discovery:** Defaults to `http://localhost:8080`. When connected to `llama-server`, Late automatically queries `/props` or `/models` to configure context lengths without manual user setup.
+- **Automatic Discovery:** Defaults to `http://localhost:9931`. When connected to `llama-server`, Late automatically queries `/props` or `/models` to configure context lengths without manual user setup.
+- **Live Inference Stats:** For llama.cpp backends the request also asks for `timings_per_token` and `return_progress`, so the status bar can show prompt evaluation progress (`prompt 64% · 5.2k t/s`), the live generation speed and the time to first token (`42.3 t/s · ttft 0.8s`). Other backends still get the time to first token, plus an average speed once the call completes (from the token count the server reports). The chip is hidden on terminals narrower than 90 columns.
 - **Empirical Logit Biasing:** Late implements model-dependent logit suppression inspired by EMNLP 2025 research showing 27%–51% reductions in redundant reasoning tokens without accuracy loss in the evaluated settings. It penalizes repetitive self-reflection tokens ("Wait...", "Hmm") at the sampling layer.
 - **Model-Dependent Tuning:** Logit bias maps adapt based on detected model architecture and tokenizers.
 

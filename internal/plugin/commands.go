@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 )
 
@@ -58,7 +57,7 @@ func (pm *PluginManager) HandleCommand(ctx context.Context, cmdName string, args
 				continue
 			}
 			// Already matched once — log duplicate registrations.
-			fmt.Fprintf(os.Stderr,
+			pm.reportf(
 				"[commands] duplicate registration for %q: %q wins (shadows %q from %q)\n",
 				cmdName, firstOwner, p.Name, c.Name)
 		}
@@ -74,7 +73,7 @@ func (pm *PluginManager) HandleCommand(ctx context.Context, cmdName string, args
 	}
 
 	payload, _ := json.Marshal(args)
-	out, err := runHook(ctx, firstMatchDir, firstMatchCmd.Handler, payload)
+	out, err := pm.runHook(ctx, firstMatchDir, firstMatchCmd.Handler, payload)
 	if err != nil {
 		return "", true, fmt.Errorf("plugin command %q failed: %w", cmdName, err)
 	}

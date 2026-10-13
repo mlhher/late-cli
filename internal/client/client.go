@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,13 +38,18 @@ const (
 )
 
 type Client struct {
-	mu             sync.RWMutex
-	cfg            Config
-	httpClient     *http.Client
-	backend        BackendType
-	ctxSize        int
-	supportsVision bool
-	userAgent      string
+	mu         sync.RWMutex
+	cfg        Config
+	httpClient *http.Client
+	backend    BackendType
+	ctxSize    int
+	// explicitlySetContextSize records that ctxSize came from SetContextSize
+	// (a user-declared models[].context-size-tokens) rather than discovery,
+	// so DiscoverBackend/RefreshContextSize never overwrite it with a probe
+	// result — the explicit declaration wins for the process lifetime.
+	explicitlySetContextSize bool
+	supportsVision           bool
+	userAgent                string
 }
 
 func NewClient(cfg Config) *Client {
@@ -82,7 +88,7 @@ func (c *Client) applyHeaders(req *http.Request) {
 }
 
 // chatCompletionURL builds the chat completions endpoint from BaseURL.
-// If the base URL has no path (e.g. "http://localhost:8080"), /v1 is
+// If the base URL has no path (e.g. "http://localhost:9931"), /v1 is
 // appended automatically for backwards compatibility. If a path is already
 // present (e.g. "https://api.z.ai/api/coding/paas/v4"), it is used as-is
 // and only /chat/completions is appended — consistent with the OpenAI SDK
@@ -135,7 +141,21 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 	}
 
 	var chatResp ChatCompletionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+	// Read one byte past the cap: a body of exactly maxCompletionBodyBytes
+	// is legal, but the presence of a (max+1)-th byte proves the response
+	// exceeded the cap. A silently truncated read would instead fail decode
+	// with a confusing "unexpected end of JSON input".
+	body, err = io.ReadAll(io.LimitReader(resp.Body, maxCompletionBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxCompletionBodyBytes {
+		return nil, &BodyTooLargeError{Limit: maxCompletionBodyBytes}
+	}
+	// Tolerate a UTF-8 BOM prepended by gateways/proxies: encoding/json
+	// rejects it, which would surface as a confusing parse error.
+	body = bytes.TrimPrefix(body, []byte(utf8BOM))
+	if err := json.Unmarshal(body, &chatResp); err != nil {
 		return nil, err
 	}
 	return &chatResp, nil
@@ -161,6 +181,9 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 		}
 
 		req.LogitBias = c.mergeLogitBias(req.LogitBias)
+		if c.getBackend() == BackendLlamaCPP {
+			req.ExtraBody = withLlamaTelemetry(req.ExtraBody)
+		}
 
 		body, err := c.marshalFlattened(req)
 		if err != nil {
@@ -194,6 +217,10 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 			return
 		}
 
+		if req.OnConnect != nil {
+			req.OnConnect()
+		}
+
 		scanner := bufio.NewScanner(resp.Body)
 		// Some providers emit very long SSE lines (e.g. huge tool-call argument
 		// deltas or inline base64 parts). The default 64 KB scanner limit would
@@ -202,19 +229,32 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 		scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 		for scanner.Scan() {
 			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
+			// Tolerate a UTF-8 BOM glued to the first line by gateways and
+			// proxies: unstripped, it breaks the "data:" prefix match below
+			// and the line is silently dropped.
+			line = strings.TrimPrefix(line, "\ufeff")
+			// SSE data field: the spec makes the space after the colon
+			// optional ("data: {...}" and "data:{...}" are both legal), so
+			// match on the colon and strip a single optional space. Matching
+			// on "data: " alone silently dropped no-space lines — the chunks
+			// vanished without any error, so no retry tier ever saw them.
+			if !strings.HasPrefix(line, "data:") {
 				continue
 			}
-			data := strings.TrimPrefix(line, "data: ")
+			data := strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " ")
 
 			// Handle [DONE] sentinel (OpenAI standard)
 			if data == "[DONE]" {
 				break
 			}
 
-			// Handle empty data line — some servers signal end this way
+			// Bare "data:" line (nothing after the colon): SSE keepalives
+			// and heartbeats are commonly sent this way. Skip it instead of
+			// treating it as end-of-stream — a keepalive interleaved with
+			// real chunks would otherwise end the turn early, committing a
+			// truncated response with no error for any retry tier to see.
 			if data == "" {
-				break
+				continue
 			}
 
 			var chunk ChatCompletionChunk
@@ -228,8 +268,10 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatCompletionReq
 			}
 		}
 
-		// If the loop exited because scanner.Scan() returned false (connection closed)
-		// or an empty data line, check for read errors and propagate them.
+		// The loop exits when scanner.Scan() returns false (connection
+		// closed) or on the [DONE] sentinel. Empty data lines (keepalives)
+		// were skipped above, so a transport failure on the next read still
+		// reaches scanner.Err() and is propagated.
 		if err := scanner.Err(); err != nil {
 			select {
 			case errCh <- &StreamInterruptedError{Err: err}:
@@ -271,7 +313,17 @@ func (c *Client) Completion(ctx context.Context, req CompletionRequest) (*Comple
 	}
 
 	var completionResp CompletionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&completionResp); err != nil {
+	// Same one-byte-past-the-cap read as ChatCompletion above: diagnose an
+	// oversized body as size, not as a confusing decode failure.
+	body, err = io.ReadAll(io.LimitReader(resp.Body, maxCompletionBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxCompletionBodyBytes {
+		return nil, &BodyTooLargeError{Limit: maxCompletionBodyBytes}
+	}
+	body = bytes.TrimPrefix(body, []byte(utf8BOM))
+	if err := json.Unmarshal(body, &completionResp); err != nil {
 		return nil, err
 	}
 	return &completionResp, nil
@@ -359,7 +411,11 @@ func (c *Client) RefreshContextSize(ctx context.Context) {
 
 	if newCtxSize > 0 {
 		c.mu.Lock()
-		c.ctxSize = newCtxSize
+		// An explicit context-size-tokens declaration wins over re-probing:
+		// see SetContextSize.
+		if !c.explicitlySetContextSize {
+			c.ctxSize = newCtxSize
+		}
 		c.mu.Unlock()
 	}
 }
@@ -443,7 +499,9 @@ func (c *Client) DiscoverBackend(ctx context.Context) BackendType {
 
 	c.mu.Lock()
 	c.backend = discoveredBackend
-	if discoveredCtxSize > 0 {
+	if discoveredCtxSize > 0 && !c.explicitlySetContextSize {
+		// An explicit context-size-tokens declaration wins over discovery:
+		// see SetContextSize. The discovered value is discarded, not stored.
 		c.ctxSize = discoveredCtxSize
 	}
 	if discoveredSupportsVision {
@@ -580,6 +638,38 @@ func (c *Client) ContextSize() int {
 	return c.ctxSize
 }
 
+// SetContextSize sets the context window to an explicitly configured value
+// (config.json models[].context-size-tokens) BEFORE any discovery ran:
+// llama.cpp backends can auto-discover n_ctx, but other providers (or
+// truncating local gateways) never advertise it, and the -1 default would
+// keep the predictive compaction heuristic and the finish_reason=length
+// discriminator dark forever. The value is stored under the
+// explicitlySetContextSize flag, so DiscoverBackend and RefreshContextSize
+// never clobber it with a probe result (possibly stale, possibly about a
+// different loaded model): the user's declaration wins for the process
+// lifetime. Zero or negative values are ignored — they cannot describe a
+// real window, and ignoring them keeps SetContextSize(0) from silently
+// un-setting a discovered value.
+func (c *Client) SetContextSize(n int) {
+	if n <= 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ctxSize = n
+	c.explicitlySetContextSize = true
+}
+
+// IsContextSizeExplicit reports whether the context window came from
+// SetContextSize (an explicit models[].context-size-tokens declaration)
+// rather than from backend discovery. Tests use it to pin the
+// discovery-does-not-clobber invariant.
+func (c *Client) IsContextSizeExplicit() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.explicitlySetContextSize
+}
+
 func (c *Client) IsLlamaCPP() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -590,6 +680,20 @@ func (c *Client) SupportsVision() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.cfg.EnableImages || c.supportsVision
+}
+
+// withLlamaTelemetry asks llama-server to report its own speed numbers on every
+// streamed chunk (timings) and its progress through the prompt (prompt_progress).
+// Only llama.cpp backends get these fields. Values the caller already set win,
+// and the caller's map is never modified.
+func withLlamaTelemetry(extra map[string]any) map[string]any {
+	out := make(map[string]any, len(extra)+2)
+	out["timings_per_token"] = true
+	out["return_progress"] = true
+	for k, v := range extra {
+		out[k] = v
+	}
+	return out
 }
 
 func (c *Client) marshalFlattened(req ChatCompletionRequest) ([]byte, error) {
@@ -647,6 +751,111 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("status: %d", e.StatusCode)
 }
 
+// ErrContextExceeded is the stable sentinel carried by every API error whose
+// status AND body identify deterministic context exhaustion: the conversation
+// (history + tools + system prompt) does not fit the model's context window,
+// so resending the identical request can never succeed — the same fail-fast
+// contract as ErrPayloadTooLarge, at the token level instead of the byte
+// level. Unlike a 413 (the BODY was too big), the conversation can shrink:
+// the executor's context guard runs the session compactor and retries once,
+// so the error is terminal for the retry tiers but recoverable for the run.
+// Callers classify with errors.Is anywhere in the wrap chain.
+var ErrContextExceeded = errors.New("context exceeded")
+
+// ContextExceededGuidance is the actionable message rendered for
+// context-exhaustion failures. When no compactor is installed (or a run
+// freed nothing) the executor surfaces this text verbatim; the TUI mirrors
+// it in the transcript's context-limit card.
+const ContextExceededGuidance = "the conversation exceeded this model's context window: late could not recover it automatically — start a new session with /new"
+
+// contextExceededPatterns are the provider error signatures for deterministic
+// context exhaustion, matched case-insensitively as substrings of the error
+// body: OpenAI's "context_length_exceeded" code, Anthropic's "prompt is too
+// long", llama.cpp/Ollama's "context window"/"context size", Gemini's "input
+// token count", DeepSeek's "reduce the length of the messages", and the
+// generic "too many tokens"/"input length exceeds".
+var contextExceededPatterns = []string{
+	"context_length_exceeded",
+	"maximum context length",
+	"prompt is too long",
+	"context window",
+	"too many tokens",
+	"input token count",
+	"input length exceeds",
+	"context size",
+	"reduce the length",
+}
+
+// isContextExceededBody reports whether a provider error body names context
+// exhaustion. Matching is a case-insensitive substring scan over the
+// (already bounded and sanitized) body text — the bodies are short, so the
+// linear scan costs nothing compared to the network round trip.
+func isContextExceededBody(body string) bool {
+	if body == "" {
+		return false
+	}
+	lower := strings.ToLower(body)
+	for _, pattern := range contextExceededPatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// ContextExceededError marks an API response as deterministic context
+// exhaustion. It wraps the underlying StatusError so errors.As still recovers
+// the status/body/code details, and it carries ErrContextExceeded so
+// errors.Is classifies it anywhere in the executor's "stream error: %w" wrap
+// chain. Its Error text is the actionable guidance (what happened and the
+// recovery steps), with the provider's raw body appended for diagnostics.
+type ContextExceededError struct {
+	Status *StatusError
+	// Reason names the detection path for diagnostics ("http 400", "http
+	// 413", "finish_reason=length"). It is bookkeeping, not rendered text.
+	Reason string
+}
+
+func (e *ContextExceededError) Error() string {
+	if e.Status != nil && e.Status.Body != "" {
+		return ContextExceededGuidance + " (provider: " + e.Status.Body + ")"
+	}
+	return ContextExceededGuidance
+}
+
+// Unwrap exposes both the sentinel (for errors.Is classification) and the
+// underlying StatusError (for errors.As recovery of StatusCode/Body/Type).
+func (e *ContextExceededError) Unwrap() []error {
+	return []error{ErrContextExceeded, e.Status}
+}
+
+// statusReportsContextExhaustion decides whether a non-200 response is
+// deterministic context exhaustion. Status-only matching is deliberately
+// narrow: a bare 400/413 says nothing about WHY the request was rejected
+// (OpenAI returns 400 for malformed tool arguments too), so the provider's
+// body must name the limit — and only on 400/413, where a body naming the
+// limit IS the verdict. A 429 is throttle semantics by definition: its body
+// naming generic token phrases ("too many tokens") overwhelmingly means a
+// tokens-per-minute/quota bucket, which is retryable and carries a
+// Retry-After, so classifying it as deterministic exhaustion would skip
+// retries that would have succeeded. A 429 that is genuinely context
+// exhaustion signals it through OpenAI's "context_length_exceeded" error
+// CODE, which stays recognized below (rate-limit status, body-level
+// meaning — hard failure, never spins the infra budget).
+func statusReportsContextExhaustion(status int, body string, code any) bool {
+	if isContextExceededBody(body) {
+		switch status {
+		case http.StatusBadRequest, http.StatusRequestEntityTooLarge:
+			return true
+		}
+		return false
+	}
+	if status == http.StatusTooManyRequests && code != nil && strings.Contains(strings.ToLower(fmt.Sprint(code)), "context_length_exceeded") {
+		return true
+	}
+	return false
+}
+
 // StreamInterruptedError reports a transport failure while reading a
 // 200-OK response body mid-stream: connection reset, HTTP/2 RST_STREAM
 // or GOAWAY, truncated body. The server already accepted the request,
@@ -661,6 +870,20 @@ func (e *StreamInterruptedError) Error() string {
 
 func (e *StreamInterruptedError) Unwrap() error { return e.Err }
 
+// BodyTooLargeError reports a 200 response body that exceeded
+// maxCompletionBodyBytes: the bounded read stops one byte past the cap
+// before decoding, so the failure is diagnosed as size instead of surfacing
+// as a confusing "unexpected end of JSON input" parse error. It is
+// errors.As-able in the style of StatusError. It is not retryable: the same
+// request would produce the same oversized response.
+type BodyTooLargeError struct {
+	Limit int64 // the body cap (in bytes) that the response exceeded
+}
+
+func (e *BodyTooLargeError) Error() string {
+	return fmt.Sprintf("response body too large (> %d bytes)", e.Limit)
+}
+
 const (
 	// maxErrorBodyBytes bounds how much of an error response body is read
 	// before parsing: a hostile or broken server can send arbitrarily large
@@ -669,6 +892,17 @@ const (
 	// maxErrorMessageBytes bounds the diagnostic text stored on StatusError,
 	// for both the structured JSON message and the sanitized text fallback.
 	maxErrorMessageBytes = 1024
+	// maxCompletionBodyBytes bounds a non-streaming 200 response body before
+	// decoding, mirroring the error-path bound above: a broken or hostile
+	// server streaming an unbounded success body must not be able to exhaust
+	// memory through the decoder. 8 MiB is generous — far above any real
+	// completion response.
+	maxCompletionBodyBytes = 8 << 20
+	// utf8BOM is the UTF-8 byte order mark. Some gateways and proxies glue
+	// it to response bodies; encoding/json rejects it outright, so it is
+	// stripped before decoding. (Written as an escape: the character itself
+	// is invisible.)
+	utf8BOM = "\ufeff"
 )
 
 // formatError converts a non-2xx response into a *StatusError. The error body
@@ -710,6 +944,17 @@ func (c *Client) formatError(resp *http.Response) error {
 	}
 	if ra := parseRetryAfter(resp.Header.Get("Retry-After")); ra > 0 {
 		se.RetryAfter = ra
+	}
+	// Body-level context-exhaustion detection: a 400/413/429 whose body
+	// names the token limit is deterministic context exhaustion, not a
+	// transient rejection — the sentinel drives the executor's compaction+
+	// retry safeguard and fails fast on every stream-retry tier instead of
+	// burning a budget on a request that can never fit.
+	if statusReportsContextExhaustion(resp.StatusCode, se.Body, se.Code) {
+		return &ContextExceededError{
+			Status: se,
+			Reason: "http " + strconv.Itoa(resp.StatusCode),
+		}
 	}
 	return se
 }

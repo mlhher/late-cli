@@ -95,12 +95,12 @@ func (pm *PluginManager) AllThemes() []ThemeInfo {
 		for _, rel := range p.Late.Themes {
 			tp, err := resolveThemePath(p.Path, rel)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "[themes] %s: %v\n", p.Name, err)
+				pm.reportf("[themes] %s: %v\n", p.Name, err)
 				continue
 			}
 			f, err := loadThemeFile(tp)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "[themes] %s: %v\n", p.Name, err)
+				pm.reportf("[themes] %s: %v\n", p.Name, err)
 				continue
 			}
 			themes = append(themes, ThemeInfo{

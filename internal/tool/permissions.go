@@ -186,6 +186,12 @@ const (
 	sessionBaseMarker        = "__base__"
 )
 
+// ApprovalTTLs reports how long a session, project and global approval stays
+// valid, so the UI can quote the real durations instead of repeating them.
+func ApprovalTTLs() (session, project, global time.Duration) {
+	return sessionApprovalTTL, projectApprovalTTL, globalApprovalTTL
+}
+
 type persistedCommandEntry struct {
 	Flags     []string `json:"flags"`
 	SavedAt   string   `json:"saved_at,omitempty"`

@@ -114,6 +114,64 @@ func BenchmarkUpdateViewportStreamingTail(b *testing.B) {
 	}
 }
 
+// BenchmarkUpdateViewportStreamingParagraphs models normal prose where stable
+// paragraphs can be reused and only the final paragraph changes per token.
+func BenchmarkUpdateViewportStreamingParagraphs(b *testing.B) {
+	for _, size := range []int{16 << 10, 64 << 10} {
+		b.Run(fmt.Sprintf("bytes_%d", size), func(b *testing.B) {
+			model, state := newViewportBenchmarkModel(nil)
+			state.State = StateStreaming
+
+			paragraph := strings.Repeat("streaming text ", 20) + "\n\n"
+			prefix := strings.Repeat(paragraph, size/len(paragraph))
+			variants := [...]string{prefix + "active tail a", prefix + "active tail b"}
+			state.StreamingState = common.ContentEvent{ID: model.Focused.ID(), Content: variants[0]}
+			renderTestTranscript(model)
+
+			b.ReportAllocs()
+			b.SetBytes(int64(len(variants[0])))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				state.StreamingState.Content = variants[i&1]
+				renderTestTranscript(model)
+			}
+		})
+	}
+}
+
+// Unique rows prevent repeated prose from hiding cache costs. An unchanged
+// refresh between deltas also models status events while a stream is open.
+func BenchmarkUpdateViewportStreamingUniqueRows(b *testing.B) {
+	for _, reasoning := range []bool{false, true} {
+		b.Run(fmt.Sprintf("reasoning_%t", reasoning), func(b *testing.B) {
+			model, state := newViewportBenchmarkModel(nil)
+			state.State = StateStreaming
+			var prefix strings.Builder
+			for i := 0; prefix.Len() < 64<<10; i++ {
+				fmt.Fprintf(&prefix, "Passage %d describes a different part of the response and its supporting details.\n\n", i)
+			}
+			variants := [...]string{prefix.String() + "active tail a", prefix.String() + "active tail b"}
+			setContent := func(content string) {
+				state.StreamingState = common.ContentEvent{ID: model.Focused.ID()}
+				if reasoning {
+					state.StreamingState.ReasoningContent = content
+				} else {
+					state.StreamingState.Content = content
+				}
+			}
+			setContent(variants[0])
+			renderTestTranscript(model)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				renderTestTranscript(model)
+				setContent(variants[i&1])
+				renderTestTranscript(model)
+			}
+		})
+	}
+}
+
 // BenchmarkUpdateViewportStreamingReasoning measures the uncached reasoning
 // path, which currently renders the complete reasoning text on every frame.
 func BenchmarkUpdateViewportStreamingReasoning(b *testing.B) {

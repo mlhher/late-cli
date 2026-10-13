@@ -54,7 +54,7 @@ printf '%s\n' 'registry.example/dev:1' > "$TEST_ROOT/project/.late/podman-image"
         XDG_CONFIG_HOME="$TEST_ROOT/config" \
         PODMAN_CAPTURE="$TEST_ROOT/capture" \
         PODMAN_BUILD_CAPTURE="$TEST_ROOT/capture-build" \
-        OPENAI_BASE_URL='http://localhost:8080' \
+        OPENAI_BASE_URL='http://localhost:9931' \
         late-podman --exec 'dnf install -y golang' --exec 'npm ci' -- --continue 'two words'
 )
 
@@ -66,7 +66,7 @@ assert_arg 'label=disable'
 assert_arg "type=bind,src=$TEST_ROOT/project,target=/workspace"
 assert_arg "late-podman-cache-project:/root/.cache"
 assert_arg 'registry.example/dev:1'
-assert_arg 'OPENAI_BASE_URL=http://localhost:8080'
+assert_arg 'OPENAI_BASE_URL=http://localhost:9931'
 assert_arg $'dnf install -y golang\nnpm ci'
 assert_arg --continue
 assert_arg 'two words'

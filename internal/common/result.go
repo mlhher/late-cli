@@ -10,4 +10,8 @@ type StreamResult struct {
 	ToolCalls        []client.ToolCall
 	Usage            client.Usage
 	FinishReason     string
+	// Timings and Progress are the server's own speed numbers for this
+	// request (llama.cpp); zero / nil when the backend sends none.
+	Timings  client.Timings
+	Progress *client.PromptProgress
 }

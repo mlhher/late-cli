@@ -84,8 +84,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.Mode == ViewChat && !m.EscConfirmPending && !m.ShowFilePicker {
 		switch event := msg.(type) {
-		case tea.KeyReleaseMsg:
-			return m, nil
 		case tea.KeyPressMsg:
 			if m.ShowTodoPane && m.TodoPaneFocused {
 				break // Let the todo pane handle its navigation keys below.
@@ -151,7 +149,33 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 		}
 	}
 
+	// Key releases carry no action anywhere in this UI: every key handler
+	// below dispatches on tea.KeyMsg — implemented by BOTH KeyPressMsg and
+	// KeyReleaseMsg — via String(), and a release carries the same String()
+	// as its press. On terminals that report release events (kitty keyboard
+	// protocol), unfiltered releases re-trigger whichever handler runs next:
+	// double-scrolling the todo pane, rewind, and commit-log views, and —
+	// worst — the esc release lands while EscConfirmPending is set (the
+	// chat-mode swallow further below is gated on !EscConfirmPending) and
+	// instantly cancels the "esc again to confirm" prompt before it can be
+	// answered. Nothing consumes KeyReleaseMsg, so drop it before any
+	// KeyMsg dispatch.
+	if _, ok := msg.(tea.KeyReleaseMsg); ok {
+		return m, nil
+	}
+
 	if _, ok := msg.(clearToastMsg); ok {
+		// Stale expiry tick: toasts overlap often (hook diagnostics fire in
+		// bursts, and some guidance toasts stay up for 8s), and a tea.Tick
+		// scheduled by the PREVIOUS toast can land while a NEWER toast is
+		// still alive. Clearing unconditionally let that old tick kill the
+		// new toast early. Every toast-set rewrites ToastExpireTime, so while
+		// "now" is still before that expiry, the arriving tick cannot be the
+		// one the current toast scheduled — ignore it; the current toast
+		// owns its own clear tick.
+		if m.ToastMessage != "" && time.Now().UnixMilli() < m.ToastExpireTime {
+			return m, nil
+		}
 		m.ToastMessage = ""
 		m.ToastWarning = false
 		m.updateViewport()
@@ -165,8 +189,28 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 
 	// Global Key Handling (Ctrl+C, Ctrl+D)
 	if msg, ok := msg.(tea.KeyMsg); ok {
-		if msg.String() == "ctrl+c" || msg.String() == "ctrl+d" {
+		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
+		}
+		if msg.String() == "ctrl+d" {
+			if m.Mode == ViewChat && m.Input.Value() != "" {
+				m.QuitArmedUntil = 0
+			} else {
+				now := time.Now().UnixMilli()
+				if now < m.QuitArmedUntil {
+					return m, tea.Quit
+				}
+				m.QuitArmedUntil = now + 2000
+				m.ToastMessage = "Press Ctrl+D again to exit"
+				m.ToastWarning = false
+				m.ToastExpireTime = now + 2000
+				m.updateViewport()
+				return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+					return clearToastMsg{}
+				})
+			}
+		} else {
+			m.QuitArmedUntil = 0
 		}
 		if msg.String() == "ctrl+o" {
 			if m.RunningPluginAction != "" {
@@ -201,6 +245,22 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 		if msg.String() == "ctrl+t" && m.ShowTodoPane && m.Mode == ViewChat {
 			m.TodoPaneFocused = !m.TodoPaneFocused
 			return m, nil
+		}
+		if msg.String() == "ctrl+r" && m.Mode == ViewChat && !m.EscConfirmPending && !m.ShowFilePicker {
+			m.ShowToolOutput = !m.ShowToolOutput
+			for _, s := range m.AgentStates {
+				s.ToggledTools = nil
+			}
+			m.ToastMessage = "tool output collapsed"
+			if m.ShowToolOutput {
+				m.ToastMessage = "tool output expanded"
+			}
+			m.ToastWarning = false
+			m.ToastExpireTime = time.Now().UnixMilli() + 2000
+			m.updateViewport()
+			return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+				return clearToastMsg{}
+			})
 		}
 	}
 	if _, ok := msg.(tea.PasteMsg); ok && m.RunningPluginAction != "" {
@@ -381,6 +441,29 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if msg, ok := msg.(fileIndexLoadedMsg); ok {
+		m.fileIdxLoading = false
+		if msg.root == m.projectRoot() {
+			m.fileIdx = newFileIndex(msg.root, msg.files)
+			m.updateAutocomplete()
+		}
+		return m, nil
+	}
+
+	// Tab and Enter complete the highlighted @file instead of moving the
+	// selection or submitting. Enter on an already-complete path still sends.
+	if key, ok := msg.(tea.KeyMsg); ok && m.ShowAutocomplete && m.AutocompleteKind == autocompleteFile && m.RunningPluginAction == "" {
+		switch key.String() {
+		case "tab":
+			return m.acceptFileCompletion(), nil
+		case "enter":
+			if query, _, ok := m.fileToken(); ok && m.AutocompleteIndex < len(m.AutocompleteItems) &&
+				m.AutocompleteItems[m.AutocompleteIndex].Name != "@"+quoteIfSpaced(query) {
+				return m.acceptFileCompletion(), nil
+			}
+		}
+	}
+
 	// Snapshot state before updateChat processes the key and potentially changes it
 	var stateBefore ValidationState
 	escBefore := false
@@ -468,6 +551,11 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 
 	// Update autocomplete state whenever the input changes
 	m.updateAutocomplete()
+	var fileIdxCmd tea.Cmd
+	if m.fileIndexNeeded() {
+		m.fileIdxLoading = true
+		fileIdxCmd = loadFileIndexCmd(m.projectRoot())
+	}
 
 	// Detect large pastes (input grew by > 50 chars in one update cycle)
 	currentLen := len(m.Input.Value())
@@ -528,6 +616,14 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 			mouseMsg := clickMsg.Mouse()
 			if mouseMsg.Button == tea.MouseLeft {
 				if mouseMsg.Y >= 0 && mouseMsg.Y < m.Viewport.Height() {
+					// A click on a finished tool call's row expands or collapses it.
+					if m.Mode == ViewChat && !m.EscConfirmPending && !m.ShowFilePicker && !m.overTodoPane(mouseMsg.X) {
+						s := m.GetAgentState(m.Focused.ID())
+						if id, ok := s.Transcript.toolRows[s.Transcript.offset+mouseMsg.Y]; ok {
+							m.toggleToolDetail(s, id)
+							return m, nil
+						}
+					}
 					now := time.Now().UnixMilli()
 					if now-m.LastClickTime < 500 && m.LastClickX == mouseMsg.X && m.LastClickY == mouseMsg.Y {
 						m.LastClickTime = 0 // prevent triple click from double-triggering
@@ -624,7 +720,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 		}
 	}
 
-	return m, tea.Batch(cmd, tiCmd, vpCmd, spCmd, fpCmd)
+	return m, tea.Batch(cmd, tiCmd, vpCmd, spCmd, fpCmd, fileIdxCmd)
 }
 
 func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
@@ -657,7 +753,14 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 						m.ToastExpireTime = time.Now().UnixMilli() + 3000
 						if m.AppConfig != nil {
 							m.AppConfig.Theme = info.ID
-							_ = config.SaveConfig(m.AppConfig)
+							if err := config.SaveConfig(m.AppConfig); err != nil {
+								// The theme IS applied for this session, but a
+								// degraded config (config.json existed but could
+								// not be read/parsed) makes SaveConfig refuse to
+								// overwrite it: say so instead of silently
+								// dropping the user's choice on the next start.
+								focusedState.StatusText = "settings changed but won't persist: " + err.Error()
+							}
 						}
 					}
 					clearCmd := tea.Tick(4*time.Second, func(t time.Time) tea.Msg {
@@ -947,7 +1050,8 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				m = m.acceptAutocomplete()
 				// Fall through to normal "enter" handling for submission
 			case "esc":
-				m.ShowAutocomplete = false
+				m.autocompleteDismissed = m.currentAutocompleteTrigger()
+				m.closeAutocomplete()
 				return m, nil
 			}
 		}
@@ -1283,7 +1387,14 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 					m.ToastExpireTime = time.Now().UnixMilli() + 3000
 					if m.AppConfig != nil {
 						m.AppConfig.Theme = info.ID
-						_ = config.SaveConfig(m.AppConfig)
+						if err := config.SaveConfig(m.AppConfig); err != nil {
+							// The theme IS applied for this session, but a
+							// degraded config (config.json existed but could
+							// not be read/parsed) makes SaveConfig refuse to
+							// overwrite it: say so instead of silently
+							// dropping the user's choice on the next start.
+							focusedState.StatusText = "settings changed but won't persist: " + err.Error()
+						}
 					}
 				}
 				clearCmd := tea.Tick(4*time.Second, func(t time.Time) tea.Msg {
@@ -1459,13 +1570,24 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 		m.ToastMessage = msg.Text
 		m.ToastWarning = msg.Warning
 		m.ToastExpireTime = time.Now().UnixMilli() + 3000
-		return m, func() tea.Msg { return clearToastMsg{} }
+		// The toast carries its own expiry above: schedule the clear tick
+		// instead of clearing on the next loop iteration. The old
+		// immediate-clear command erased the toast the moment Bubble Tea ran
+		// the command — one rendered frame — making the toast invisible even
+		// though the expiry was set for 3s.
+		return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+			return clearToastMsg{}
+		})
 
 	case ToastMsg:
 		m.ToastMessage = msg.Text
 		m.ToastWarning = msg.Warning
-		m.ToastExpireTime = time.Now().UnixMilli() + 3000
-		return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+		duration := msg.Duration
+		if duration <= 0 {
+			duration = 3 * time.Second
+		}
+		m.ToastExpireTime = time.Now().UnixMilli() + duration.Milliseconds()
+		return m, tea.Tick(duration, func(t time.Time) tea.Msg {
 			return clearToastMsg{}
 		})
 
@@ -1488,6 +1610,30 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case DiagnosticMsg:
+		// Mid-session diagnostics (hook timeouts/errors, dropped-progress-
+		// event notices) surface as a WARNING toast instead of raw stderr
+		// writes, which would paint text over the alt-screen. A toast —
+		// unlike a stderr line — cannot duplicate or displace the footer
+		// status row. Empty text is ignored (nothing to report).
+		if msg.Text == "" {
+			return m, nil
+		}
+		text := msg.Text
+		// The toast lives in the status bar; a long hook error must not
+		// wrap or overflow it. Truncate to the terminal width with the
+		// same ellipsis helper the bar itself uses at render time.
+		if m.Width > 0 {
+			text = m.truncateWithEllipsis(text, m.Width)
+		}
+		m.ToastMessage = text
+		m.ToastWarning = true
+		m.ToastExpireTime = time.Now().UnixMilli() + 6000
+		m.updateViewport()
+		return m, tea.Tick(6*time.Second, func(t time.Time) tea.Msg {
+			return clearToastMsg{}
+		})
+
 	case OrchestratorEventMsg:
 		s := m.GetAgentState(msg.Event.OrchestratorID())
 		// restoredToast delivers the recovery toast through the existing
@@ -1495,9 +1641,39 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 		// the retried attempt actually produced a response; it is returned
 		// after the event switch below.
 		var restoredToast tea.Cmd
+		// contextExceededToastCmd surfaces the context-exhaustion guidance —
+		// including the executor guard's compaction outcome ("auto-compacted
+		// (saved ~N tokens), retrying" or the unavailable/failed wording) —
+		// as a warning toast. No TUI-side compaction runs here: the
+		// executor's guard already did (or could not do) the work.
+		var contextExceededToastCmd tea.Cmd
 
 		switch event := msg.Event.(type) {
 		case common.ContentEvent:
+			s.Perf.observe(event, time.Now())
+			if isPrefillOnly(event) {
+				// Only prompt-evaluation progress: nothing is streaming yet, so the
+				// agent stays in its "thinking" state.
+				return m, nil
+			}
+			if s.RetryVerb != "" {
+				s.StatusText = ""
+				if s.RetryVerb == retryVerbRejectedByAPI {
+					restoredToast = func() tea.Msg {
+						return ToastMsg{Text: "request accepted after retry", Duration: 2 * time.Second}
+					}
+				} else {
+					restoredToast = func() tea.Msg {
+						return ToastMsg{Text: "connection regained", Duration: 2 * time.Second}
+					}
+				}
+				s.RetryVerb = ""
+				s.StreamingStyledCache = ""
+				s.StreamingChunkCount = 0
+			}
+			if strings.Contains(s.StatusText, "retry ") {
+				s.StatusText = ""
+			}
 			s.StreamingState = event
 			if s.State != StateConfirmTool {
 				s.State = StateStreaming
@@ -1532,6 +1708,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 		case common.StatusEvent:
 			switch event.Status {
 			case "thinking":
+				s.Perf.begin(time.Now())
 				s.Transcript.generation++
 				s.Transcript.busy = false
 				if s.State != StateConfirmTool {
@@ -1553,6 +1730,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				s.StreamingStyledCache = ""
 				s.StreamingChunkCount = 0
 			case "closed":
+				s.Perf.abort()
 				s.State = StateIdle
 				s.StatusText = "Closed"
 				s.Closed = true
@@ -1569,6 +1747,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 					m.updateViewport()
 				}
 			case "error":
+				s.Perf.abort()
 				s.State = StateIdle
 				if event.Error != nil && event.Error.Error() == "image_unsupported" {
 					s.StatusText = "Model does not support images"
@@ -1576,6 +1755,24 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				} else {
 					s.StatusText = fmt.Sprintf("Error: %v", event.Error)
 					s.Error = event.Error
+					// Context exhaustion (Phase B): the executor's guard
+					// already ran its compaction rounds before this event
+					// surfaced, so nothing is recovered here — but the
+					// error text carries the compaction outcome ("context
+					// limit hit — auto-compacted (saved ~N tokens), …" or
+					// the unavailable/failed wording) and the transcript
+					// error branch renders the dedicated context-limit
+					// card from it. Keep the warning toast for visibility.
+					if errors.Is(event.Error, client.ErrContextExceeded) {
+						eventError := event.Error
+						contextExceededToastCmd = func() tea.Msg {
+							return ToastMsg{
+								Text:     eventError.Error(),
+								Warning:  true,
+								Duration: 8 * time.Second,
+							}
+						}
+					}
 				}
 				// A turn that ended in error must not produce a recovery
 				// toast on the next turn.
@@ -1593,18 +1790,29 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 		case common.RetryEvent:
 			// A stream attempt failed and the executor is retrying after
 			// event.Delay. The agent stays busy (the spinner keeps running)
-			// and the failed attempt's partial output is dropped so it does
-			// not linger in the transcript. The pinned error box is left
-			// alone: it clears when the next successful turn starts
-			// (the "thinking" branch above), and recovery is announced by
-			// the dedicated RecoveryEvent branch below.
+			// while retaining the partial output so it does not abruptly vanish.
 			s.Transcript.generation++
 			s.Transcript.busy = false
 			s.State = StateThinking
 			// The failure class decides the verb: an HTTP 400 is the API
-			// rejecting the request body, not a lost connection.
+			// rejecting the request body, not a lost connection. Context
+			// exhaustion is its own verb — the executor guard compacted
+			// history and the retry is immediate (event.Delay 0); the
+			// wrapped outcome ("… auto-compacted (saved ~N tokens) …")
+			// replaces the generic backoff tail.
 			retryVerb := retryVerbConnectionLost
 			var retryStatusErr *client.StatusError
+			if errors.Is(event.Err, client.ErrContextExceeded) {
+				retryVerb = strings.TrimSpace(strings.TrimPrefix(event.Err.Error(), client.ContextExceededGuidance))
+				s.StatusText = fmt.Sprintf("%s — retrying", retryVerb)
+				s.StreamingStyledCache = ""
+				s.StreamingChunkCount = 0
+				s.RetryVerb = retryVerbContextCompacted
+				if event.ID == m.Focused.ID() {
+					m.updateViewport()
+				}
+				break
+			}
 			if errors.As(event.Err, &retryStatusErr) && retryStatusErr.StatusCode == http.StatusBadRequest {
 				retryVerb = retryVerbRejectedByAPI
 			}
@@ -1614,7 +1822,6 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			// would imply a live countdown that never ticks and could linger
 			// on screen while the next attempt already streams.
 			s.StatusText = fmt.Sprintf("%s — retry %d/%d after %s backoff", retryVerb, event.Attempt, event.MaxAttempts, event.Delay.Truncate(100*time.Millisecond))
-			s.StreamingState = common.ContentEvent{ID: event.ID}
 			// Clear streaming render cache for the failed attempt
 			s.StreamingStyledCache = ""
 			s.StreamingChunkCount = 0
@@ -1623,28 +1830,33 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				m.updateViewport()
 			}
 		case common.RecoveryEvent:
+			s.Perf.recovered(time.Now())
 			// The retried attempt actually produced a response — announce it
 			// immediately instead of guessing on the next turn's thinking
 			// event (which may never come before content streams).
 			s.Transcript.generation++
 			s.State = StateThinking
 			if s.RetryVerb != "" {
-				if s.RetryVerb == retryVerbRejectedByAPI {
-					s.StatusText = "request accepted after retry — streaming response"
+				s.StatusText = ""
+				switch s.RetryVerb {
+				case retryVerbRejectedByAPI:
 					restoredToast = func() tea.Msg {
-						return ToastMsg{Text: "request accepted after retry"}
+						return ToastMsg{Text: "request accepted after retry", Duration: 2 * time.Second}
 					}
-				} else {
-					s.StatusText = "connection restored — streaming response"
+				case retryVerbContextCompacted:
 					restoredToast = func() tea.Msg {
-						return ToastMsg{Text: "connection restored"}
+						return ToastMsg{Text: "request accepted after context compaction", Duration: 2 * time.Second}
+					}
+				default:
+					restoredToast = func() tea.Msg {
+						return ToastMsg{Text: "connection regained", Duration: 2 * time.Second}
 					}
 				}
 				s.RetryVerb = ""
 			} else {
 				// Recovery for an agent whose retry verb was already cleared
-				// (e.g. a stop raced the recovery): keep the status accurate.
-				s.StatusText = "streaming response"
+				// (e.g. a stop raced the recovery): keep the status clean.
+				s.StatusText = ""
 			}
 			if event.ID == m.Focused.ID() {
 				m.updateViewport()
@@ -1653,6 +1865,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			s.StatusText = "Subagent spawned"
 			m.updateViewport()
 		case common.StopRequestedEvent:
+			s.Perf.abort()
 			s.Transcript.generation++
 			s.Transcript.busy = false
 			s.PendingStop = false
@@ -1673,13 +1886,21 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 		}
 
+		var eventCmds []tea.Cmd
 		if restoredToast != nil {
-			return m, restoredToast
+			eventCmds = append(eventCmds, restoredToast)
+		}
+		if contextExceededToastCmd != nil {
+			eventCmds = append(eventCmds, contextExceededToastCmd)
+		}
+		if len(eventCmds) > 0 {
+			return m, tea.Batch(eventCmds...)
 		}
 
 	case ConfirmRequestMsg:
 		s := m.GetAgentState(msg.OrchestratorID)
 		s.State = StateConfirmTool
+		msg.preview = buildApprovalPreview(msg.ToolCall)
 		s.PendingConfirm = &msg
 		m.updateViewport()
 		return m, nil
@@ -1735,6 +1956,13 @@ func (m Model) submitMessage(input string) (Model, tea.Cmd) {
 	// another paste's placeholder token is never corrupted.
 	expandedInput := expandPastes(input, m.Pastes)
 
+	// While a tool approval is pending the agent is blocked on it, so a typed
+	// reply cannot be queued for later: it is the user's answer. Deny the call
+	// and hand the agent the reason instead of leaving the prompt unanswered.
+	if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil {
+		return m.denyPendingWithReason(focusedState, expandedInput), nil
+	}
+
 	if m.MessageHook == nil {
 		// No plugin onMessageSend hooks registered — submit synchronously,
 		// unchanged from before hooks existed.
@@ -1773,6 +2001,25 @@ func (m Model) submitMessage(input string) (Model, tea.Cmd) {
 			submitted:     applyMessageHook(hook, expandedInput),
 		}
 	}
+}
+
+// denyPendingWithReason answers the focused agent's pending tool approval with
+// a denial that carries the user's own words, and clears the editor.
+func (m Model) denyPendingWithReason(state *AppState, reason string) Model {
+	state.PendingConfirm.ResultCh <- denyReasonPrefix + reason
+	state.PendingConfirm = nil
+	state.State = StateThinking
+
+	if len(m.InputHistory) == 0 || m.InputHistory[len(m.InputHistory)-1] != reason {
+		m.InputHistory = append(m.InputHistory, reason)
+	}
+	m.Pastes = make(map[string]string)
+	m.HistoryIndex = -1
+	m.HistoryWorking = ""
+	m.Input.Reset()
+	m.Input.SetValue("")
+	m.updateViewport()
+	return m
 }
 
 // finishSubmit performs the bookkeeping that follows a successful
@@ -1860,10 +2107,21 @@ func (m *Model) updateLayout() {
 // updateAutocomplete checks if the input looks like a slash command and updates
 // the autocomplete dropdown items.
 func (m *Model) updateAutocomplete() {
+	// An @-mention at the cursor takes precedence: it can appear anywhere in
+	// the prompt, while slash commands only exist at its very start.
+	if m.updateFileAutocomplete() {
+		return
+	}
+
 	input := m.Input.Value()
 
 	// Only show autocomplete when input starts with "/" and has no space yet
 	if strings.HasPrefix(input, "/") && !strings.Contains(input, " ") {
+		if m.autocompleteDismissed == input {
+			m.closeAutocomplete()
+			return
+		}
+		m.autocompleteDismissed = ""
 		prefix := strings.ToLower(input)
 		var matches []CommandDef
 		for _, cmd := range AvailableCommands {
@@ -1888,7 +2146,12 @@ func (m *Model) updateAutocomplete() {
 			sort.Slice(matches, func(i, j int) bool {
 				return strings.ToLower(matches[i].Name) < strings.ToLower(matches[j].Name)
 			})
+			if m.AutocompleteKind != autocompleteCommand {
+				m.AutocompleteIndex = 0
+				m.AutocompleteOffset = 0
+			}
 			m.ShowAutocomplete = true
+			m.AutocompleteKind = autocompleteCommand
 			m.AutocompleteItems = matches
 			if m.AutocompleteIndex >= len(matches) {
 				m.AutocompleteIndex = 0
@@ -1898,14 +2161,27 @@ func (m *Model) updateAutocomplete() {
 		}
 	}
 
-	m.ShowAutocomplete = false
-	m.AutocompleteItems = nil
-	m.AutocompleteIndex = 0
-	m.AutocompleteOffset = 0
+	m.autocompleteDismissed = ""
+	m.closeAutocomplete()
+}
+
+// currentAutocompleteTrigger identifies what the open dropdown is completing,
+// so an esc can keep it closed until the user types something different.
+func (m Model) currentAutocompleteTrigger() string {
+	if query, _, ok := m.fileToken(); ok {
+		return "@" + query
+	}
+	return m.Input.Value()
 }
 
 // acceptAutocomplete replaces the current input with the selected command.
 func (m Model) acceptAutocomplete() Model {
+	if m.AutocompleteKind == autocompleteFile {
+		// Reached only when the mention is already complete (Enter on a
+		// finished path): close the list and let the message be submitted.
+		m.closeAutocomplete()
+		return m
+	}
 	if m.AutocompleteIndex >= 0 && m.AutocompleteIndex < len(m.AutocompleteItems) {
 		selected := m.AutocompleteItems[m.AutocompleteIndex].Name
 		m.Input.SetValue(selected + " ")
@@ -2002,6 +2278,24 @@ func (m Model) navigateHistory(dir int) Model {
 }
 
 func (m Model) interruptFocusedAgent() (Model, tea.Cmd) {
+	drained := m.Focused.DrainQueuedMessages()
+	if len(drained) > 0 {
+		restored := strings.Join(drained, "\n")
+		curr := m.Input.Value()
+		if curr != "" {
+			m.Input.SetValue(restored + "\n" + curr)
+		} else {
+			m.Input.SetValue(restored)
+		}
+		m.Input.CursorEnd()
+
+		for i := len(drained) - 1; i >= 0; i-- {
+			if len(m.InputHistory) > 0 && m.InputHistory[len(m.InputHistory)-1] == drained[i] {
+				m.InputHistory = m.InputHistory[:len(m.InputHistory)-1]
+			}
+		}
+	}
+
 	focusedState := m.GetAgentState(m.Focused.ID())
 	if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil {
 		focusedState.PendingConfirm.ResultCh <- "n"
@@ -2014,7 +2308,7 @@ func (m Model) interruptFocusedAgent() (Model, tea.Cmd) {
 		m.updateViewport()
 		return m, nil
 	}
-	if focusedState.State == StateThinking || focusedState.State == StateStreaming {
+	if focusedState.State == StateThinking || focusedState.State == StateStreaming || focusedState.State == StateStopping {
 		focusedState.PendingStop = true
 		focusedState.State = StateStopping
 		focusedState.StatusText = "Stopping..."
@@ -2022,6 +2316,9 @@ func (m Model) interruptFocusedAgent() (Model, tea.Cmd) {
 		m.Focused.Cancel()
 		m.updateViewport()
 		return m, nil
+	}
+	if len(drained) > 0 {
+		m.updateViewport()
 	}
 	return m, nil
 }

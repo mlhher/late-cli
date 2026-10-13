@@ -27,6 +27,10 @@ type StreamAccumulator struct {
 	ToolCalls    []client.ToolCall
 	Usage        client.Usage
 	FinishReason string
+	// Timings and Progress hold the latest speed numbers the server sent for
+	// the current stream (llama.cpp); zero / nil when it sends none.
+	Timings  client.Timings
+	Progress *client.PromptProgress
 }
 
 // Append merges a single streaming delta into the accumulated state.
@@ -41,16 +45,39 @@ func (a *StreamAccumulator) Append(res common.StreamResult) {
 	if res.FinishReason != "" {
 		a.FinishReason = res.FinishReason
 	}
+	if res.Timings != (client.Timings{}) {
+		a.Timings = res.Timings
+	}
+	if res.Progress != nil {
+		a.Progress = res.Progress
+	}
 
 	for _, delta := range res.ToolCalls {
 		index := delta.Index
-		if index < len(a.ToolCalls) {
-			a.ToolCalls[index].Function.Arguments += delta.Function.Arguments
+		// Locate the slot BY ITS INDEX FIELD, not by slice position:
+		// providers are not required to number tool calls from zero, and
+		// fragments may interleave (e.g. 1-based numbering with deltas for
+		// call 1 and call 2 alternating). Position-based lookup treated the
+		// index as a slice offset, so such fragments landed as orphaned
+		// entries (no ID, no name) or spliced into another call's slot.
+		// Matching on the Index field merges fragments by identity; a delta
+		// whose index matches no existing slot is appended as a new entry,
+		// preserving the data. Lookup only ever ranges over the slice, so a
+		// malformed index can never index out of range.
+		slot := -1
+		for i := range a.ToolCalls {
+			if a.ToolCalls[i].Index == index {
+				slot = i
+				break
+			}
+		}
+		if slot >= 0 {
+			a.ToolCalls[slot].Function.Arguments += delta.Function.Arguments
 			if delta.Function.Name != "" {
-				a.ToolCalls[index].Function.Name = delta.Function.Name
+				a.ToolCalls[slot].Function.Name = delta.Function.Name
 			}
 			if delta.ID != "" {
-				a.ToolCalls[index].ID = delta.ID
+				a.ToolCalls[slot].ID = delta.ID
 			}
 		} else {
 			a.ToolCalls = append(a.ToolCalls, delta)
@@ -64,6 +91,8 @@ func (a *StreamAccumulator) Reset() {
 	a.Reasoning = ""
 	a.ToolCalls = nil
 	a.FinishReason = ""
+	a.Timings = client.Timings{}
+	a.Progress = nil
 }
 
 // --- Tool Execution ---
@@ -268,10 +297,25 @@ func RunLoop(
 		badBodyBudget = 0
 	}
 
+	// Predictive compaction runs at most once per RunLoop invocation: see
+	// the pre-attempt heuristic inside the turn loop below.
+	predictiveCompactionDone := false
+	// predictedHistoryTokens caches the turn's token estimate across the
+	// attempt loop (retries see frozen history): 0 means "not computed yet
+	// for this turn". Recomputed at the start of each turn — history grows
+	// between turns (assistant reply + tool results), so a stale estimate
+	// would only ever under-trigger, and one blocking BPE pass per turn is
+	// the intended cost.
+	predictedHistoryTokens := 0
+
 	for i := 0; maxTurns <= 0 || i < maxTurns; i++ {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		if onStartTurn != nil {
 			onStartTurn()
 		}
+		predictedHistoryTokens = 0
 
 		// Inner attempt loop around the stream call only: retries never
 		// consume a turn (the turn counter above is untouched). Each attempt
@@ -287,6 +331,14 @@ func RunLoop(
 		var acc *StreamAccumulator
 		var err error
 		infraAttempts, badBodyAttempts := 0, 0
+		// contextRounds counts compaction+retry rounds taken for
+		// context-exhaustion failures in THIS turn's attempt loop — the
+		// deterministic-failure recovery path (see below), independent of
+		// the retry tiers. Capped at maxContextCompactionRounds: two
+		// compactions that still leave the request over the limit mean the
+		// window is gone; a third compaction would not change that.
+		contextRounds := 0
+		var recoveryFired bool
 		for {
 			// Pre-attempt guard (retries only): if the context died while we
 			// were waiting in a previous backoff (both select cases below can
@@ -296,10 +348,112 @@ func RunLoop(
 				return "", err
 			}
 
-			streamCh, errCh := sess.StartStream(ctx, extraBody)
+			// Predictive safeguard (Phase B5): when the model's context
+			// window is KNOWN (llama.cpp discovery, or an explicit
+			// models[].context-size-tokens) and the estimated request —
+			// history (which already includes the incoming user message;
+			// Submit appends it before the run starts) + system prompt +
+			// tool definitions — crosses 95% of the window, run the
+			// installed context compactor once BEFORE burning a doomed
+			// request on a provider that would truncate or reject. Capped
+			// at one predictive compaction per RunLoop invocation: after
+			// one pass the request proceeds even if still over (the
+			// provider may truncate as it always did; this is best-effort,
+			// not a hard gate). Gated on ctxSize > 0 AND a compactor being
+			// installed — with an unknown window there is nothing to
+			// predict against, and without a compactor the reactive
+			// failure path is the only behavior.
+			if !predictiveCompactionDone {
+				if ctxSize := sess.Client().ContextSize(); ctxSize > 0 && getContextCompactor() != nil {
+					// The estimate is cached across the attempt loop: a failed
+					// attempt commits nothing, so history is byte-identical on
+					// every retry of this turn — re-tokenizing the whole
+					// conversation (blocking BPE) per attempt would be pure
+					// waste on a 550k-token history. The cache is invalidated
+					// by history growth (tool results land between turns), so
+					// each turn re-estimates against current history once.
+					if predictedHistoryTokens == 0 {
+						predictedHistoryTokens = common.CalculateHistoryTokens(sess.History, sess.SystemPrompt(), sess.GetToolDefinitions())
+					}
+					if predictedHistoryTokens > ctxSize*95/100 {
+						predictiveCompactionDone = true
+						runContextCompaction(ctx)
+					}
+				}
+			}
+
+			var onConnect func()
+			if (infraAttempts+badBodyAttempts) > 0 && onRecover != nil {
+				onConnect = func() {
+					if !recoveryFired {
+						recoveryFired = true
+						onRecover()
+					}
+				}
+			}
+
+			streamCh, errCh := sess.StartStream(ctx, extraBody, onConnect)
 			acc, err = ConsumeStream(ctx, streamCh, errCh, onStreamChunk)
+			if err == nil && acc.FinishReason == "length" {
+				// A stream can "succeed" while still being a context
+				// exhaustion verdict: providers that truncate instead of
+				// rejecting end the stream with finish_reason=length and a
+				// usage total at (or near) the window. Classify it exactly
+				// like an HTTP-level context rejection so the same
+				// compaction+retry safeguard applies; the output-truncation
+				// continuation below only handles the remaining case (a
+				// max_tokens cap on a non-full context).
+				ctxSize := sess.Client().ContextSize()
+				if ctxSize > 0 && acc.Usage.TotalTokens > 0 &&
+					float64(acc.Usage.TotalTokens) >= float64(ctxSize)*0.95 {
+					err = &client.ContextExceededError{Reason: "finish_reason=length"}
+				}
+			}
 			if err == nil {
 				break
+			}
+
+			// Context-exhaustion safeguard (Phase B4): the request is
+			// deterministic-failing — the conversation does not fit the
+			// model's window, so the retry tiers must not burn budgets on
+			// it (classifyStreamError maps the sentinel to retryClassNone).
+			// Recovery instead compacts history and retries the request
+			// through this same attempt machinery: the failed attempt
+			// committed nothing (ConsumeStream errors return before any
+			// history write, and a finish_reason=length exhaustion never
+			// reached the commit below), so history is intact and the
+			// retry is a clean re-request over the shrunken conversation.
+			// Only a run that ACTUALLY freed something earns the retry —
+			// a shadow report or a failed walk cannot shrink the request.
+			// No backoff: nothing about the failure is transient.
+			if isContextExceeded(err) && contextRounds < maxContextCompactionRounds {
+				contextRounds++
+				outcome := runContextCompaction(ctx)
+				// A run that freed something rewrote history: the cached
+				// per-turn estimate is stale (too high), so drop it — the
+				// next predictive check re-estimates against the shrunken
+				// conversation instead of re-triggering a redundant pass.
+				predictedHistoryTokens = 0
+				if outcome.freedSomething() {
+					if onRetry != nil {
+						// Surface the round so the TUI can show the
+						// compaction outcome while the retry streams (the
+						// verb branch keys off the sentinel in the error).
+						onRetry(common.RetryEvent{
+							ID:          common.GetOrchestratorID(ctx),
+							Attempt:     contextRounds,
+							MaxAttempts: maxContextCompactionRounds,
+							Delay:       0,
+							Err:         fmt.Errorf("%w (%s)", err, normalizeContextGuidance(outcome.summary())),
+						})
+					}
+					continue
+				}
+				// Unrecoverable: no compactor, compaction unavailable, the
+				// run failed, or it freed nothing. Surface the typed error
+				// with the guidance and the observed outcome — retry tiers
+				// intentionally untouched.
+				return "", contextExceededGuidance(err, outcome)
 			}
 
 			// Terminal per tier: budget exhausted for this failure's class or
@@ -381,26 +535,19 @@ func RunLoop(
 		// response. If at least one retry happened in this turn, signal
 		// recovery exactly once: the turn-start callback fired before the
 		// retries, so no thinking event will announce it.
-		if (infraAttempts+badBodyAttempts) > 0 && onRecover != nil {
-			// The retried attempt actually produced a response: signal
-			// recovery now (the turn-start callback fired before the
-			// retries, so no thinking event will announce it).
+		if (infraAttempts+badBodyAttempts) > 0 && onRecover != nil && !recoveryFired {
+			// Signal recovery if not already fired upon connect (e.g. mock session).
 			onRecover()
 		}
 
 		if acc.FinishReason == "length" {
-			// Determine if this is real context exhaustion or just output truncation
-			// (e.g. max_tokens cap set on the server side).
-			ctxSize := sess.Client().ContextSize()
-			isContextExhausted := ctxSize > 0 && acc.Usage.TotalTokens > 0 &&
-				float64(acc.Usage.TotalTokens) >= float64(ctxSize)*0.95
-
-			if isContextExhausted {
-				return "", fmt.Errorf("exceeds the available context size")
-			}
-
-			// Output was truncated but context is not full — save partial
-			// response and ask the model to continue more concisely.
+			// Deterministic context exhaustion was already classified inside
+			// the attempt loop (the safeguard ran the compactor and retried,
+			// or the run ended with its guidance). Reaching the commit path
+			// with a length finish means the context is NOT full: the
+			// provider cut the OUTPUT at a max_tokens cap. The pre-existing
+			// continuation behavior applies — save the partial response and
+			// ask the model to continue more concisely.
 			if err := sess.AddAssistantMessageWithTools(acc.Content, acc.Reasoning, nil); err != nil {
 				return "", fmt.Errorf("failed to save history: %w", err)
 			}

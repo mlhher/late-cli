@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"late/internal/common"
+	"late/internal/pathutil"
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
@@ -168,7 +169,10 @@ func (m *Model) inputView() string {
 
 	s := m.GetAgentState(m.Focused.ID())
 	if s.State == StateThinking || s.State == StateStreaming || showPluginAction {
-		outerStyle = outerStyle.BorderForeground(activeBorder)
+		ms := float64(time.Now().UnixNano()) / 1e6
+		pulse := (math.Sin(ms/250.0) + 1.0) / 2.0
+		borderGrad := lipgloss.Blend1D(100, borderColor, secondaryColor) // rest -> active
+		outerStyle = outerStyle.BorderForeground(borderGrad[int(pulse*99)])
 	} else if s.State == StateConfirmTool {
 		outerStyle = outerStyle.BorderForeground(warnBorderColor)
 	}
@@ -226,6 +230,10 @@ func (m *Model) autocompleteView() string {
 	var lines []string
 	for i := start; i < end; i++ {
 		item := m.AutocompleteItems[i]
+		if m.AutocompleteKind == autocompleteFile {
+			lines = append(lines, fileSuggestionLine(item, m.autocompleteQuery, i == m.AutocompleteIndex, w-2))
+			continue
+		}
 		prefix := "  "
 		nameStyle := lipgloss.NewStyle().
 			Foreground(subtextColor).
@@ -360,7 +368,7 @@ func (m *Model) renderMinimalEqualizerAt(now time.Time) string {
 
 		// Gentle incommensurate harmonic (golden ratio 1.618) creates organic, non-repeating crests
 		// Low amplitude ensures it never causes erratic snap or jitter
-		w2 := 0.35 * math.Sin(t*0.93 + float64(i)*0.55 + 1.2)
+		w2 := 0.35 * math.Sin(t*0.93+float64(i)*0.55+1.2)
 
 		// Breathing envelope gives gentle natural cadence
 		swell := 0.88 + 0.20*math.Sin(t*0.38+float64(i)*0.25)
@@ -392,7 +400,7 @@ func (m *Model) renderMinimalEqualizerAt(now time.Time) string {
 
 	bracketStyle := lipgloss.NewStyle().Foreground(mutedTextColor).Background(appBgColor)
 	equalizerStyle := lipgloss.NewStyle().Foreground(secondaryColor).Background(appBgColor)
-	peakStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8BE9FD")).Bold(true).Background(appBgColor)
+	peakStyle := lipgloss.NewStyle().Foreground(peakColor).Bold(true).Background(appBgColor)
 
 	var sb strings.Builder
 	sb.WriteString(bracketStyle.Render("["))
@@ -484,7 +492,7 @@ func (m *Model) renderScannerTrackAt(symbol string, symbolColor color.Color, now
 	bracketStyle := lipgloss.NewStyle().Foreground(mutedTextColor).Background(appBgColor)
 	headStyle := lipgloss.NewStyle().Foreground(symbolColor).Bold(true).Background(appBgColor)
 	trailSparkStyle := lipgloss.NewStyle().Foreground(symbolColor).Background(appBgColor)
-	auraBulletStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#C48D46")).Background(appBgColor)
+	auraBulletStyle := lipgloss.NewStyle().Foreground(auraColor).Background(appBgColor)
 	dotStyle := lipgloss.NewStyle().Foreground(mutedTextColor).Background(appBgColor)
 
 	var sb strings.Builder
@@ -502,6 +510,27 @@ func (m *Model) renderScannerTrackAt(symbol string, symbolColor color.Color, now
 	}
 	sb.WriteString(bracketStyle.Render("]"))
 	return sb.String()
+}
+
+func formatAgentBreadcrumb(id string) string {
+	if id == "" || id == common.MainAgentID || id == "main" {
+		return "orchestrator"
+	}
+	if strings.Contains(id, "-subagent-") {
+		parts := strings.SplitN(id, "-subagent-", 2)
+		return fmt.Sprintf("%s #%s", parts[0], parts[1])
+	}
+	if strings.HasPrefix(id, "subagent-type-") {
+		trimmed := strings.TrimPrefix(id, "subagent-type-")
+		if idx := strings.LastIndex(trimmed, "-"); idx != -1 {
+			return fmt.Sprintf("%s #%s", trimmed[:idx], trimmed[idx+1:])
+		}
+		return trimmed
+	}
+	if strings.HasPrefix(id, "subagent-") {
+		return fmt.Sprintf("subagent #%s", strings.TrimPrefix(id, "subagent-"))
+	}
+	return id
 }
 
 func (m *Model) statusBarView() string {
@@ -547,6 +576,20 @@ func (m *Model) statusBarView() string {
 
 	var leftItems []string
 
+	// Breadcrumb path from the root down to the focused agent. Computed before
+	// the left-section segments are assembled: the focused-agent label below is
+	// suppressed when the full chain renders (the breadcrumbs already name the
+	// focused agent) and the breadcrumb block reuses the same parts.
+	var pathParts []string
+	curr := m.Focused
+	for curr != nil {
+		pathParts = append([]string{curr.ID()}, pathParts...)
+		curr = curr.Parent()
+	}
+	if len(pathParts) <= 1 && m.Focused != nil && m.Root != nil && m.Focused.ID() != m.Root.ID() {
+		pathParts = []string{m.Root.ID(), m.Focused.ID()}
+	}
+
 	// State (far left)
 	var statePart string
 	statusText := s.StatusText
@@ -557,7 +600,7 @@ func (m *Model) statusBarView() string {
 		statePart = m.renderMinimalEqualizer()
 	case StateConfirmTool:
 		statePart = m.renderIdleEqualizer()
-		statusText = "authorize execution (y/s/p/g/n)"
+		statusText = "authorize execution (y/s/p/g/n) · or type a reply to deny"
 	default:
 		if m.BootstrapStatus != "" {
 			statePart = m.renderScannerTrack("✦", primaryColor)
@@ -567,28 +610,55 @@ func (m *Model) statusBarView() string {
 	}
 	leftItems = append(leftItems, statePart)
 
+	// Agent identity: full breadcrumb chain when focused on a subagent, or single
+	// focused-agent label for the root orchestrator. Always anchored in slot 2.
+	if len(pathParts) > 1 {
+		var styledParts []string
+		for i, id := range pathParts {
+			label := formatAgentBreadcrumb(id)
+			if i == len(pathParts)-1 {
+				styledParts = append(styledParts, breadcrumbActiveAgentStyle.Render(label))
+			} else {
+				styledParts = append(styledParts, breadcrumbAgentStyle.Render(label))
+			}
+		}
+		breadcrumbContent := strings.Join(styledParts, breadcrumbSeparatorStyle.Render(" › "))
+		leftItems = append(leftItems, breadcrumbContent)
+	} else if m.Focused != nil {
+		id := m.Focused.ID()
+		isRoot := m.Focused == m.Root || (m.Root != nil && id == m.Root.ID())
+		label := agentTypeForID(id)
+		if isRoot || label == "orchestrator" || id == common.MainAgentID || id == "main" {
+			label = "orchestrator"
+		} else if label == "" {
+			label = id
+		}
+		focusedAgentPart := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Background(appBgColor).Render(label)
+		leftItems = append(leftItems, focusedAgentPart)
+	}
+
 	// Branch or CWD (whisper-muted, unobtrusive context)
 	if m.ShowCWD {
 		if m.GitBranch != "" {
-			branchPart := lipgloss.NewStyle().Foreground(mutedTextColor).Render(m.GitBranch)
+			branchPart := lipgloss.NewStyle().Foreground(mutedTextColor).Background(appBgColor).Render("⎇ " + m.GitBranch)
 			leftItems = append(leftItems, branchPart)
 		} else if m.CWD != "" {
 			display := filepath.Base(m.CWD)
 			if display == "/" || display == "." {
 				display = m.CWD
 			}
-			repoPart := lipgloss.NewStyle().Foreground(mutedTextColor).Render(display)
+			repoPart := lipgloss.NewStyle().Foreground(mutedTextColor).Background(appBgColor).Render(display)
 			leftItems = append(leftItems, repoPart)
 		}
 	}
 
-	leftSection := strings.Join(leftItems, statusDivider)
+	leftSection := strings.Join(leftItems, "  ")
 
 	// Center: toast or active action text
 	var status string
 	hasToast := m.ToastMessage != "" && time.Now().UnixMilli() < m.ToastExpireTime
 	if m.BootstrapStatus != "" {
-		status = lipgloss.NewStyle().Foreground(subtextColor).Italic(true).Render(m.BootstrapStatus)
+		status = lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Italic(true).Render(m.BootstrapStatus)
 	} else if hasToast {
 		if m.ToastWarning {
 			status = statusWarningStyle.Render(m.ToastMessage)
@@ -599,7 +669,7 @@ func (m *Model) statusBarView() string {
 		if s.State == StateConfirmTool {
 			status = statusWarningStyle.Render(statusText)
 		} else {
-			status = lipgloss.NewStyle().Foreground(subtextColor).Italic(true).Render(statusText)
+			status = lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Italic(true).Render(statusText)
 		}
 	}
 
@@ -620,29 +690,24 @@ func (m *Model) statusBarView() string {
 		}
 	}
 
-	// Right: Attachments, Context, Breadcrumbs, Help
+	// Right: Context, Attachments
 	var rightItems []string
-	if len(m.AttachedFiles) > 0 {
-		rightItems = append(rightItems, statusAttachedStyle.Render(fmt.Sprintf("%d files", len(m.AttachedFiles))))
+	if w >= perfMinWidth {
+		if chip := perfChip(&s.Perf, time.Now()); chip != "" {
+			rightItems = append(rightItems, chip)
+		}
 	}
-
 	maxTokens := m.Focused.MaxTokens()
 	if s.CumulativeTokenCount > 0 {
 		rightItems = append(rightItems, m.renderContextBar(s.CumulativeTokenCount, maxTokens))
 	}
-
-	// Breadcrumbs
-	var pathParts []string
-	curr := m.Focused
-	for curr != nil {
-		pathParts = append([]string{breadcrumbAgentStyle.Render(curr.ID())}, pathParts...)
-		curr = curr.Parent()
-	}
-	if len(pathParts) > 1 {
-		rightItems = append(rightItems, strings.Join(pathParts, breadcrumbSeparatorStyle.Render(" › ")))
+	if len(m.AttachedFiles) > 0 {
+		fileLabel := fmt.Sprintf("📎 %d files", len(m.AttachedFiles))
+		rightItems = append(rightItems, statusAttachedStyle.Render(fileLabel))
 	}
 
-	rightSection := strings.Join(rightItems, statusDivider)
+	rightSection := strings.Join(rightItems, "  ")
+	rightSection = m.withWorkerTokens(rightSection, lipgloss.Width(leftSection), max(w-2, 1))
 
 	// Layout spacing
 	usableW := w - 2
@@ -681,6 +746,20 @@ func (m *Model) statusBarView() string {
 
 	content := lipgloss.JoinHorizontal(lipgloss.Left, parts...)
 	return statusBarBaseStyle.Width(w).Render(" " + content + " ")
+}
+
+// agentTypeForID maps an orchestrator ID to the agent type used by
+// config.AgentModels lookups: the root agent ("main") maps to "orchestrator"
+// and "<type>-subagent-<n>" (the NextChildID scheme) maps to "<type>".
+// Unrecognized IDs return "" (no config lookup possible).
+func agentTypeForID(id string) string {
+	if id == "" || id == common.MainAgentID {
+		return "orchestrator"
+	}
+	if idx := strings.Index(id, "-subagent-"); idx > 0 {
+		return id[:idx]
+	}
+	return ""
 }
 
 func (m *Model) updateViewport() {
@@ -750,10 +829,13 @@ func (m *Model) updateViewport() {
   **enter**           Submit prompt
   **alt+enter**       Insert newline into prompt
   **/compose**        Draft prompt in external $EDITOR
+  **@path**           Mention a project file (tab / enter completes)
 
 ### Attachments & Tools
   **ctrl+o**          Toggle file / image attachment picker
   **ctrl+x**          Clear attached files
+  **ctrl+r**          Expand / collapse all tool output
+  **click**           Click a tool call to expand or collapse it
   **ctrl+g** / **esc** Interrupt / stop active agent
 
 ### Slash Commands
@@ -897,19 +979,14 @@ func (m *Model) truncateWithEllipsis(s string, w int) string {
 	if w <= 3 {
 		return "..."
 	}
-
-	limit := w - 3
-	res := ""
-	currW := 0
-	for _, r := range s {
-		rw := lipgloss.Width(string(r))
-		if currW+rw > limit {
-			break
-		}
-		res += string(r)
-		currW += rw
-	}
-	return res + "..."
+	// ansi.Truncate is escape-sequence aware: it measures the same visible
+	// width lipgloss.Width does, never cuts inside a CSI sequence (the old
+	// rune walker counted escape bytes as content and could split one),
+	// keeps any trailing style resets, and already accounts for the tail
+	// width, so the result stays <= w cells. Callers pass both plain and
+	// lipgloss-styled text (the status bar truncates rendered, styled
+	// status strings on narrow terminals).
+	return ansi.Truncate(s, w, "...")
 }
 
 func (m *Model) renderMarkdownBlock(content string, innerWidth int) string {
@@ -1380,8 +1457,20 @@ func (m *Model) renderModelPickerView() {
 	lines = append(lines, header, "")
 
 	if len(m.ModelPickerModels) <= 1 && (m.AppConfig == nil || len(m.AppConfig.Models) == 0) {
-		lines = append(lines, viewEmptyStyle.Copy().Foreground(warnBorderColor).Render("No models configured in ~/.config/late/config.json"))
-		lines = append(lines, "", viewEmptyStyle.Render("Please add a 'models' array to your config file first."))
+		// Point the user at the real OS config location; fall back to the
+		// literal only if the platform config dir cannot be resolved.
+		configPath := "~/.config/late/config.json"
+		if cfgDir, dirErr := pathutil.LateConfigDir(); dirErr == nil {
+			configPath = filepath.Join(cfgDir, "config.json")
+		}
+		emptyMsg := fmt.Sprintf("No models configured in %s", configPath)
+		hint := "Please add a 'models' array to your config file first."
+		if m.AppConfig != nil && m.AppConfig.Degraded {
+			emptyMsg = fmt.Sprintf("config.json could not be loaded; fix %s first", configPath)
+			hint = "Your settings cannot be saved until the config file is fixed."
+		}
+		lines = append(lines, viewEmptyStyle.Copy().Foreground(warnBorderColor).Render(emptyMsg))
+		lines = append(lines, "", viewEmptyStyle.Render(hint))
 	} else {
 		// Instructions
 		lines = append(lines, viewEmptyStyle.Render("Use ↑/↓ to choose an agent, and ←/→ to select a model."), "")
@@ -1476,6 +1565,20 @@ func (m *Model) renderModelPickerView() {
 // text use the same clock; only this visible row is repainted on animation ticks.
 func (m *Model) renderActivityAt(text string, width int, now time.Time) string {
 	text = strings.Join(strings.Fields(text), " ")
+	if strings.HasPrefix(text, "interrupted") || strings.Contains(text, "interrupted · retrying") {
+		dots := []string{".", "..", "..."}[(now.UnixMilli()/350)%3]
+		base := strings.TrimPrefix(text, "↳")
+		base = strings.TrimPrefix(strings.TrimSpace(base), "↳")
+		base = strings.TrimSpace(base)
+		base = strings.TrimRight(strings.TrimSuffix(base, "..."), ".")
+		row := statusWarningStyle.Render("  ↳ " + base + dots)
+		truncated := ansi.Truncate(row, max(1, width), "")
+		rw := ansi.StringWidth(truncated)
+		if rw < width {
+			truncated += lipgloss.NewStyle().Background(appBgColor).Render(strings.Repeat(" ", width-rw))
+		}
+		return truncated
+	}
 	frames := spinner.Dot
 	frame := int(now.UnixNano()/int64(frames.FPS)) % len(frames.Frames)
 	marker := lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Render(strings.TrimSpace(frames.Frames[frame]))
@@ -1574,7 +1677,7 @@ func todoContentLines(todos []common.TodoItem, innerWidth int) []string {
 		itemStyle := lipgloss.NewStyle().Foreground(textColor)
 		if td.Done {
 			icon = "✓"
-			itemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#549B68"))
+			itemStyle = lipgloss.NewStyle().Foreground(accentEmerald)
 		}
 
 		prefix := fmt.Sprintf(" %2d  %s  ", i+1, icon)
@@ -1616,13 +1719,13 @@ func (m Model) todoPaneView(height int) string {
 	}
 	title := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color("#7D56F4")).
+		Foreground(todoTitleColor).
 		Render("  Todos" + focusMarker)
 	lines = append(lines, title)
 
 	if len(todos) == 0 {
 		emptyMsg := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#4A4B50")).
+			Foreground(mutedTextColor).
 			Italic(true).
 			Render("  No todos created yet.\n  Waiting for plan…")
 		lines = append(lines, strings.Split(emptyMsg, "\n")...)
@@ -1642,7 +1745,7 @@ func (m Model) todoPaneView(height int) string {
 			help = fmt.Sprintf("%d–%d/%d · %s", offset+1, end, len(content), help)
 		}
 		lines = append(lines, lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#67686E")).
+			Foreground(subtextColor).
 			Render("  "+help))
 	}
 
@@ -1660,7 +1763,7 @@ func (m Model) todoPaneView(height int) string {
 		Height(innerHeight).
 		MaxHeight(innerHeight).
 		Border(lipgloss.NormalBorder(), false, false, false, true).
-		BorderForeground(lipgloss.Color("#232329")).
+		BorderForeground(activeBorder).
 		Background(appBgColor)
 
 	return boxStyle.Render(content)

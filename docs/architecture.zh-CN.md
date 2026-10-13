@@ -113,7 +113,7 @@ Late 将规划与执行分离：**主编排器（Lead Orchestrator）**仅保留
 
 ## llama.cpp 集成
 
-- **自动发现：** 默认指向 `http://localhost:8080`。当连接到 `llama-server` 时，Late 会自动查询 `/props` 或 `/models` 以配置上下文长度，无需用户手动设置。
+- **自动发现：** 默认指向 `http://localhost:9931`。当连接到 `llama-server` 时，Late 会自动查询 `/props` 或 `/models` 以配置上下文长度，无需用户手动设置。
 - **经验性 Logit 偏置（Empirical Logit Biasing）：** Late 实现了依赖于模型的 logit 抑制，该机制受 EMNLP 2025 研究启发。该研究在其评估设置中显示，冗余推理 token 可减少 27%–51%，且不会损失准确率。Late 会在采样层面对重复的自我反思 token（如 "Wait..."、"Hmm"）施加惩罚。
 - **模型相关调优：** Logit 偏置映射会根据检测到的模型架构和分词器进行自适应调整。
 

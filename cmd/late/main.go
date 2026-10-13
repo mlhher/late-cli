@@ -129,7 +129,9 @@ func main() {
 	tool.SetSqzEnabled(*enableSqzReq)
 
 	if *versionReq {
-		fmt.Printf("late %s\n", common.Version)
+		// Full one-line build identity: version + stamped commit/build
+		// date, degrading to the bare dev banner for a plain `go build`.
+		fmt.Println(common.VersionDisplay())
 		return
 	}
 
@@ -205,8 +207,12 @@ func main() {
 		}
 	}
 
-	// Load App configuration
+	// Load App configuration. A load error means the run proceeds with
+	// degraded defaults (LoadConfig already wraps the error with the exact
+	// config path); keep the message so the TUI status bar can surface it
+	// before backend discovery reports.
 	appConfig, err := appconfig.LoadConfig()
+	configLoadWarning := initialBootstrapStatus(err)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Failed to load app config: %v\n", err)
 	}
@@ -454,6 +460,24 @@ func main() {
 	}
 
 	c := client.NewClient(resolvedClientConfig)
+	// An explicit context-size-tokens declaration wins over discovery: it is
+	// applied BEFORE any request (and before DiscoverBackend can run) and
+	// the client never lets a probe result clobber it. Without it the
+	// context size stays -1 for providers that never advertise their window,
+	// and the predictive compaction heuristic stays dark. Declared on the
+	// root client; the subagent client below mirrors its own routed entry.
+	if appConfig != nil {
+		if setting, ok := appConfig.GetModelForAgent("orchestrator"); ok {
+			if ctxSize, ok := setting.ContextSizeOverride(); ok {
+				c.SetContextSize(ctxSize)
+			}
+		} else if appConfig.ContextSizeTokens > 0 {
+			// Single-model setups have no agent_models entry: the top-level
+			// declaration still reaches the client instead of being silently
+			// dropped.
+			c.SetContextSize(appConfig.ContextSizeTokens)
+		}
+	}
 
 	// Initialize Subagent Client
 	subagentClient := c
@@ -469,6 +493,18 @@ func main() {
 			LogitBias:    explicitSubagentLogitBias,
 			AppVersion:   common.Version,
 		})
+		if appConfig != nil {
+			if setting, ok := appConfig.GetModelForAgent("subagent"); ok {
+				if ctxSize, ok := setting.ContextSizeOverride(); ok {
+					subagentClient.SetContextSize(ctxSize)
+				}
+			} else if appConfig.ContextSizeTokens > 0 {
+				// Same single-model fallback as the root client: the
+				// subagent shares the declared window unless it has its
+				// own routed entry.
+				subagentClient.SetContextSize(appConfig.ContextSizeTokens)
+			}
+		}
 	}
 
 	// Flag overrides
@@ -579,6 +615,26 @@ func main() {
 
 	// Create root orchestrator
 	// We'll add middlewares later once the program is started
+	// Context-exhaustion safeguard (Phase B): install the executor's
+	// programmatic compaction hook so a stream request the provider rejects
+	// (or truncates) for context exhaustion is recovered in-process — the
+	// executor compacts the ROOT session's history and retries the request,
+	// instead of surfacing the deterministic failure to the user.
+	//
+	// Upstream main has no history-compaction pipeline yet (see the
+	// compaction PR): there is nothing here that can shrink history, so the
+	// hook is installed as a typed failure. The executor's detection, the
+	// no-retry-waste classification, the finish_reason=length discriminator,
+	// and the guidance surface are all live; only the automatic SHRINK is
+	// inert, and the surfaced error says exactly why ("auto-compaction
+	// unavailable") instead of a bare failure. The compaction PR replaces
+	// this closure with one wrapping the history runner (mutating mode
+	// only), and recovery starts working with no executor change.
+	// Process-wide like every executor hook (root + subagents share it).
+	executor.SetContextCompactor(func(ctx context.Context) (executor.CompactionReport, error) {
+		return executor.CompactionReport{}, executor.ErrCompactionUnavailable
+	})
+
 	rootAgent := orchestrator.NewBaseOrchestrator(common.MainAgentID, sess, nil, 0)
 
 	model := tui.NewModel(rootAgent, renderer, appConfig)
@@ -684,8 +740,28 @@ func main() {
 		pOpts = append(pOpts, tea.WithWindowSize(w, h))
 	}
 
-	model.BootstrapStatus = "Starting..."
+	// A degraded app config surfaces as the initial status-bar text so the
+	// user sees it on the first paint; the async BootstrapStatusMsg traffic
+	// below replaces it as soon as backend discovery reports. "Starting..."
+	// only applies to a clean config load.
+	if configLoadWarning != "" {
+		model.BootstrapStatus = configLoadWarning
+	} else {
+		model.BootstrapStatus = "Starting..."
+	}
 	p := tea.NewProgram(model, pOpts...)
+
+	// diag is the mid-session diagnostics sink: hook timeouts/errors, hook
+	// stderr, and dropped-progress-event notices are delivered to the live
+	// TUI as DiagnosticMsg warning toasts instead of raw
+	// fmt.Fprintf(os.Stderr, ...) writes, which paint text over the
+	// alt-screen (duplicated footer rows, displaced agent-name line). The
+	// trailing newline the stderr formatting carries is trimmed here so the
+	// toast text is clean. Sources without a sink installed (CLI flows,
+	// pre-TUI bootstrap) still fall back to os.Stderr.
+	diag := func(msg string) {
+		p.Send(tui.DiagnosticMsg{Text: strings.TrimRight(msg, "\n")})
+	}
 
 	// toolSync serializes plugin/MCP tool-registry refreshes triggered by
 	// MCP servers' own tools/list_changed notifications (wired via
@@ -700,6 +776,18 @@ func main() {
 	go func() {
 		// Set messenger first
 		p.Send(tui.SetMessengerMsg{Messenger: p})
+
+		// Install the diagnostics sink now that the program is live: every
+		// mid-session diagnostic source reports through the TUI instead of
+		// raw stderr (see diag above). Subagent orchestrators are separate
+		// instances created per spawn — the runner below installs the same
+		// sink on each child.
+		if pluginManager != nil {
+			pluginManager.SetDiagnostics(diag)
+		}
+		rootAgent.SetDiagnostics(diag)
+		tool.SetDiagnostics(diag)
+
 		if resumedSessionTitle != "" {
 			p.Send(tui.BootstrapStatusMsg{
 				Text:   resumedSessionTitle,
@@ -724,7 +812,7 @@ func main() {
 
 		// Wait only in this background goroutine: the TUI remains usable while
 		// connections and discovery finish, but --prompt needs their results.
-		runBootstrap(p, mcpClient, config, c, subagentClient, sess, enabledTools, pluginManager, toolSync, *suppressThinkingWordsReq, explicitUserLogitBias, explicitSubagentLogitBias)
+		runBootstrap(p, mcpClient, config, c, subagentClient, sess, enabledTools, pluginManager, toolSync, *suppressThinkingWordsReq, explicitUserLogitBias, explicitSubagentLogitBias, configLoadWarning)
 
 		if *promptReq != "" {
 			p.Send(tui.StartPromptMsg(*promptReq))
@@ -760,6 +848,13 @@ func main() {
 				return "", err
 			}
 			child.SetMiddlewares(buildMiddlewares(pluginManager, p, child.Registry()))
+
+			// Diagnostics sink: the child is its own BaseOrchestrator
+			// instance, so without this its mid-session diagnostics would
+			// fall back to raw os.Stderr and paint text over the alt-screen.
+			if bo, ok := child.(*orchestrator.BaseOrchestrator); ok {
+				bo.SetDiagnostics(diag)
+			}
 
 			res, err := child.Execute("")
 			if err != nil {
@@ -803,6 +898,18 @@ func deriveEffectiveSessionID(historyPath string) string {
 	}
 	return id
 }
+
+// initialBootstrapStatus decides what the TUI status bar shows before the
+// async backend-discovery messages arrive. A failed app-config load returns
+// the "config error: ..." warning (the error already names the exact config
+// path); a clean load returns "" so the caller falls back to "Starting...".
+func initialBootstrapStatus(loadErr error) string {
+	if loadErr != nil {
+		return fmt.Sprintf("config error: %v", loadErr)
+	}
+	return ""
+}
+
 func newModelClient(ctx context.Context, setting appconfig.ModelSetting, enableImages bool, logitBias map[string]int) *client.Client {
 	c := client.NewClient(client.Config{
 		BaseURL:      setting.URL,
@@ -812,6 +919,14 @@ func newModelClient(ctx context.Context, setting appconfig.ModelSetting, enableI
 		LogitBias:    logitBias,
 		AppVersion:   common.Version,
 	})
+	// An explicit context-size-tokens declaration must be applied BEFORE
+	// DiscoverBackend: the setter marks the value explicit, so discovery
+	// still identifies the backend but never overwrites the declared
+	// window. Applied after the (harmless) constructor either way — the
+	// guard inside DiscoverBackend makes the ordering race-free.
+	if ctxSize, ok := setting.ContextSizeOverride(); ok {
+		c.SetContextSize(ctxSize)
+	}
 	c.DiscoverBackend(ctx)
 	return c
 }
@@ -1304,7 +1419,7 @@ func ForwardOrchestratorEvents(p *tea.Program, o common.Orchestrator) {
 // runBootstrap runs startup work (MCP connections and LLM backend discovery)
 // concurrently in the background so the TUI renders immediately. It streams live
 // animated status updates into the UI and completes when all tasks finish.
-func runBootstrap(p *tea.Program, mcpClient *mcp.Client, config *mcp.MCPConfig, c *client.Client, subagentClient *client.Client, sess *session.Session, enabledTools map[string]bool, pluginManager *plugin.PluginManager, toolSync *pluginToolSync, suppressThinkingWords bool, explicitUserLogitBias, explicitSubagentLogitBias map[string]int) {
+func runBootstrap(p *tea.Program, mcpClient *mcp.Client, config *mcp.MCPConfig, c *client.Client, subagentClient *client.Client, sess *session.Session, enabledTools map[string]bool, pluginManager *plugin.PluginManager, toolSync *pluginToolSync, suppressThinkingWords bool, explicitUserLogitBias, explicitSubagentLogitBias map[string]int, configLoadWarning string) {
 	var (
 		wg             sync.WaitGroup
 		mu             sync.Mutex
@@ -1473,11 +1588,26 @@ func runBootstrap(p *tea.Program, mcpClient *mcp.Client, config *mcp.MCPConfig, 
 		summary = strings.Join(parts, " • ")
 	}
 
-	sendMsg(tui.BootstrapStatusMsg{
+	sendMsg(finalBootstrapStatus(summary, warn, configLoadWarning, logitBiasToast))
+}
+
+func finalBootstrapStatus(summary string, warn bool, configLoadWarning string, logitBiasToast *tui.ToastMsg) tui.BootstrapStatusMsg {
+	nextToast := logitBiasToast
+	if configLoadWarning != "" {
+		nextToast = &tui.ToastMsg{
+			Text:     configLoadWarning,
+			Warning:  true,
+			Duration: 10 * time.Second,
+		}
+		if logitBiasToast != nil {
+			nextToast.Text += " • " + logitBiasToast.Text
+		}
+	}
+	return tui.BootstrapStatusMsg{
 		Text:        summary,
 		Warning:     warn,
 		Active:      false,
 		RefreshView: true,
-		NextToast:   logitBiasToast,
-	})
+		NextToast:   nextToast,
+	}
 }

@@ -57,8 +57,6 @@ late
 ```
 *Manual Binaries: [Linux, macOS, native Windows](https://github.com/mlhher/late-cli/releases)*
 
-> **Pre-release Notice:** This README documents features in **[v2.0.0-rc.1](https://github.com/mlhher/late-cli/releases/tag/v2.0.0-rc.1)** (pre-release). The latest stable release is **[v1.5.1](https://github.com/mlhher/late-cli/releases/tag/v1.5.1)**. Binaries for both versions are available on [GitHub Releases](https://github.com/mlhher/late-cli/releases).
-
 One binary. Zero configuration. If `llama-server` is already running, Late finds it automatically.
 
 📖 [**Read the Quickstart Guide**](./docs/quickstart.md) for setup details on persistent settings, fully autonomous containerized workflows, MCP and Skills setup, Git worktrees, keybindings, and more.
@@ -109,7 +107,7 @@ The orchestrator’s context grows primarily from what actually matters: your in
 | **Startup Time** | **Instant (<10ms native Go, feels like `htop`)** | 1s–3s+ (Node.js / Python runtimes) |
 | **System Prompt** | **~1,000 tokens (Lean & focused)** | 3,000–10,000+ tokens (From No-Workflow to Over-Constrained Bloat) |
 | **Sandboxing** | **Native rootless devcontainers (`late-podman`)** | No equivalent built-in workflow |
-| **Setup Required** | **None (Automatic `llama-server` on `:8080`)** | Requires provider/config setup |
+| **Setup Required** | **None (Automatic `llama-server` on `:9931`)** | Requires provider/config setup |
 | **Telemetry** | **None** | Telemetry by default |
 
 <p align="center"><b>If Late makes your model feel smarter, <a href="https://github.com/mlhher/late-cli">give it a ⭐ on GitHub</a></b></p>
@@ -166,7 +164,7 @@ Late is engineered as an end-to-end harness:
 
 **Does Late work with local models?**
 
-Zero config. Point `llama-server` at any GGUF and Late connects on `:8080` automatically.
+Zero config. Point `llama-server` at any GGUF and Late connects on `:9931` automatically.
 
 ---
 
@@ -175,7 +173,7 @@ Zero config. Point `llama-server` at any GGUF and Late connects on `:8080` autom
 Late is completely model-agnostic.
 
 **Local Models (Zero Config):**
-No configuration required. Late targets `llama.cpp` on port `:8080` (the default for `llama-server`).
+No configuration required. Late targets `llama.cpp` on port `:9931` (the default for `llama-server`).
 
 **Cloud Providers (DeepSeek, Claude, GPT, Kimi, GLM, OpenRouter):**
 

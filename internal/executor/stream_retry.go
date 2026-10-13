@@ -129,11 +129,24 @@ func effectiveRetryDelay(local time.Duration, retryAfter time.Duration) time.Dur
 // Everything else — context cancellation, permanent client errors
 // (401/403/404), and unknown errors — maps to retryClassNone and fails fast,
 // exactly like the pre-retry behavior.
+//
+// Context exhaustion (*client.ContextExceededError, sentinel
+// ErrContextExceeded) is checked BEFORE the StatusError tiers: it is
+// deterministic — the conversation does not fit the model's window, so
+// resending the identical request cannot succeed — and it usually arrives
+// disguised as a 400, which would otherwise burn the whole bad-body budget
+// (3 guaranteed-doomed retries, each with backoff) before failing. The
+// executor's context guard is the recovery path for this class: it compacts
+// history and retries the request once at the RunLoop level, not the
+// stream-retry level.
 func classifyStreamError(err error) streamRetryClass {
 	if err == nil {
 		return retryClassNone
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return retryClassNone
+	}
+	if errors.Is(err, client.ErrContextExceeded) {
 		return retryClassNone
 	}
 	var ue *url.Error

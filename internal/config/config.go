@@ -9,7 +9,7 @@ import (
 	"runtime"
 )
 
-const DefaultOpenAIBaseURL = "http://localhost:8080"
+const DefaultOpenAIBaseURL = "http://localhost:9931"
 
 // Permission modes for supervising potentially dangerous commands.
 // The effective mode is resolved by ResolvePermissionMode:
@@ -39,6 +39,31 @@ type ModelSetting struct {
 	URL   string `json:"url"`
 	Key   string `json:"key"`
 	Model string `json:"model"`
+
+	// ContextSizeTokens declares the model's context window in tokens for
+	// backends that never advertise it. llama.cpp is auto-discovered (the
+	// /props + /v1/models probes read n_ctx), but generic OpenAI-compatible
+	// providers and truncating local gateways return nothing, leaving the
+	// client's context size unknown (-1): the predictive compaction
+	// heuristic and the finish_reason=length context discriminator then
+	// stay dark and oversized requests fail opaquely. Set this to the
+	// model's real window (e.g. 32768) and late behaves as if the backend
+	// had advertised it — the declared value OVERRIDES discovery (a probe
+	// result never clobbers it) and also back-fills when discovery finds
+	// nothing. 0/unset = unknown (auto-discovery only).
+	ContextSizeTokens int `json:"context-size-tokens,omitempty"`
+}
+
+// ContextSizeOverride reports the entry's declared context window. The
+// second return is true only for a usable value (> 0): 0/unset means
+// "unknown — discovery only", and a negative value is ignored (it cannot
+// describe a real window) without a warning, mirroring how the client's
+// SetContextSize treats non-positive input.
+func (m ModelSetting) ContextSizeOverride() (int, bool) {
+	if m.ContextSizeTokens > 0 {
+		return m.ContextSizeTokens, true
+	}
+	return 0, false
 }
 
 // Reference returns the stable value stored in agent_models. Model is retained
@@ -81,6 +106,13 @@ type Config struct {
 	SubagentAPIKey  string `json:"subagent_api_key,omitempty"`
 	SubagentModel   string `json:"subagent_model,omitempty"`
 
+	// ContextSizeTokens is the single-model fallback for the per-model
+	// models[].context-size-tokens declaration (see ModelSetting): setups
+	// without an agent_models entry (plain openai_* / env-var configs)
+	// declare the window here and it applies to both the orchestrator and
+	// the subagent client. 0/unset = unknown (auto-discovery only).
+	ContextSizeTokens int `json:"context-size-tokens,omitempty"`
+
 	SkillsDir string `json:"skills_dir,omitempty"`
 
 	MaxAsyncSubagents int `json:"max_async_subagents,omitempty"`
@@ -88,6 +120,15 @@ type Config struct {
 	Theme       string            `json:"theme,omitempty"`
 	Models      []ModelSetting    `json:"models,omitempty"`
 	AgentModels map[string]string `json:"agent_models,omitempty"`
+
+	// Degraded is set by LoadConfig when config.json exists but could not
+	// be read or parsed: the returned config is a fallback default, not
+	// the user's real settings. SaveConfig refuses to persist a degraded
+	// config so that runtime toggles (/infobar, /timestamps, /model)
+	// cannot overwrite the user's hand-edited config.json with defaults.
+	// It is never serialized (json:"-") and is NOT set when the file is
+	// merely missing — that is a normal fresh install.
+	Degraded bool `json:"-"`
 }
 
 const DefaultMaxAsyncSubagents = 2
@@ -142,7 +183,8 @@ func LoadConfig() (*Config, error) {
 		}
 
 		fallback := defaultConfig()
-		return &fallback, err
+		fallback.Degraded = true
+		return &fallback, fmt.Errorf("failed to read %s: %w", configPath, err)
 	}
 
 	permErr := ensureSecureConfigPermissions(lateConfigDir, configPath)
@@ -150,7 +192,8 @@ func LoadConfig() (*Config, error) {
 	var cfg Config
 	if err := json.Unmarshal(content, &cfg); err != nil {
 		fallback := defaultConfig()
-		return &fallback, err
+		fallback.Degraded = true
+		return &fallback, fmt.Errorf("failed to parse %s: %w", configPath, err)
 	}
 
 	if cfg.EnabledTools == nil {
@@ -387,7 +430,13 @@ func (cfg *Config) GetModelForAgent(agentType string) (ModelSetting, bool) {
 }
 
 // SaveConfig atomically writes the configuration back to config.json.
+// A degraded config (loaded from an invalid config.json) is never saved:
+// the caller must fix or remove the file first, so a fallback default can
+// never clobber the user's hand-edited config.
 func SaveConfig(cfg *Config) error {
+	if cfg != nil && cfg.Degraded {
+		return fmt.Errorf("refusing to save config: it was loaded from an invalid config.json; fix or remove the file first")
+	}
 	lateConfigDir, err := pathutil.LateConfigDir()
 	if err != nil {
 		return err

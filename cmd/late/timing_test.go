@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 
-	tea "charm.land/bubbletea/v2"
-	"charm.land/glamour/v2"
 	"late/internal/assets"
 	"late/internal/client"
 	"late/internal/common"
@@ -15,6 +13,9 @@ import (
 	"late/internal/orchestrator"
 	"late/internal/session"
 	"late/internal/tui"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/glamour/v2"
 )
 
 func BenchmarkStartupTiming(b *testing.B) {
@@ -28,7 +29,7 @@ func BenchmarkStartupTiming(b *testing.B) {
 
 		// 3. New Client
 		c := client.NewClient(client.Config{
-			BaseURL: "http://localhost:8080",
+			BaseURL: "http://localhost:9931",
 		})
 
 		// 4. Session with real system prompt and history
@@ -75,7 +76,7 @@ func BenchmarkFullStartupPipeline(b *testing.B) {
 		// Simulate main() exact execution path up to and including frame 1 rendering
 		appConfig, _ := appconfig.LoadConfig()
 		c := client.NewClient(client.Config{
-			BaseURL: "http://localhost:8080",
+			BaseURL: "http://localhost:9931",
 		})
 		promptContent, _ := assets.PromptsFS.ReadFile("prompts/instruction-orchestrator.md")
 		systemPrompt := string(promptContent)

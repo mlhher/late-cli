@@ -238,7 +238,8 @@ func (s *Session) AppendToLastMessage(content, reasoning string) error {
 
 // StartStream initiates a streaming response.
 // It returns a standard Go channel for results and error.
-func (s *Session) StartStream(ctx context.Context, extraBody map[string]any) (<-chan common.StreamResult, <-chan error) {
+// An optional onConnect callback is called once HTTP 200 headers are received.
+func (s *Session) StartStream(ctx context.Context, extraBody map[string]any, onConnect ...func()) (<-chan common.StreamResult, <-chan error) {
 	outCh := make(chan common.StreamResult)
 	errCh := make(chan error, 1)
 
@@ -254,9 +255,15 @@ func (s *Session) StartStream(ctx context.Context, extraBody map[string]any) (<-
 	// intentionally left untouched.
 	messages = append(messages, SanitizeForRequest(s.History)...)
 
+	var onConn func()
+	if len(onConnect) > 0 && onConnect[0] != nil {
+		onConn = onConnect[0]
+	}
+
 	req := client.ChatCompletionRequest{
 		Messages:  messages,
 		ExtraBody: extraBody,
+		OnConnect: onConn,
 	}
 
 	if s.useTools {
@@ -301,6 +308,8 @@ func (s *Session) StartStream(ctx context.Context, extraBody map[string]any) (<-
 					ToolCalls:        toolCalls,
 					Usage:            chunk.Usage,
 					FinishReason:     finishReason,
+					Timings:          chunk.Timings,
+					Progress:         chunk.PromptProgress,
 				}
 
 				select {

@@ -209,6 +209,10 @@ func TestDiscover_IgnoresNodeModulesAndCache(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestInstallFromLocal_Project(t *testing.T) {
+	// Sandbox the user config dir: this flow records state in the global
+	// plugin state file (plugins.json), which must be a throwaway here.
+	sandboxUserConfig(t)
+
 	globalDir := t.TempDir()
 	projectDir := t.TempDir()
 	sourceDir := t.TempDir()
@@ -246,6 +250,10 @@ func TestInstallFromLocal_Project(t *testing.T) {
 }
 
 func TestInstallFromLocal_Global(t *testing.T) {
+	// Sandbox the user config dir: this flow records state in the global
+	// plugin state file (plugins.json), which must be a throwaway here.
+	sandboxUserConfig(t)
+
 	globalDir := t.TempDir()
 	projectDir := t.TempDir()
 	sourceDir := t.TempDir()
@@ -270,6 +278,10 @@ func TestInstallFromLocal_Global(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLink_Project(t *testing.T) {
+	// Sandbox the user config dir: Link records state in the global plugin
+	// state file (plugins.json), which must be a throwaway here.
+	sandboxUserConfig(t)
+
 	globalDir := t.TempDir()
 	projectDir := t.TempDir()
 	sourceDir := t.TempDir()
@@ -290,6 +302,10 @@ func TestLink_Project(t *testing.T) {
 }
 
 func TestLink_Global(t *testing.T) {
+	// Sandbox the user config dir: Link records state in the global plugin
+	// state file (plugins.json), which must be a throwaway here.
+	sandboxUserConfig(t)
+
 	globalDir := t.TempDir()
 	projectDir := t.TempDir()
 	sourceDir := t.TempDir()
@@ -314,6 +330,11 @@ func TestLink_Global(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRemovePlugin_Project(t *testing.T) {
+	// Sandbox the user config dir: installing/removing a local plugin
+	// records and clears state in the global plugin state file
+	// (plugins.json), which must be a throwaway here.
+	sandboxUserConfig(t)
+
 	globalDir := t.TempDir()
 	projectDir := t.TempDir()
 	sourceDir := t.TempDir()
@@ -350,6 +371,11 @@ func TestRemovePlugin_Project(t *testing.T) {
 }
 
 func TestRemovePlugin_Global(t *testing.T) {
+	// Sandbox the user config dir: installing/removing a local plugin
+	// records and clears state in the global plugin state file
+	// (plugins.json), which must be a throwaway here.
+	sandboxUserConfig(t)
+
 	globalDir := t.TempDir()
 	projectDir := t.TempDir()
 	sourceDir := t.TempDir()
@@ -571,6 +597,11 @@ func writeScopedPluginLike(t *testing.T, dir, scopedName string) string {
 }
 
 func TestRemovePlugin_ScopedLink_CleansEmptyScopeParent(t *testing.T) {
+	// Sandbox the user config dir: installing/removing a local plugin
+	// records and clears state in the global plugin state file
+	// (plugins.json), which must be a throwaway here.
+	sandboxUserConfig(t)
+
 	globalDir := t.TempDir()
 	sourceDir := t.TempDir()
 	writeScopedPluginLike(t, sourceDir, "@late/scoped-plugin")
@@ -598,6 +629,11 @@ func TestRemovePlugin_ScopedLink_CleansEmptyScopeParent(t *testing.T) {
 }
 
 func TestRemovePlugin_ScopedLink_KeepsNonEmptyScopeParent(t *testing.T) {
+	// Sandbox the user config dir: installing/removing a local plugin
+	// records and clears state in the global plugin state file
+	// (plugins.json), which must be a throwaway here.
+	sandboxUserConfig(t)
+
 	globalDir := t.TempDir()
 	srcA := t.TempDir()
 	srcB := t.TempDir()
@@ -636,6 +672,11 @@ func TestRemovePlugin_ScopedLink_KeepsNonEmptyScopeParent(t *testing.T) {
 // installs — the `dir` parameter flows through pm.TargetDir(project), but
 // without an explicit test the project's branch is never asserted.
 func TestRemovePlugin_Project_ScopedLink_CleansEmptyScopeParent(t *testing.T) {
+	// Sandbox the user config dir: installing/removing a local plugin
+	// records and clears state in the global plugin state file
+	// (plugins.json), which must be a throwaway here.
+	sandboxUserConfig(t)
+
 	globalDir := t.TempDir()
 	projectDir := t.TempDir()
 	sourceDir := t.TempDir()

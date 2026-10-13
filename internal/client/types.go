@@ -147,6 +147,7 @@ type ChatCompletionRequest struct {
 	ToolChoice    any              `json:"tool_choice,omitempty"`
 	LogitBias     map[string]int   `json:"logit_bias,omitempty"`
 	ExtraBody     map[string]any   `json:"extra_body,omitempty"`
+	OnConnect     func()           `json:"-"`
 }
 
 type ChatCompletionResponse struct {
@@ -171,6 +172,9 @@ type ChatCompletionChunk struct {
 	Choices []ChatCompletionChunkChoice `json:"choices"`
 	Usage   Usage                       `json:"usage,omitempty"`
 	Timings Timings                     `json:"timings,omitempty"`
+	// PromptProgress is sent by llama.cpp while it evaluates the prompt (before
+	// the first token) when the request asks for it.
+	PromptProgress *PromptProgress `json:"prompt_progress,omitempty"`
 }
 
 type ChatCompletionChunkChoice struct {
@@ -179,9 +183,28 @@ type ChatCompletionChunkChoice struct {
 	FinishReason string      `json:"finish_reason"`
 }
 
+// Timings is llama.cpp's own measurement of a request: how many prompt tokens
+// it had to evaluate (CacheN more were reused from its KV cache) and how fast
+// it evaluated and generated. It is all zero for servers that do not send it.
 type Timings struct {
-	PredictedPerSecond float64 `json:"predicted_per_second"`
+	CacheN             int     `json:"cache_n"`
+	PromptN            int     `json:"prompt_n"`
+	PromptMS           float64 `json:"prompt_ms"`
 	PromptPerSecond    float64 `json:"prompt_per_second"`
+	PredictedN         int     `json:"predicted_n"`
+	PredictedMS        float64 `json:"predicted_ms"`
+	PredictedPerSecond float64 `json:"predicted_per_second"`
+}
+
+// PromptProgress reports how far llama.cpp is into evaluating the prompt.
+// Processed counts the tokens handled so far including the Cache tokens that
+// were reused, so the work still to do is Total-Cache and the work done is
+// Processed-Cache.
+type PromptProgress struct {
+	Total     int     `json:"total"`
+	Cache     int     `json:"cache"`
+	Processed int     `json:"processed"`
+	TimeMS    float64 `json:"time_ms"`
 }
 
 type Usage struct {

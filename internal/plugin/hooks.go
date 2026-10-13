@@ -103,9 +103,30 @@ func resolveHookPath(pluginDir, relPath string) (string, error) {
 	return abs, nil
 }
 
+// reportLine routes one diagnostic line to report when non-nil, or — when
+// report is nil (no diagnostics sink installed) — to os.Stderr with the
+// exact same format string. All mid-session diagnostic writes in this
+// package funnel through here so a TUI session can replace raw stderr
+// painting with a toast sink.
+func reportLine(report func(string), format string, args ...any) {
+	if report != nil {
+		report(fmt.Sprintf(format, args...))
+		return
+	}
+	fmt.Fprintf(os.Stderr, format, args...)
+}
+
 // runHook executes a single hook script with the given stdin payload. It is
 // a no-op for empty script paths. Errors are returned but never panic.
+// Direct callers (tests) get the stderr fallback for hook diagnostics; pm
+// callers go through runHookDiag with the manager's sink.
 func runHook(ctx context.Context, pluginDir string, scriptPath string, stdin []byte) (string, error) {
+	return runHookDiag(ctx, pluginDir, scriptPath, stdin, nil)
+}
+
+// runHookDiag is runHook with a diagnostics sink: the hook's captured stderr
+// is forwarded to report instead of os.Stderr when report is non-nil.
+func runHookDiag(ctx context.Context, pluginDir string, scriptPath string, stdin []byte, report func(string)) (string, error) {
 	resolved, err := resolveHookPath(pluginDir, scriptPath)
 	if err != nil {
 		return "", err
@@ -141,7 +162,7 @@ func runHook(ctx context.Context, pluginDir string, scriptPath string, stdin []b
 	// the copy above, not sliced after the fact).
 	stderrStr := strings.TrimRight(stderr.String(), "\n")
 	if stderrStr != "" {
-		fmt.Fprintf(os.Stderr, "[hook %s:%s] %s\n", filepath.Base(pluginDir), filepath.Base(resolved), stderrStr)
+		reportLine(report, "[hook %s:%s] %s\n", filepath.Base(pluginDir), filepath.Base(resolved), stderrStr)
 	}
 
 	if err != nil {
@@ -228,6 +249,13 @@ func (pm *PluginManager) HasMessageSendHooks() bool {
 	return len(pm.snapshotHooks("message-send")) > 0
 }
 
+// runHook executes a single hook script for this manager, routing hook
+// diagnostics (captured stderr forwarding) through the manager's diagnostics
+// sink when one is installed, and to os.Stderr otherwise.
+func (pm *PluginManager) runHook(ctx context.Context, pluginDir string, scriptPath string, stdin []byte) (string, error) {
+	return runHookDiag(ctx, pluginDir, scriptPath, stdin, pm.diagnosticsSink())
+}
+
 // fanout fires all hooks across all plugins for the given event type in
 // parallel. Each hook's stdout is logged; errors and stderr are forwarded
 // but never abort the chain.
@@ -246,12 +274,12 @@ func (pm *PluginManager) fanout(ctx context.Context, eventType string, stdinFor 
 				if stdinFor != nil {
 					payload = stdinFor(h.pluginDir, script, h.pluginName)
 				}
-				out, err := runHook(ctx, h.pluginDir, script, payload)
+				out, err := pm.runHook(ctx, h.pluginDir, script, payload)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "[%s/%s/%s] %v\n", h.pluginName, eventType, script, err)
+					pm.reportf("[%s/%s/%s] %v\n", h.pluginName, eventType, script, err)
 				}
 				if out != "" {
-					fmt.Fprintf(os.Stderr, "[%s/%s/%s] %s\n", h.pluginName, eventType, script, out)
+					pm.reportf("[%s/%s/%s] %s\n", h.pluginName, eventType, script, out)
 				}
 			}(h, script)
 		}
@@ -305,9 +333,9 @@ func (pm *PluginManager) BuildHookMiddlewares(checkers ...ApprovalChecker) []com
 						Timestamp:        time.Now().UTC().Format(time.RFC3339),
 						RequiresApproval: requiresApproval,
 					})
-					out, err := runHook(ctx, h.pluginDir, script, payload)
+					out, err := pm.runHook(ctx, h.pluginDir, script, payload)
 					if err != nil {
-						fmt.Fprintf(os.Stderr, "[%s/onToolCall/%s] %v\n", h.pluginName, script, err)
+						pm.reportf("[%s/onToolCall/%s] %v\n", h.pluginName, script, err)
 						continue
 					}
 					if out == "blocked" {
@@ -397,12 +425,12 @@ func (pm *PluginManager) CallOnToolResultHooks(ctx context.Context, tool string,
 				"result": string(result),
 			})
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "[%s/onToolResult/%s] marshal payload: %v\n", h.pluginName, script, err)
+				pm.reportf("[%s/onToolResult/%s] marshal payload: %v\n", h.pluginName, script, err)
 				continue
 			}
-			out, err := runHook(ctx, h.pluginDir, script, payload)
+			out, err := pm.runHook(ctx, h.pluginDir, script, payload)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "[%s/onToolResult/%s] %v\n", h.pluginName, script, err)
+				pm.reportf("[%s/onToolResult/%s] %v\n", h.pluginName, script, err)
 				continue
 			}
 			if out == "blocked" {
@@ -432,9 +460,9 @@ func (pm *PluginManager) HookedMessage(ctx context.Context, text string) string 
 	current := text
 	for _, h := range hooks {
 		for _, script := range h.scripts {
-			out, err := runHook(ctx, h.pluginDir, script, []byte(current))
+			out, err := pm.runHook(ctx, h.pluginDir, script, []byte(current))
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "[%s/onMessageSend/%s] %v\n", h.pluginName, script, err)
+				pm.reportf("[%s/onMessageSend/%s] %v\n", h.pluginName, script, err)
 				continue
 			}
 			if out != "" {

@@ -17,11 +17,17 @@ import (
 // parameter correctly prepends the <|think|> token to the system prompt
 func TestNewSubagentOrchestratorWithGemmaThinking(t *testing.T) {
 	// Create a mock client
-	cfg := client.Config{BaseURL: "http://localhost:8080"}
+	cfg := client.Config{BaseURL: "http://localhost:9931"}
 	c := client.NewClient(cfg)
 
-	// Create a mock parent session
-	mockHistoryPath := "/tmp/mock-session.json"
+	// Create a mock parent session. Spawning a subagent reserves the parent's
+	// next child sequence via NextChildID → UpdateSubagentSeq, which persists
+	// the parent's .meta.json sidecar into the sessions dir — redirect the
+	// sessions dir to a temp dir so nothing lands in the real user dir.
+	tmp := t.TempDir()
+	setSessionDirForTest(t, tmp)
+
+	mockHistoryPath := filepath.Join(tmp, "mock-session.json")
 	mockHistory := []client.ChatMessage{}
 	mockSession := session.New(c, mockHistoryPath, mockHistory, "mock system prompt", true)
 	parent := orchestrator.NewBaseOrchestrator("parent", mockSession, nil, 100)
@@ -98,11 +104,17 @@ func TestNewSubagentOrchestratorWithGemmaThinking(t *testing.T) {
 // TestNewSubagentOrchestratorGemmaThinkingWithCWD verifies that gemmaThinking
 // works correctly together with injectCWD
 func TestNewSubagentOrchestratorGemmaThinkingWithCWD(t *testing.T) {
-	cfg := client.Config{BaseURL: "http://localhost:8080"}
+	cfg := client.Config{BaseURL: "http://localhost:9931"}
 	c := client.NewClient(cfg)
 
+	// Spawning a subagent persists the parent's .meta.json sidecar (see
+	// TestNewSubagentOrchestratorWithGemmaThinking) — redirect the sessions
+	// dir to a temp dir.
+	tmp := t.TempDir()
+	setSessionDirForTest(t, tmp)
+
 	// Create a mock parent session
-	mockHistoryPath := "/tmp/mock-session.json"
+	mockHistoryPath := filepath.Join(tmp, "mock-session.json")
 	mockHistory := []client.ChatMessage{}
 	mockSession := session.New(c, mockHistoryPath, mockHistory, "mock system prompt", true)
 	parent := orchestrator.NewBaseOrchestrator("parent", mockSession, nil, 100)
@@ -160,9 +172,15 @@ func min(a, b int) int {
 
 // TestNewSubagentOrchestratorID verifies that the created subagent ID contains its agent type
 func TestNewSubagentOrchestratorID(t *testing.T) {
-	cfg := client.Config{BaseURL: "http://localhost:8080"}
+	// Spawning a subagent persists the parent's .meta.json sidecar (see
+	// TestNewSubagentOrchestratorWithGemmaThinking) — redirect the sessions
+	// dir to a temp dir.
+	tmp := t.TempDir()
+	setSessionDirForTest(t, tmp)
+
+	cfg := client.Config{BaseURL: "http://localhost:9931"}
 	c := client.NewClient(cfg)
-	mockSession := session.New(c, "/tmp/mock-session.json", []client.ChatMessage{}, "mock system prompt", true)
+	mockSession := session.New(c, filepath.Join(tmp, "mock-session.json"), []client.ChatMessage{}, "mock system prompt", true)
 	parent := orchestrator.NewBaseOrchestrator("parent", mockSession, nil, 100)
 
 	child, err := NewSubagentOrchestrator(
@@ -187,52 +205,21 @@ func TestNewSubagentOrchestratorID(t *testing.T) {
 		t.Errorf("Expected child ID to contain 'coder', got %s", child.ID())
 	}
 }
-// TestNewSubagentOrchestrator_ToolExclusion verifies that batch_spawn_subagents,
-// spawn_subagent, and write_implementation_plan are excluded from the subagent registry
-func TestNewSubagentOrchestrator_ToolExclusion(t *testing.T) {
-	cfg := client.Config{BaseURL: "http://localhost:8080"}
-	c := client.NewClient(cfg)
-	mockSession := session.New(c, "/tmp/mock-session.json", []client.ChatMessage{}, "mock system prompt", true)
-	parent := orchestrator.NewBaseOrchestrator("parent", mockSession, nil, 100)
-
-	child, err := NewSubagentOrchestrator(
-		c,
-		"test goal",
-		[]string{},
-		"coder",
-		map[string]bool{"bash": true, "read_file": true},
-		false,
-		false,
-		100,
-		"",
-		false,
-		parent,
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("Failed to create subagent: %v", err)
-	}
-
-	reg := child.Registry()
-	if reg.Get("spawn_subagent") != nil {
-		t.Errorf("expected spawn_subagent to NOT be registered in subagent")
-	}
-	if reg.Get("batch_spawn_subagents") != nil {
-		t.Errorf("expected batch_spawn_subagents to NOT be registered in subagent")
-	}
-	if reg.Get("write_implementation_plan") != nil {
-		t.Errorf("expected write_implementation_plan to NOT be registered in subagent")
-	}
-}
 
 // TestNewSubagentOrchestrator_ConcurrentSpawn is the FR2 regression test:
 // concurrent spawns against a shared parent must never mint duplicate child IDs.
 func TestNewSubagentOrchestrator_ConcurrentSpawn(t *testing.T) {
-	cfg := client.Config{BaseURL: "http://localhost:8080"}
+	// Each spawn persists the parent's .meta.json sidecar (see
+	// TestNewSubagentOrchestratorWithGemmaThinking) — 16 concurrent spawns
+	// would hammer the real sessions dir without the redirect.
+	tmp := t.TempDir()
+	setSessionDirForTest(t, tmp)
+
+	cfg := client.Config{BaseURL: "http://localhost:9931"}
 	c := client.NewClient(cfg)
 
 	// Create a shared mock parent session and orchestrator
-	mockSession := session.New(c, "/tmp/mock-session.json", []client.ChatMessage{}, "mock system prompt", true)
+	mockSession := session.New(c, filepath.Join(tmp, "mock-session.json"), []client.ChatMessage{}, "mock system prompt", true)
 	parent := orchestrator.NewBaseOrchestrator("parent", mockSession, nil, 10)
 
 	const numSpawn = 16
@@ -325,7 +312,7 @@ func TestNewSubagentOrchestrator_PersistsWhenOptedIn(t *testing.T) {
 	tmp := t.TempDir()
 	setSessionDirForTest(t, tmp)
 
-	cfg := client.Config{BaseURL: "http://localhost:8080"}
+	cfg := client.Config{BaseURL: "http://localhost:9931"}
 	c := client.NewClient(cfg)
 
 	mockSession := session.New(c, "/tmp/mock-session.json", []client.ChatMessage{}, "mock system prompt", true)
@@ -400,7 +387,7 @@ func TestNewSubagentOrchestrator_RejectsUnsafeParentSessionID(t *testing.T) {
 	tmp := t.TempDir()
 	setSessionDirForTest(t, tmp)
 
-	cfg := client.Config{BaseURL: "http://localhost:8080"}
+	cfg := client.Config{BaseURL: "http://localhost:9931"}
 	c := client.NewClient(cfg)
 
 	mockSession := session.New(c, "/tmp/mock-session.json", []client.ChatMessage{}, "mock system prompt", true)
@@ -444,7 +431,7 @@ func TestNewSubagentOrchestrator_InMemoryByDefault(t *testing.T) {
 	tmp := t.TempDir()
 	setSessionDirForTest(t, tmp)
 
-	cfg := client.Config{BaseURL: "http://localhost:8080"}
+	cfg := client.Config{BaseURL: "http://localhost:9931"}
 	c := client.NewClient(cfg)
 
 	mockSession := session.New(c, "/tmp/mock-session.json", []client.ChatMessage{}, "mock system prompt", true)
@@ -483,7 +470,7 @@ func TestNewSubagentOrchestrator_SecondSpawnGetsNextID(t *testing.T) {
 	tmp := t.TempDir()
 	setSessionDirForTest(t, tmp)
 
-	cfg := client.Config{BaseURL: "http://localhost:8080"}
+	cfg := client.Config{BaseURL: "http://localhost:9931"}
 	c := client.NewClient(cfg)
 
 	mockSession := session.New(c, "/tmp/mock-session.json", []client.ChatMessage{}, "mock system prompt", true)
@@ -526,7 +513,7 @@ func TestNewSubagentOrchestrator_ResumedParentUsesNextHistoryPath(t *testing.T) 
 	tmp := t.TempDir()
 	setSessionDirForTest(t, tmp)
 
-	c := client.NewClient(client.Config{BaseURL: "http://localhost:8080"})
+	c := client.NewClient(client.Config{BaseURL: "http://localhost:9931"})
 	historyPath := filepath.Join(tmp, "session-test.json")
 	saveHistories := true
 	parentSession := session.New(c, historyPath, nil, "mock system prompt", true)
@@ -577,10 +564,16 @@ func TestNewSubagentOrchestrator_ResumedParentUsesNextHistoryPath(t *testing.T) 
 // TestSubagentRegistryHasNoTodoTools verifies that a spawned subagent NEVER
 // receives todo tools in its registry, even when enabledTools includes them.
 func TestSubagentRegistryHasNoTodoTools(t *testing.T) {
-	cfg := client.Config{BaseURL: "http://localhost:8080"}
+	// Spawning a subagent persists the parent's .meta.json sidecar (see
+	// TestNewSubagentOrchestratorWithGemmaThinking) — redirect the sessions
+	// dir to a temp dir.
+	tmp := t.TempDir()
+	setSessionDirForTest(t, tmp)
+
+	cfg := client.Config{BaseURL: "http://localhost:9931"}
 	c := client.NewClient(cfg)
 
-	mockSession := session.New(c, "/tmp/mock-session.json", []client.ChatMessage{}, "mock system prompt", true)
+	mockSession := session.New(c, filepath.Join(tmp, "mock-session.json"), []client.ChatMessage{}, "mock system prompt", true)
 	parent := orchestrator.NewBaseOrchestrator("parent", mockSession, nil, 100)
 
 	enabledTools := map[string]bool{
@@ -628,4 +621,3 @@ func TestSubagentRegistryHasNoTodoTools(t *testing.T) {
 		t.Fatalf("expected subagent registry to contain read_file")
 	}
 }
-

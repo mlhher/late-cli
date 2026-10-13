@@ -42,6 +42,20 @@ type BaseOrchestrator struct {
 
 	// Max turns configuration
 	maxTurns int
+
+	// diagnosticsFn receives mid-session diagnostic lines when installed —
+	// main wires it to the live TUI so they surface as a warning toast
+	// instead of a raw fmt.Fprintf(os.Stderr, ...) that would paint text
+	// over the alt-screen. Guarded by its own diagMu rather than mu — the
+	// same reasoning as the plugin manager's diagMu: reportf must stay
+	// callable from code that (now or later) already holds mu, and a nested
+	// RLock on the same RWMutex can deadlock against a queued writer. The
+	// sink is always invoked with NO lock held. nil (the default) falls
+	// back to os.Stderr. Subagent orchestrators are separate
+	// BaseOrchestrator instances, so each child gets the sink installed
+	// too (cmd/late/main.go propagates it in the spawn runner).
+	diagnosticsFn func(msg string)
+	diagMu        sync.RWMutex
 }
 
 func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.ToolMiddleware, maxTurns int) *BaseOrchestrator {
@@ -65,6 +79,33 @@ func (o *BaseOrchestrator) SetMiddlewares(middlewares []common.ToolMiddleware) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.middlewares = middlewares
+}
+
+// SetDiagnostics installs fn as this orchestrator's diagnostics sink: reportf
+// lines are routed to fn instead of os.Stderr, so a TUI session can surface
+// them as toasts without raw text painting over the alt-screen. Passing nil
+// removes the sink and restores the stderr fallback. Re-calling
+// SetDiagnostics replaces the previous sink — the LAST installed sink wins.
+// Must be called before the first run to apply to it (or any time; reads are
+// mutex-guarded, so installing mid-run is safe).
+func (o *BaseOrchestrator) SetDiagnostics(fn func(msg string)) {
+	o.diagMu.Lock()
+	defer o.diagMu.Unlock()
+	o.diagnosticsFn = fn
+}
+
+// reportf formats one diagnostic line and routes it to the installed
+// diagnostics sink, or — when no sink is installed — to os.Stderr with the
+// exact same format string, pinning the pre-sink behavior.
+func (o *BaseOrchestrator) reportf(format string, args ...any) {
+	o.diagMu.RLock()
+	fn := o.diagnosticsFn
+	o.diagMu.RUnlock()
+	if fn != nil {
+		fn(fmt.Sprintf(format, args...))
+		return
+	}
+	fmt.Fprintf(os.Stderr, format, args...)
 }
 
 func (o *BaseOrchestrator) SetContext(ctx context.Context) {
@@ -109,8 +150,30 @@ func (o *BaseOrchestrator) QueuedMessages() []string {
 	defer o.mu.RUnlock()
 	var msgs []string
 	for _, m := range o.pendingMsgs {
-		msgs = append(msgs, m.Content.String())
+		text := m.Content.UIString()
+		if text == "" {
+			text = m.Content.String()
+		}
+		msgs = append(msgs, text)
 	}
+	return msgs
+}
+
+func (o *BaseOrchestrator) DrainQueuedMessages() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if len(o.pendingMsgs) == 0 {
+		return nil
+	}
+	msgs := make([]string, 0, len(o.pendingMsgs))
+	for _, m := range o.pendingMsgs {
+		text := m.Content.UIString()
+		if text == "" {
+			text = m.Content.String()
+		}
+		msgs = append(msgs, text)
+	}
+	o.pendingMsgs = nil
 	return msgs
 }
 
@@ -228,6 +291,9 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 	var extraBody map[string]any
 
 	onStartTurn := func() {
+		if ctx.Err() != nil {
+			return
+		}
 		o.RefreshContextSize(ctx)
 		o.mu.Lock()
 		msgs := o.pendingMsgs
@@ -245,10 +311,10 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 	onEndTurn := func() {
 		o.RefreshContextSize(ctx)
 		o.mu.Lock()
-		usage := o.acc.Usage
+		usage, timings := o.acc.Usage, o.acc.Timings
 		o.acc.Reset()
 		o.mu.Unlock()
-		o.eventCh <- common.ContentEvent{ID: o.id, Usage: usage, Completed: true}
+		o.eventCh <- common.ContentEvent{ID: o.id, Usage: usage, Completed: true, Timings: timings}
 	}
 
 	res, err := executor.RunLoop(
@@ -270,6 +336,8 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 				ReasoningContent: accCopy.Reasoning,
 				ToolCalls:        accCopy.ToolCalls,
 				Usage:            accCopy.Usage,
+				Timings:          accCopy.Timings,
+				Progress:         accCopy.Progress,
 			}
 		},
 		func(ev common.RetryEvent) {
@@ -332,12 +400,26 @@ func (o *BaseOrchestrator) run() {
 	o.mu.Unlock()
 
 	defer cancel() // Ensure we don't leak the context when run() finishes
+	defer func() {
+		o.mu.Lock()
+		o.isRunning = false
+		o.pendingMsgs = nil
+		o.mu.Unlock()
+	}()
 
 	// Inject orchestrator ID into context for tool interactions
 	ctx = context.WithValue(ctx, common.OrchestratorIDKey, o.id)
 
 	for {
+		if ctx.Err() != nil {
+			o.eventCh <- common.StatusEvent{ID: o.id, Status: "idle"}
+			break
+		}
+
 		onStartTurn := func() {
+			if ctx.Err() != nil {
+				return
+			}
 			o.RefreshContextSize(ctx)
 			o.mu.Lock()
 			msgs := o.pendingMsgs
@@ -355,10 +437,10 @@ func (o *BaseOrchestrator) run() {
 		onEndTurn := func() {
 			o.RefreshContextSize(ctx)
 			o.mu.Lock()
-			usage := o.acc.Usage
+			usage, timings := o.acc.Usage, o.acc.Timings
 			o.acc.Reset()
 			o.mu.Unlock()
-			o.eventCh <- common.ContentEvent{ID: o.id, Usage: usage, Completed: true}
+			o.eventCh <- common.ContentEvent{ID: o.id, Usage: usage, Completed: true, Timings: timings}
 		}
 
 		// Build extra body
@@ -383,6 +465,8 @@ func (o *BaseOrchestrator) run() {
 					ReasoningContent: accCopy.Reasoning,
 					ToolCalls:        accCopy.ToolCalls,
 					Usage:            accCopy.Usage,
+					Timings:          accCopy.Timings,
+					Progress:         accCopy.Progress,
 				}
 			},
 			func(ev common.RetryEvent) {
@@ -453,6 +537,19 @@ func (o *BaseOrchestrator) run() {
 					o.sess.History = o.sess.History[:len(o.sess.History)-1]
 				}
 				o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: fmt.Errorf("image_unsupported")}
+			} else if errors.Is(err, client.ErrContextExceeded) {
+				// Context exhaustion is NOT a rejected request body even
+				// though providers usually deliver it as a 400: the
+				// conversation, not the message, is what overflowed, and
+				// the executor's context guard has already run (or could
+				// not run) its compaction rounds before this terminal
+				// error surfaced. The plain-400 rollback below would
+				// delete the user's message — input that is still valid,
+				// only too large for the window — and would replace the
+				// typed guidance with the rollback wording, so the typed
+				// error flows through untouched and the TUI renders the
+				// context-limit card.
+				o.eventCh <- common.StatusEvent{ID: o.id, Status: "error", Error: err}
 			} else if isBadRequestStatusError(err) {
 				// The API rejected the request body even after the executor's bad-body
 				// retries. Roll the turn back so the session returns to its pre-submit
@@ -504,6 +601,10 @@ func (o *BaseOrchestrator) Events() <-chan common.Event {
 
 func (o *BaseOrchestrator) Cancel() {
 	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	o.pendingMsgs = nil
+
 	if o.cancel != nil {
 		o.cancel()
 	}

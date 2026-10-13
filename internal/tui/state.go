@@ -92,8 +92,9 @@ type RenderBlock struct {
 // common.RetryEvent branch (the same verb the retry status line computes) so
 // the recovery toast can match the class of the failure that was retried.
 const (
-	retryVerbConnectionLost = "connection lost"
-	retryVerbRejectedByAPI  = "request rejected by the API"
+	retryVerbConnectionLost   = "connection lost"
+	retryVerbRejectedByAPI    = "request rejected by the API"
+	retryVerbContextCompacted = "context limit hit — history auto-compacted, retrying"
 )
 
 // RewindEntry represents a user message that can be rewound to.
@@ -115,7 +116,8 @@ type AppState struct {
 	TokenCount           int      // Estimated token count for current streaming content
 	CumulativeTokenCount int      // Total tokens accumulated across entire session (all messages)
 	Usage                client.Usage
-	LastRenderTime       int64 // Unix milliseconds of the last render during streaming
+	Perf                 perfState // inference speed of the current or last model call
+	LastRenderTime       int64     // Unix milliseconds of the last render during streaming
 
 	// Streaming render cache: paragraph-chunked incremental rendering
 	StreamingStyledCache string // Fully assembled + styled output of all completed paragraphs
@@ -150,6 +152,10 @@ type AppState struct {
 	// status as a silent safety net; recovery is announced separately by
 	// the dedicated RecoveryEvent. Empty means the agent is not retrying.
 	RetryVerb string
+
+	// ToggledTools holds the tool calls whose expansion differs from the
+	// global ShowToolOutput setting; a click on a call's row flips its entry.
+	ToggledTools map[string]bool
 }
 
 type Model struct {
@@ -196,6 +202,7 @@ type Model struct {
 	ToastMessage    string
 	ToastExpireTime int64
 	ToastWarning    bool
+	QuitArmedUntil  int64
 	BootstrapStatus string
 
 	// Model and config info (set from main.go after creation)
@@ -204,6 +211,12 @@ type Model struct {
 	CWD          string // Current working directory, shown in status bar
 	ShowCWD      bool   // Whether to show current working directory in status bar
 	GitBranch    string // Current git branch name, if in a git repo
+
+	// ShowToolOutput expands the detail of every finished tool call (ctrl+r).
+	ShowToolOutput bool
+	// reportCache holds Markdown-rendered subagent reports, which are costly to
+	// rebuild on every transcript frame. It is keyed by theme, width and call.
+	reportCache map[string]string
 
 	// Configuration
 	AppConfig              *config.Config
@@ -242,6 +255,14 @@ type Model struct {
 	AutocompleteItems  []CommandDef
 	AutocompleteIndex  int
 	AutocompleteOffset int
+	AutocompleteKind   autocompleteKind
+
+	// @file completion state (see filecomplete.go).
+	autocompleteQuery     string     // file query the open dropdown was ranked for
+	autocompleteSig       string     // query + index generation, to skip redundant re-ranking
+	autocompleteDismissed string     // trigger the user closed with esc; stays closed until it changes
+	fileIdx               *fileIndex // project files for @ completion; nil until the first scan lands
+	fileIdxLoading        bool
 
 	// Plugin-provided slash commands (registered at startup from plugins)
 	PluginCommands []string // each entry should include leading slash, e.g. "/query"
@@ -428,8 +449,9 @@ type McpStatusMsg struct {
 
 // ToastMsg carries a temporary toast notification into the TUI update loop.
 type ToastMsg struct {
-	Text    string
-	Warning bool
+	Text     string
+	Warning  bool
+	Duration time.Duration
 }
 
 // BootstrapStatusMsg carries startup progress into the TUI update loop.
@@ -439,6 +461,18 @@ type BootstrapStatusMsg struct {
 	Active      bool
 	RefreshView bool
 	NextToast   *ToastMsg
+}
+
+// DiagnosticMsg carries a mid-session diagnostic line (hook timeouts/errors,
+// hook stderr, dropped-progress-event notices) into the TUI update loop as a
+// warning toast. It replaces the raw fmt.Fprintf(os.Stderr, ...) writes that
+// used to paint text over the alt-screen: without this sink those lines
+// garbled the footer status line and visually replaced the agent-name row.
+// The orchestrators and the plugin manager route their diagnostics here via
+// SetDiagnostics when the program is live; without a sink installed they fall
+// back to os.Stderr (CLI flows, tests).
+type DiagnosticMsg struct {
+	Text string
 }
 
 // FindOrchestrator recursively searches for an orchestrator by ID.

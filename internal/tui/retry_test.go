@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"late/internal/client"
 	"late/internal/common"
 )
@@ -51,8 +52,8 @@ func TestRetryEventKeepsAgentThinking(t *testing.T) {
 	if s.StreamingStyledCache != "" || s.StreamingChunkCount != 0 {
 		t.Fatalf("streaming render cache not cleared (cache=%q, chunks=%d)", s.StreamingStyledCache, s.StreamingChunkCount)
 	}
-	if s.StreamingState.Content != "" {
-		t.Fatalf("failed attempt's partial text survived: %q", s.StreamingState.Content)
+	if s.StreamingState.Content != "partial attempt output" {
+		t.Fatalf("failed attempt's partial text was lost during backoff: %q", s.StreamingState.Content)
 	}
 	if s.RetryVerb != retryVerbConnectionLost {
 		t.Fatalf("RetryVerb = %q, want %q after an infra failure", s.RetryVerb, retryVerbConnectionLost)
@@ -183,8 +184,8 @@ func TestRecoveryEventToastsImmediately(t *testing.T) {
 	*m = updated.(Model)
 	s = m.GetAgentState(m.Focused.ID())
 
-	if s.StatusText != "connection restored — streaming response" {
-		t.Fatalf("StatusText = %q, want %q", s.StatusText, "connection restored — streaming response")
+	if s.StatusText != "" {
+		t.Fatalf("StatusText = %q, want empty so timer message is cleared", s.StatusText)
 	}
 	if s.RetryVerb != "" {
 		t.Fatalf("RetryVerb = %q, want it cleared once recovery is announced", s.RetryVerb)
@@ -211,14 +212,14 @@ func TestRecoveryEventToastsImmediately(t *testing.T) {
 		*m = updated.(Model)
 	}
 
-	if m.ToastMessage != "connection restored" {
-		t.Fatalf("ToastMessage = %q, want %q", m.ToastMessage, "connection restored")
+	if m.ToastMessage != "connection regained" {
+		t.Fatalf("ToastMessage = %q, want %q", m.ToastMessage, "connection regained")
 	}
 	if m.ToastWarning {
 		t.Fatal("restored toast must be success-style, not warning")
 	}
 	if m.ToastExpireTime <= time.Now().UnixMilli() {
-		t.Fatalf("ToastExpireTime = %d, want a future expiry (~3s)", m.ToastExpireTime)
+		t.Fatalf("ToastExpireTime = %d, want a future expiry", m.ToastExpireTime)
 	}
 
 	// The retried attempt streams its final response: no second toast.
@@ -229,7 +230,7 @@ func TestRecoveryEventToastsImmediately(t *testing.T) {
 	}})
 	*m = updated.(Model)
 
-	if m.ToastMessage != "connection restored" {
+	if m.ToastMessage != "connection regained" {
 		t.Fatalf("ToastMessage = %q after the final response, want it unchanged (no second toast)", m.ToastMessage)
 	}
 
@@ -254,7 +255,7 @@ func TestRecoveryEventToastsImmediately(t *testing.T) {
 			*m = updated.(Model)
 		}
 	}
-	if m.ToastMessage != "connection restored" {
+	if m.ToastMessage != "connection regained" {
 		t.Fatalf("ToastMessage = %q after the next turn's thinking, want it unchanged (no second toast)", m.ToastMessage)
 	}
 }
@@ -286,8 +287,8 @@ func TestRecoveryEventToastMatchesFailureClass(t *testing.T) {
 	*m = updated.(Model)
 	s = m.GetAgentState(m.Focused.ID())
 
-	if s.StatusText != "request accepted after retry — streaming response" {
-		t.Fatalf("StatusText = %q, want %q", s.StatusText, "request accepted after retry — streaming response")
+	if s.StatusText != "" {
+		t.Fatalf("StatusText = %q, want empty so timer message is cleared", s.StatusText)
 	}
 	if s.RetryVerb != "" {
 		t.Fatalf("RetryVerb = %q, want it cleared once recovery is announced", s.RetryVerb)
@@ -317,8 +318,8 @@ func TestRecoveryEventToastMatchesFailureClass(t *testing.T) {
 	if !strings.Contains(m.ToastMessage, "request accepted after retry") {
 		t.Fatalf("ToastMessage = %q, want it to mention the accepted retry", m.ToastMessage)
 	}
-	if strings.Contains(m.ToastMessage, "connection restored") {
-		t.Fatalf("ToastMessage = %q, must not claim the connection was restored for an HTTP 400", m.ToastMessage)
+	if strings.Contains(m.ToastMessage, "connection regained") || strings.Contains(m.ToastMessage, "connection restored") {
+		t.Fatalf("ToastMessage = %q, must not claim connection was regained for an HTTP 400", m.ToastMessage)
 	}
 }
 
@@ -502,8 +503,8 @@ func TestRecoveryEventWithoutRetryVerbKeepsStatusAccurate(t *testing.T) {
 	*m = updated.(Model)
 	s = m.GetAgentState(m.Focused.ID())
 
-	if s.StatusText != "streaming response" {
-		t.Fatalf("StatusText = %q, want %q", s.StatusText, "streaming response")
+	if s.StatusText != "" {
+		t.Fatalf("StatusText = %q, want empty", s.StatusText)
 	}
 	if s.RetryVerb != "" {
 		t.Fatalf("RetryVerb = %q, want it to stay clear", s.RetryVerb)
@@ -534,5 +535,158 @@ func TestRecoveryEventWithoutRetryVerbKeepsStatusAccurate(t *testing.T) {
 	}
 	if m.ToastWarning {
 		t.Fatal("no toast of any kind must fire for a stop-raced recovery")
+	}
+}
+
+// TestContentEventDuringRetryClearsTimerAndToasts covers recovery via incoming
+// content: when the retried attempt sends its first chunk, the timer status text
+// clears immediately, "connection regained" is toasted, and the new chunk
+// replaces the old partial output.
+func TestContentEventDuringRetryClearsTimerAndToasts(t *testing.T) {
+	m, s := newViewportBenchmarkModel(nil)
+	s.State = StateStreaming
+	s.StreamingState = common.ContentEvent{ID: m.Focused.ID(), Content: "partial from attempt 1"}
+
+	// Retry kicks in: backoff status is set, partial content is kept
+	updated, _ := m.Update(OrchestratorEventMsg{Event: common.RetryEvent{
+		ID:          m.Focused.ID(),
+		Attempt:     1,
+		MaxAttempts: 3,
+		Delay:       1500 * time.Millisecond,
+		Err:         errors.New("connection reset by peer"),
+	}})
+	*m = updated.(Model)
+	s = m.GetAgentState(m.Focused.ID())
+
+	if !strings.Contains(s.StatusText, "retry 1/3") {
+		t.Fatalf("StatusText = %q, want it to announce retry", s.StatusText)
+	}
+	if s.StreamingState.Content != "partial from attempt 1" {
+		t.Fatalf("StreamingState = %q, want partial output kept during backoff", s.StreamingState.Content)
+	}
+
+	// First chunk of the retried stream arrives
+	m.ToastMessage = ""
+	updated, cmd := m.Update(OrchestratorEventMsg{Event: common.ContentEvent{
+		ID:      m.Focused.ID(),
+		Content: "fresh chunk from attempt 2",
+	}})
+	*m = updated.(Model)
+	s = m.GetAgentState(m.Focused.ID())
+
+	if s.StatusText != "" {
+		t.Fatalf("StatusText = %q, want empty so timer status clears immediately", s.StatusText)
+	}
+	if s.RetryVerb != "" {
+		t.Fatalf("RetryVerb = %q, want empty once content arrives", s.RetryVerb)
+	}
+	if s.StreamingState.Content != "fresh chunk from attempt 2" {
+		t.Fatalf("StreamingState = %q, want fresh chunk to replace partial output", s.StreamingState.Content)
+	}
+	if cmd == nil {
+		t.Fatal("expected command delivering restored toast")
+	}
+
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, child := range batch {
+			childMsg := child()
+			if _, isFrame := childMsg.(transcriptFrameMsg); isFrame {
+				continue
+			}
+			updated, _ := m.Update(childMsg)
+			*m = updated.(Model)
+		}
+	} else {
+		updated, _ := m.Update(msg)
+		*m = updated.(Model)
+	}
+
+	if m.ToastMessage != "connection regained" {
+		t.Fatalf("ToastMessage = %q, want %q", m.ToastMessage, "connection regained")
+	}
+	if m.ToastWarning {
+		t.Fatal("restored toast must be success-style, not warning")
+	}
+}
+
+// TestRetryPreservesPartialContentInTranscriptWithWarningLabel verifies that during
+// retry backoff, the transcript displays the partial message with a retrying label.
+func TestRetryPreservesPartialContentInTranscriptWithWarningLabel(t *testing.T) {
+	m, s := newViewportBenchmarkModel(nil)
+	s.State = StateStreaming
+	s.StreamingState = common.ContentEvent{ID: m.Focused.ID(), Content: "important partial response"}
+
+	updated, _ := m.Update(OrchestratorEventMsg{Event: common.RetryEvent{
+		ID:          m.Focused.ID(),
+		Attempt:     1,
+		MaxAttempts: 3,
+		Delay:       1500 * time.Millisecond,
+		Err:         errors.New("connection reset by peer"),
+	}})
+	*m = updated.(Model)
+
+	content := ansi.Strip(testTranscriptContent(m))
+	if !strings.Contains(content, "important partial response") {
+		t.Fatalf("transcript = %q, want it to retain partial response", content)
+	}
+	if !strings.Contains(content, "interrupted · retrying...") {
+		t.Fatalf("transcript = %q, want it to show interrupted retrying label", content)
+	}
+	if strings.Contains(content, "connection lost") {
+		t.Fatalf("transcript = %q, must not duplicate connection lost inside chat bubble", content)
+	}
+}
+
+// TestRetryAnimatesInterruptedLabel verifies that during retry backoff, the
+// "interrupted · retrying" transcript label registers an activity that animates
+// dynamic moving dots (. -> .. -> ...) across clock ticks.
+func TestRetryAnimatesInterruptedLabel(t *testing.T) {
+	m, s := newViewportBenchmarkModel(nil)
+	s.State = StateStreaming
+	s.StreamingState = common.ContentEvent{ID: m.Focused.ID(), Content: "partial streamed answer"}
+
+	updated, _ := m.Update(OrchestratorEventMsg{Event: common.RetryEvent{
+		ID:          m.Focused.ID(),
+		Attempt:     1,
+		MaxAttempts: 3,
+		Delay:       1500 * time.Millisecond,
+		Err:         errors.New("connection reset by peer"),
+	}})
+	*m = updated.(Model)
+	renderTestTranscript(m)
+	s = m.GetAgentState(m.Focused.ID())
+
+	// An activity should be registered for the retry label
+	foundActivity := false
+	for _, act := range s.Transcript.activities {
+		if strings.Contains(act, "interrupted · retrying") {
+			foundActivity = true
+			break
+		}
+	}
+	if !foundActivity {
+		t.Fatalf("expected an activity registered for 'interrupted · retrying', got: %v", s.Transcript.activities)
+	}
+
+	// Verify animated dots cycle through ., .., ...
+	f1 := ansi.Strip(m.renderActivityAt("interrupted · retrying...", 80, time.UnixMilli(0)))
+	f2 := ansi.Strip(m.renderActivityAt("interrupted · retrying...", 80, time.UnixMilli(350)))
+	f3 := ansi.Strip(m.renderActivityAt("interrupted · retrying...", 80, time.UnixMilli(700)))
+
+	if !strings.Contains(f1, "interrupted · retrying.") || strings.Contains(f1, "interrupted · retrying..") {
+		t.Fatalf("frame 1 = %q, want exactly 1 dot", f1)
+	}
+	if !strings.Contains(f2, "interrupted · retrying..") || strings.Contains(f2, "interrupted · retrying...") {
+		t.Fatalf("frame 2 = %q, want exactly 2 dots", f2)
+	}
+	if !strings.Contains(f3, "interrupted · retrying...") {
+		t.Fatalf("frame 3 = %q, want 3 dots", f3)
+	}
+
+	// Live transcript view should include the animated label
+	liveView := ansi.Strip(m.transcriptView())
+	if !strings.Contains(liveView, "interrupted · retrying") {
+		t.Fatalf("live transcript view = %q, want it to contain interrupted retrying label", liveView)
 	}
 }

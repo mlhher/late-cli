@@ -8,6 +8,7 @@ import (
 	"late/internal/common"
 	"late/internal/tool"
 	"runtime"
+	"strings"
 )
 
 // TUIInputProvider implements common.InputProvider by sending messages to the TUI.
@@ -164,6 +165,9 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 				case "n":
 					return "Tool execution cancelled by user", nil
 				default:
+					if reason, ok := strings.CutPrefix(choice, denyReasonPrefix); ok && strings.TrimSpace(reason) != "" {
+						return "Tool execution cancelled by user. The user said: " + strings.TrimSpace(reason), nil
+					}
 					return "Tool execution cancelled by user", nil
 				}
 			case err := <-errCh:
@@ -176,9 +180,17 @@ func TUIConfirmMiddleware(messenger Messenger, reg *common.ToolRegistry) common.
 }
 
 // ConfirmRequestMsg is sent to the TUI to request tool execution confirmation.
+//
+// The answer sent on ResultCh is one of "y" (once), "s"/"p"/"g" (remember for
+// the session, project or globally), "n" (deny), or denyReasonPrefix followed by
+// the user's own words (deny and tell the agent why).
 type ConfirmRequestMsg struct {
 	OrchestratorID string
 	ToolCall       client.ToolCall
 	ResultCh       chan string
 	ErrCh          chan error
+
+	// preview is built by the TUI when the request arrives; it lives and dies
+	// with the pending confirmation.
+	preview *approvalPreview
 }

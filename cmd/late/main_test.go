@@ -354,7 +354,7 @@ func TestValidateSuppressThinkingWords(t *testing.T) {
 }
 
 func TestBuildMiddlewares_SubagentInheritsPluginHooks(t *testing.T) {
-	c := client.NewClient(client.Config{BaseURL: "http://localhost:8080"})
+	c := client.NewClient(client.Config{BaseURL: "http://localhost:9931"})
 	parentSess := session.New(c, "", nil, "parent prompt", false)
 	parent := orchestrator.NewBaseOrchestrator("parent", parentSess, nil, 10)
 
@@ -440,7 +440,7 @@ func TestRunBootstrap_DynamicLogitBias(t *testing.T) {
 	sess := session.New(c, "", nil, "prompt", false)
 
 	// Run bootstrap with suppressThinkingWords enabled
-	runBootstrap(nil, nil, nil, c, subagentClient, sess, nil, nil, nil, true, explicitUser, explicitSub)
+	runBootstrap(nil, nil, nil, c, subagentClient, sess, nil, nil, nil, true, explicitUser, explicitSub, "")
 
 	if !c.IsLlamaCPP() {
 		t.Fatalf("expected c to be detected as llama.cpp")

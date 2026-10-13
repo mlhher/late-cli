@@ -36,13 +36,13 @@ func TestExpandEnvVars_BasicExpansion(t *testing.T) {
 
 func TestExpandEnvVars_MultipleVars(t *testing.T) {
 	os.Setenv("TEST_HOST", "localhost")
-	os.Setenv("TEST_PORT", "8080")
+	os.Setenv("TEST_PORT", "9931")
 	defer os.Unsetenv("TEST_HOST")
 	defer os.Unsetenv("TEST_PORT")
 
 	result := ExpandEnvVars("http://${TEST_HOST}:${TEST_PORT}/api")
-	if result != "http://localhost:8080/api" {
-		t.Errorf("expected 'http://localhost:8080/api', got %q", result)
+	if result != "http://localhost:9931/api" {
+		t.Errorf("expected 'http://localhost:9931/api', got %q", result)
 	}
 }
 
@@ -93,7 +93,7 @@ func TestExpandServerEnvVars_AllFields(t *testing.T) {
 
 	server := &MCPServer{
 		Command: "${TEST_CMD}",
-		Args:    []string{"${TEST_SCRIPT}", "--port", "8080"},
+		Args:    []string{"${TEST_SCRIPT}", "--port", "9931"},
 		URL:     "${TEST_ENDPOINT}/v1",
 		Env: map[string]string{
 			"API_KEY": "${TEST_API_KEY}",
@@ -109,8 +109,8 @@ func TestExpandServerEnvVars_AllFields(t *testing.T) {
 	if server.URL != "https://api.example.com/v1" {
 		t.Errorf("expected URL 'https://api.example.com/v1', got %q", server.URL)
 	}
-	if len(server.Args) != 3 || server.Args[0] != "server.js" || server.Args[1] != "--port" || server.Args[2] != "8080" {
-		t.Errorf("expected Args ['server.js', '--port', '8080'], got %v", server.Args)
+	if len(server.Args) != 3 || server.Args[0] != "server.js" || server.Args[1] != "--port" || server.Args[2] != "9931" {
+		t.Errorf("expected Args ['server.js', '--port', '9931'], got %v", server.Args)
 	}
 	if server.Env["API_KEY"] != "key-123" {
 		t.Errorf("expected Env[API_KEY] = 'key-123', got %q", server.Env["API_KEY"])

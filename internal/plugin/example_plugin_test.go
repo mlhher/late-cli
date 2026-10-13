@@ -237,6 +237,11 @@ func TestExamplePlugin_AllAPIs(t *testing.T) {
 // TestExamplePlugin_CLICommands tests installing via 'late plugin link',
 // listing, enabling, disabling, and removing.
 func TestExamplePlugin_CLICommands(t *testing.T) {
+	// Sandbox the user config dir: link/enable/disable/remove all record
+	// state in the global plugin state file (plugins.json), which must be
+	// a throwaway here.
+	sandboxUserConfig(t)
+
 	wd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)

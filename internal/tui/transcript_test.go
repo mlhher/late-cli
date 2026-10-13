@@ -496,7 +496,7 @@ func TestTranscriptBottomBreathingSpace(t *testing.T) {
 func TestTranscriptTableHeaderSeparatorUniformity(t *testing.T) {
 	history := []client.ChatMessage{
 		{
-			Role: "assistant",
+			Role:    "assistant",
 			Content: client.TextContent("| ID | Component |\n| --- | --- |\n| 1 | Test |\n"),
 		},
 	}
