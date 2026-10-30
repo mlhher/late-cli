@@ -1763,6 +1763,10 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 		// the retried attempt actually produced a response; it is returned
 		// after the event switch below.
 		var restoredToast tea.Cmd
+		// spawnedToast briefly announces a new subagent. It is a toast rather
+		// than status text because the parent stays blocked on the subagent,
+		// so status text would sit in the bar for the subagent's whole run.
+		var spawnedToast tea.Cmd
 		// contextExceededToastCmd surfaces the context-exhaustion guidance —
 		// including the executor guard's compaction outcome ("auto-compacted
 		// (saved ~N tokens), retrying" or the unavailable/failed wording) —
@@ -1984,7 +1988,13 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				m.updateViewport()
 			}
 		case common.ChildAddedEvent:
-			s.StatusText = "Subagent spawned"
+			label := "subagent"
+			if event.Child != nil {
+				label = formatAgentBreadcrumb(event.Child.ID())
+			}
+			spawnedToast = func() tea.Msg {
+				return ToastMsg{Text: label + " spawned · tab to view", Duration: 2 * time.Second}
+			}
 			m.updateViewport()
 		case common.StopRequestedEvent:
 			s.Perf.abort()
@@ -2011,6 +2021,9 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 		var eventCmds []tea.Cmd
 		if restoredToast != nil {
 			eventCmds = append(eventCmds, restoredToast)
+		}
+		if spawnedToast != nil {
+			eventCmds = append(eventCmds, spawnedToast)
 		}
 		if contextExceededToastCmd != nil {
 			eventCmds = append(eventCmds, contextExceededToastCmd)

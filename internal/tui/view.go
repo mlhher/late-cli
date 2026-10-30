@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -175,7 +176,9 @@ func (m *Model) inputView() string {
 		MarginBackground(appBgColor)
 
 	s := m.GetAgentState(m.Focused.ID())
-	if s.State == StateThinking || s.State == StateStreaming || showPluginAction {
+	if (s.State == StateThinking || s.State == StateStreaming) && m.blockedDescendant() != "" {
+		outerStyle = outerStyle.BorderForeground(warnBorderColor)
+	} else if s.State == StateThinking || s.State == StateStreaming || showPluginAction {
 		ms := float64(time.Now().UnixNano()) / 1e6
 		pulse := (math.Sin(ms/250.0) + 1.0) / 2.0
 		borderGrad := lipgloss.Blend1D(100, borderColor, secondaryColor) // rest -> active
@@ -540,6 +543,41 @@ func formatAgentBreadcrumb(id string) string {
 	return id
 }
 
+// otherAgentAwaitingApproval returns the ID of an agent other than the focused
+// one that is waiting for tool approval, or "" if there is none.
+func (m *Model) otherAgentAwaitingApproval() string {
+	ids := make([]string, 0, len(m.AgentStates))
+	for id, state := range m.AgentStates {
+		if id != m.Focused.ID() && !state.Closed && state.State == StateConfirmTool {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return ""
+	}
+	sort.Strings(ids) // map order is random; keep the label stable between frames
+	return ids[0]
+}
+
+// blockedDescendant returns the ID of an agent below the focused one that is
+// waiting for tool approval, or "" if there is none. Until that approval is
+// given, the focused agent cannot make progress.
+func (m *Model) blockedDescendant() string {
+	if m.Focused == nil {
+		return ""
+	}
+	stack := append([]common.Orchestrator(nil), m.Focused.Children()...)
+	for len(stack) > 0 {
+		o := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if st, ok := m.AgentStates[o.ID()]; ok && !st.Closed && st.State == StateConfirmTool {
+			return o.ID()
+		}
+		stack = append(stack, o.Children()...)
+	}
+	return ""
+}
+
 func (m *Model) statusBarView() string {
 	w := max(m.Width, 1)
 
@@ -600,11 +638,22 @@ func (m *Model) statusBarView() string {
 	// State (far left)
 	var statePart string
 	statusText := s.StatusText
+	// While a subagent waits for approval the focused agent is blocked on it,
+	// so show the idle indicator instead of a busy animation.
+	blocked := m.blockedDescendant() != ""
 	switch s.State {
 	case StateThinking:
-		statePart = m.renderScannerTrack("✦", primaryColor)
+		if blocked {
+			statePart = m.renderIdleEqualizer()
+		} else {
+			statePart = m.renderScannerTrack("✦", primaryColor)
+		}
 	case StateStreaming:
-		statePart = m.renderMinimalEqualizer()
+		if blocked {
+			statePart = m.renderIdleEqualizer()
+		} else {
+			statePart = m.renderMinimalEqualizer()
+		}
 	case StateConfirmTool:
 		statePart = m.renderIdleEqualizer()
 		statusText = "authorize execution (y/s/p/g/n) · or type a reply to deny"
@@ -680,16 +729,9 @@ func (m *Model) statusBarView() string {
 		}
 	}
 
-	// Check if any other agent is waiting for confirmation
-	otherWaiting := false
-	for id, state := range m.AgentStates {
-		if id != m.Focused.ID() && state.State == StateConfirmTool {
-			otherWaiting = true
-			break
-		}
-	}
-	if otherWaiting {
-		warn := statusWarningStyle.Render("subagent confirm required")
+	// Tell the user when another agent is waiting for approval, and how to get to it.
+	if waitingID := m.otherAgentAwaitingApproval(); waitingID != "" {
+		warn := statusWarningStyle.Render("⚠ " + formatAgentBreadcrumb(waitingID) + " needs approval · tab to switch")
 		if status != "" {
 			status += " · " + warn
 		} else {
