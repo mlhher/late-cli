@@ -156,7 +156,7 @@ The essentials:
 | `/compose`          | Draft a longer instruction in your `$EDITOR`         |
 | `Ctrl+D` / `Ctrl+C` | Quit                                                 |
 
-Type `/` at any time to open the command picker, and `@` anywhere in your prompt to pick a project file by name (fuzzy, `Tab`/`Enter` to insert; files ignored by `.gitignore`/`.llmignore` are not offered).
+Type `/` at any time to open the command picker (`Tab` fills in the highlighted command so you can add arguments, `Enter` runs it), and `@` anywhere in your prompt to pick a project file by name (fuzzy, `Tab`/`Enter` to insert; files ignored by `.gitignore`/`.llmignore` are not offered).
 
 When Late creates subagents, each appears in its own tab while it works and disappears after completing its task.
 

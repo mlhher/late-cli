@@ -926,6 +926,7 @@ func (m *Model) updateViewport() {
   **enter**           Submit prompt
   **alt+enter**       Insert newline into prompt
   **/compose**        Draft prompt in external $EDITOR
+  **/**               Command picker (tab completes, enter runs)
   **@path**           Mention a project file (tab / enter completes)
 
 ### Attachments & Tools

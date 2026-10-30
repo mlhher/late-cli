@@ -1106,9 +1106,11 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			case "up":
 				m.AutocompleteIndex = max(0, m.AutocompleteIndex-1)
 				return m, nil
-			case "down", "tab":
+			case "down":
 				m.AutocompleteIndex = min(len(m.AutocompleteItems)-1, m.AutocompleteIndex+1)
 				return m, nil
+			case "tab":
+				return m.acceptAutocomplete(), nil // fill in, don't submit
 			case "enter":
 				m = m.acceptAutocomplete()
 				// Fall through to normal "enter" handling for submission
