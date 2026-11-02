@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"late/internal/client"
@@ -22,6 +23,39 @@ const FrameRate = 60
 const transcriptFrameInterval = time.Second / FrameRate
 
 type transcriptFrameMsg struct{}
+
+// toolCallLabel returns the display label for a tool call. While the call is
+// still streaming, its arguments are usually incomplete JSON, which tools
+// cannot parse; show a neutral placeholder instead of their "invalid args"
+// fallback until the arguments are complete.
+//
+// preparing reports that the placeholder was returned: the call is still being
+// generated, not yet running.
+func (m *Model) toolCallLabel(tc client.ToolCall, streaming bool) (label string, preparing bool) {
+	name := tc.Function.Name
+	args := tc.Function.Arguments
+	if len(args) == 0 {
+		return name, false
+	}
+	if streaming && !json.Valid([]byte(args)) {
+		return "Preparing " + name + "…", true
+	}
+	if registry := m.Focused.Registry(); registry != nil {
+		if t := registry.Get(name); t != nil {
+			return t.CallString([]byte(args)), false
+		}
+	}
+	return name, false
+}
+
+// toolActivityText is the animated badge text for an in-flight tool call.
+// Only a call whose arguments are complete is "running".
+func toolActivityText(name, label string, preparing bool) string {
+	if preparing {
+		return toolBadgeText(name, label)
+	}
+	return toolBadgeText(name, label) + " · running"
+}
 
 type transcriptState struct {
 	activities   map[int]string
@@ -375,15 +409,10 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 	toolLabels := func(calls []client.ToolCall, active bool) []transcriptLabel {
 		labels := make([]transcriptLabel, 0, len(calls))
 		for _, tc := range calls {
-			label := tc.Function.Name
-			if registry := m.Focused.Registry(); registry != nil {
-				if tool := registry.Get(label); tool != nil && len(tc.Function.Arguments) > 0 {
-					label = tool.CallString([]byte(tc.Function.Arguments))
-				}
-			}
+			label, preparing := m.toolCallLabel(tc, active)
 			item := transcriptLabel{rendered: m.renderToolBadge(tc.Function.Name, label, false, toolWidth)}
 			if active {
-				item.activity = toolBadgeText(tc.Function.Name, label) + " · running"
+				item.activity = toolActivityText(tc.Function.Name, label, preparing)
 				item.rendered = m.renderActivityAt(item.activity, toolWidth, time.Unix(0, 0))
 			}
 			labels = append(labels, item)
@@ -411,22 +440,17 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 			results = toolResultsAfter(history, i)
 		}
 		for _, tc := range calls {
-			label := tc.Function.Name
-			if registry := m.Focused.Registry(); registry != nil {
-				if tool := registry.Get(label); tool != nil && len(tc.Function.Arguments) > 0 {
-					label = tool.CallString([]byte(tc.Function.Arguments))
-				}
-			}
 			result, hasResult := results[tc.ID]
 			isActive := false
 			if isLatestAssistant && (s.State == StateThinking || s.State == StateStreaming) && !hasResult {
 				isActive = true
 				hasActiveTool = true
 			}
+			label, preparing := m.toolCallLabel(tc, isActive)
 			item := transcriptLabel{rendered: m.renderToolBadge(tc.Function.Name, label, false, toolWidth)}
 			switch {
 			case isActive:
-				item.activity = toolBadgeText(tc.Function.Name, label) + " · running"
+				item.activity = toolActivityText(tc.Function.Name, label, preparing)
 				item.rendered = m.renderActivityAt(item.activity, toolWidth, time.Unix(0, 0))
 			case hasResult:
 				outcome := summarizeToolOutcome(tc.Function.Name, tc.Function.Arguments, result)
