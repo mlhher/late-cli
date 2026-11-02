@@ -84,6 +84,7 @@ var (
 	commitHashChipStyle     = chipStyle.Foreground(secondaryColor)
 	commitSelectedChipStyle = chipStyle.Foreground(primaryColor).Bold(true)
 	modelPickerChipStyle    = chipStyle.Foreground(subtextColor)
+	autocompleteCounterChip = chipStyle.Foreground(primaryColor).Bold(true)
 	headBadgeStyle          = lipgloss.NewStyle().
 				Foreground(appBgColor).
 				Background(accentEmerald).

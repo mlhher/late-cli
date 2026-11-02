@@ -273,17 +273,32 @@ func (m *Model) autocompleteView() string {
 		lines = append(lines, nameStr+descStr)
 	}
 
-	autoH := m.autocompleteHeight()
-	box := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder(), true, false, false, false).
-		BorderForeground(secondaryColor).
-		BorderBackground(cardBgColor).
+	// Body: the visible rows only, padded to full width with cardBgColor so
+	// VTE terminals never paint an unstyled default-background cell.
+	body := lipgloss.NewStyle().
 		Background(cardBgColor).
 		Width(w).
-		Height(autoH).
 		Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 
-	return box
+	return m.autocompleteTopBar(w) + "\n" + body
+}
+
+// autocompleteTopBar renders the single top border row of the dropdown with
+// a "selected / total" counter on the right.
+func (m *Model) autocompleteTopBar(w int) string {
+	total := len(m.AutocompleteItems)
+	if total == 0 || w < 1 {
+		return strings.Repeat(" ", max(w, 0))
+	}
+
+	current := min(max(m.AutocompleteIndex+1, 1), total)
+	chip := autocompleteCounterChip.Render(fmt.Sprintf("%d / %d", current, total))
+
+	border := lipgloss.NewStyle().
+		Foreground(secondaryColor).
+		Background(cardBgColor)
+	fill := max(w-lipgloss.Width(chip), 0)
+	return border.Render(strings.Repeat("─", fill)) + chip
 }
 
 // formatTokenCount formats a token count with k/m suffix for compact display.
