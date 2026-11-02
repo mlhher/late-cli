@@ -139,6 +139,14 @@ When retries are exhausted, two guarantees keep the session usable:
 
 ---
 
+## Loop Detection
+
+`executor.RunLoop` guards against a model repeating itself. After each turn that issues tool calls, it computes a signature: a SHA-256 over every call's tool name, canonicalized arguments (JSON re-marshaled, so key order and whitespace do not matter) and its result. Folding the result in means the same command with different output counts as progress.
+
+A small window of the last `2 × N` signatures (`N` = `-loop-threshold` / `LATE_LOOP_THRESHOLD`, default 5) is checked for period-1 (`A,A,…`) or period-2 (`A,B,A,B,…`) repetition over the last `N` or `2N` turns. On the first detection a one-time `[Loop detected …]` user message is appended to the history; if the very next turn repeats again, `RunLoop` returns `ErrRepeatedToolCalls`, which surfaces as a normal error status in the TUI. Any deviation resets the detector. Only tool-call turns are tracked: repeated text or reasoning without tool calls is not detected. A threshold of `0` disables the feature.
+
+---
+
 ## Persistence
 
 - **Root Session History:** Orchestrator conversation history is persisted to disk under `<sessionsDir>/<sessionID>.json` alongside a `.meta.json` sidecar for state resumption. The sidecar records the project directory where the session was started (`working_dir`), which `--continue-project` uses to scope resume to the current project — the git repository root of the working directory, falling back to the working directory itself outside a repository — with a same-file identity check so symlinked paths still match.

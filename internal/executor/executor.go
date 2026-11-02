@@ -308,6 +308,9 @@ func RunLoop(
 	// the intended cost.
 	predictedHistoryTokens := 0
 
+	// Detects the model repeating identical tool calls with identical results.
+	loops := newLoopDetector(loopThresholdFromContext(ctx))
+
 	for i := 0; maxTurns <= 0 || i < maxTurns; i++ {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
@@ -551,7 +554,7 @@ func RunLoop(
 			if err := sess.AddAssistantMessageWithTools(acc.Content, acc.Reasoning, nil); err != nil {
 				return "", fmt.Errorf("failed to save history: %w", err)
 			}
-			if err := sess.AddUserMessage("[Output truncated due to length limit. Please continue, but be more concise.]"); err != nil {
+			if err := sess.AddUserMessage(common.TruncatedNoticePrefix + " due to length limit. Please continue, but be more concise.]"); err != nil {
 				return "", fmt.Errorf("failed to save history: %w", err)
 			}
 			continue
@@ -596,6 +599,17 @@ func RunLoop(
 			return "", err
 		}
 
+		if loops.enabled() && ctx.Err() == nil {
+			switch loops.record(turnSignature(acc.ToolCalls, lastToolResults(sess, len(acc.ToolCalls)))) {
+			case loopNudge:
+				if err := sess.AddUserMessage(loopNudgeMessage); err != nil {
+					return "", fmt.Errorf("failed to save history: %w", err)
+				}
+			case loopStop:
+				return "", ErrRepeatedToolCalls
+			}
+		}
+
 		// Also check after tool execution in case user requested stop during a long tool
 		select {
 		case <-ctx.Done():
@@ -605,4 +619,19 @@ func RunLoop(
 	}
 
 	return lastContent + "\n\n(Terminated due to max turns limit)", nil
+}
+
+// lastToolResults returns the contents of the last n tool-result messages in
+// history, oldest first.
+func lastToolResults(sess *session.Session, n int) []string {
+	out := make([]string, 0, n)
+	for i := len(sess.History) - 1; i >= 0 && len(out) < n; i-- {
+		if sess.History[i].Role == "tool" {
+			out = append(out, sess.History[i].Content.String())
+		}
+	}
+	for l, r := 0, len(out)-1; l < r; l, r = l+1, r-1 {
+		out[l], out[r] = out[r], out[l]
+	}
+	return out
 }

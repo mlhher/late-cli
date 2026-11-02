@@ -366,6 +366,29 @@ The retry budget is resolved as CLI flag > environment variable > built-in defau
 
 Setting `0` (or a negative value) disables stream retrying entirely. Run `late -h` to see all flags.
 
+## Loop Detection
+
+Small or poorly-sampled models sometimes get stuck issuing the same tool call forever. Late watches each turn's tool calls **and their results**:
+
+* If the last N turns are identical (same calls, same output), or alternate between two identical turns (A, B, A, B, …), Late injects a one-time warning telling the model to change approach or ask you.
+* If the model keeps repeating after the warning, the run stops with an error saying the model kept repeating the same tool calls. Your session is intact; send a new message to continue.
+* Any change in a call or its output counts as progress and resets the detector, so re-running a build after an edit is never flagged.
+
+The threshold N is resolved as CLI flag > environment variable > built-in default:
+
+* `--loop-threshold <n>` — identical turns in a row before warning (default: 5)
+* `LATE_LOOP_THRESHOLD` — environment variable, used when the flag is not passed
+
+Setting `0` (or a negative value) disables loop detection.
+
+**If your local model loops often**, check the server settings first, since they are the usual cause:
+
+* **Temperature too low.** Very low values (e.g. 0.1) make loops likely, especially on MoE models. Use the model's recommended sampling (e.g. Qwen: temp 0.6–1.0, top-p 0.95, top-k 20).
+* **Context shifting / "Truncate Middle".** Silently dropping context confuses the model. Prefer "stop at limit" and a larger context.
+* **No KV-cache quantization.** Q8 (or Q4) KV cache lets you fit a much larger context in the same VRAM.
+
+For non-coding use (specifically with a custom system prompt), you may also want to look at [Minh Nhat Nguyen et al., ICLR 2025: Turning Up the Heat: Min-p Sampling for Creative and Coherent LLM Outputs](https://arxiv.org/abs/2407.01082) for guidance on sampling settings.
+
 ---
 
 ## Common Flags
@@ -385,6 +408,7 @@ Setting `0` (or a negative value) disables stream retrying entirely. Run `late -
 | `--enable-images` | Treat models as supporting images (for non llama.cpp servers) |
 | `--save-subagent-histories` | Persist subagent conversation histories to disk |
 | `--max-stream-retries <n>` | Max retries per LLM stream call with jittered exponential backoff (default: 10); `0` disables stream retrying. Env: `LATE_MAX_STREAM_RETRIES` |
+| `--loop-threshold <n>` | Warn, then stop, after this many identical tool-call turns in a row (default: 5); `0` disables. Env: `LATE_LOOP_THRESHOLD` |
 | `--ask-for-user-approval` | Require user approval for dangerous commands (default; overrides `config.json` `permission-mode`) |
 | `--i-promise-i-have-backups-and-will-not-file-issues` | Run every tool without user confirmation (overrides `config.json` `permission-mode`) |
 

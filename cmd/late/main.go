@@ -104,6 +104,17 @@ func main() {
 		}
 	}
 	maxStreamRetries := flag.Int("max-stream-retries", maxStreamRetriesDefault, "Retries for LLM stream errors with backoff; 0 disables. Env: LATE_MAX_STREAM_RETRIES")
+	// LATE_LOOP_THRESHOLD optionally overrides the default loop-detection
+	// threshold; an explicit -loop-threshold flag wins over it.
+	loopThresholdDefault := executor.DefaultLoopThreshold
+	if v := os.Getenv("LATE_LOOP_THRESHOLD"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			loopThresholdDefault = parsed
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: ignoring invalid LATE_LOOP_THRESHOLD %q: %v\n", v, err)
+		}
+	}
+	loopThreshold := flag.Int("loop-threshold", loopThresholdDefault, "Warn, then stop, after this many identical tool-call turns in a row; 0 disables. Env: LATE_LOOP_THRESHOLD")
 	saveSubagentHistoriesReq := flag.Bool("save-subagent-histories", false, "Persist subagent histories to disk (overrides session and config).")
 	enableSqzReq := flag.Bool("enable-sqz", false, "Compress bash tool output with the external 'sqz' binary if available.")
 	appendSystemPromptReq := flag.String("append-system-prompt", "", "Append this text to the final system prompt.")
@@ -811,6 +822,7 @@ func main() {
 			ctx = context.WithValue(ctx, common.SkipConfirmationKey, true)
 		}
 		ctx = context.WithValue(ctx, common.MaxStreamRetriesKey, *maxStreamRetries)
+		ctx = context.WithValue(ctx, common.LoopThresholdKey, *loopThreshold)
 		rootAgent.SetContext(ctx)
 
 		// Set middlewares (see buildMiddlewares for ordering rationale).

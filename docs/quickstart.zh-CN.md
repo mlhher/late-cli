@@ -340,6 +340,29 @@ Late 的原生搜索工具会自动遵守你项目的 `.gitignore`，通过排�
 
 设置为 `0`（或负值）会完全禁用流式重试。运行 `late -h` 可查看所有标志。
 
+## 循环检测
+
+小模型或采样参数不当的模型有时会陷入无限重复同一个工具调用。Late 会监控每一轮的工具调用**及其结果**：
+
+* 如果最近 N 轮完全相同（调用相同、输出相同），或在两个相同的轮次之间交替（A、B、A、B……），Late 会注入一次性警告，要求模型改变思路或向你求助。
+* 如果警告之后模型仍继续重复，运行将停止并提示模型一直在重复相同的工具调用。会话保持完好，发送新消息即可继续。
+* 调用或输出发生任何变化都视为有进展并重置检测器，因此编辑后重新运行构建不会被误判。
+
+阈值 N 按 CLI 标志 > 环境变量 > 内置默认值 的优先级解析：
+
+* `--loop-threshold <n>` — 连续出现多少个相同轮次后发出警告（默认：5）
+* `LATE_LOOP_THRESHOLD` — 环境变量，在未传入标志时生效
+
+设置为 `0`（或负值）会禁用循环检测。
+
+**如果本地模型经常循环**，请先检查服务端设置，这通常是原因所在：
+
+* **温度过低。** 过低的值（如 0.1）很容易导致循环，MoE 模型尤其如此。请使用模型推荐的采样参数（如 Qwen：temperature 0.6–1.0、top-p 0.95、top-k 20）。
+* **上下文平移 / “Truncate Middle”。** 静默丢弃上下文会让模型困惑。建议使用“达到上限即停止”，并增大上下文。
+* **未启用 KV 缓存量化。** Q8（或 Q4）KV 缓存可以在相同显存下容纳大得多的上下文。
+
+对于非编码用途（尤其是搭配自定义系统提示词时），你也可以参考 [Minh Nhat Nguyen et al., ICLR 2025: Turning Up the Heat: Min-p Sampling for Creative and Coherent LLM Outputs](https://arxiv.org/abs/2407.01082) 中关于采样设置的建议。
+
 ---
 
 ## 常用标志 (Common Flags)
@@ -359,6 +382,7 @@ Late 的原生搜索工具会自动遵守你项目的 `.gitignore`，通过排�
 | `--enable-images` | 将模型视为支持图像（适用于非 llama.cpp 的服务器） |
 | `--save-subagent-histories` | 将子智能体的对话记录持久化到磁盘 |
 | `--max-stream-retries <n>` | 每次 LLM 流式调用的最大重试次数，采用叠加抖动的指数退避（默认：10）；`0` 表示禁用流式重试。环境变量：`LATE_MAX_STREAM_RETRIES` |
+| `--loop-threshold <n>` | 连续出现这么多个相同的工具调用轮次后先警告、再停止（默认：5）；`0` 表示禁用。环境变量：`LATE_LOOP_THRESHOLD` |
 | `--ask-for-user-approval` | 要求对危险命令进行用户批准（默认值；覆盖 `config.json` 中的 `permission-mode`） |
 | `--i-promise-i-have-backups-and-will-not-file-issues` | 运行所有工具而不需要用户确认（覆盖 `config.json` 中的 `permission-mode`） |
 

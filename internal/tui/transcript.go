@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"late/internal/client"
+	"late/internal/common"
 	"path/filepath"
 	"strings"
 	"time"
@@ -569,6 +570,18 @@ func (m *Model) renderTranscriptCmd() tea.Cmd {
 				switch entry.role {
 				case "user":
 					text := strings.TrimRight(entry.content, "\r\n")
+					if notice, ok := common.NoticeText(text); ok {
+						lines := strings.Split(ansi.Wordwrap(notice, max(1, width-6), ""), "\n")
+						for i, l := range lines {
+							prefix := "    "
+							if i == 0 {
+								prefix = "  ↳ "
+							}
+							lines[i] = attachmentStyle.Render(prefix + l)
+						}
+						parts = append(parts, "\n"+strings.Join(lines, "\n")+"\n")
+						break
+					}
 					if strings.TrimSpace(text) != "" || len(entry.labels) > 0 {
 						// Prompt cards use the full transcript width, with a tighter
 						// outer gap than assistant output. The right inset remains the
