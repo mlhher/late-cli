@@ -82,13 +82,14 @@ const (
 
 // Config represents the application configuration.
 type Config struct {
-	EnabledTools        map[string]bool `json:"enabled_tools"`
-	OpenAIBaseURL       string          `json:"openai_base_url,omitempty"`
-	OpenAIAPIKey        string          `json:"openai_api_key,omitempty"`
-	OpenAIModel         string          `json:"openai_model,omitempty"`
-	LateSubagentBaseURL string          `json:"late_subagent_base_url,omitempty"`
-	LateSubagentAPIKey  string          `json:"late_subagent_api_key,omitempty"`
-	LateSubagentModel   string          `json:"late_subagent_model,omitempty"`
+	EnabledTools         map[string]bool   `json:"enabled_tools"`
+	EnabledExternalTools map[string]string `json:"enabled_external_tools,omitempty"`
+	OpenAIBaseURL        string            `json:"openai_base_url,omitempty"`
+	OpenAIAPIKey         string            `json:"openai_api_key,omitempty"`
+	OpenAIModel          string            `json:"openai_model,omitempty"`
+	LateSubagentBaseURL  string            `json:"late_subagent_base_url,omitempty"`
+	LateSubagentAPIKey   string            `json:"late_subagent_api_key,omitempty"`
+	LateSubagentModel    string            `json:"late_subagent_model,omitempty"`
 
 	// SaveSubagentHistories opts in to persisting subagent conversation
 	// histories under <sessions>/<session-id>/subagents/. Default false.
@@ -162,6 +163,7 @@ func defaultConfig() Config {
 			"list_todos":     true,
 			"finish_todo":    true,
 		},
+		EnabledExternalTools: map[string]string{},
 	}
 }
 
@@ -220,6 +222,10 @@ func LoadConfig() (*Config, error) {
 				cfg.EnabledTools[k] = v
 			}
 		}
+	}
+
+	if cfg.EnabledExternalTools == nil {
+		cfg.EnabledExternalTools = map[string]string{}
 	}
 
 	if permErr != nil {
