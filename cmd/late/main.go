@@ -901,7 +901,8 @@ func main() {
 		}
 
 		sess.Registry.Register(tool.SpawnSubagentTool{
-			Runner: runner,
+			Runner:         runner,
+			BatchAvailable: batchSpawnEnabled,
 		})
 
 		if batchSpawnEnabled {

@@ -14,11 +14,18 @@ type SubagentRunner func(ctx context.Context, goal string, ctxFiles []string, ag
 
 type SpawnSubagentTool struct {
 	Runner SubagentRunner
+	// BatchAvailable reports whether batch_spawn_subagents is registered,
+	// so the description only points to it when it exists.
+	BatchAvailable bool
 }
 
 func (t SpawnSubagentTool) Name() string { return "spawn_subagent" }
 func (t SpawnSubagentTool) Description() string {
-	return "Spawn a specialist subagent to perform a complex task. Use this when you need to isolate a task, such as researching a topic or writing a specific module. Note that this spawns only one subagent synchronously. To spawn multiple subagents at once use 'batch_spawn_subagents' instead."
+	desc := "Spawn a specialist subagent to perform a complex task. Use this when you need to isolate a task, such as researching a topic or writing a specific module."
+	if t.BatchAvailable {
+		desc += " Note that this spawns only one subagent synchronously. To spawn multiple subagents at once use 'batch_spawn_subagents' instead."
+	}
+	return desc
 }
 func (t SpawnSubagentTool) Parameters() json.RawMessage {
 	configs := assets.GetSubagents()
