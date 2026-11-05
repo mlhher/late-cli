@@ -153,7 +153,7 @@ type Config struct {
 	Degraded bool `json:"-"`
 }
 
-const DefaultMaxAsyncSubagents = 2
+const DefaultMaxAsyncSubagents = 1
 
 func defaultConfig() Config {
 	return Config{

@@ -27,7 +27,7 @@ Late splits planning from execution: the **Lead Orchestrator** retains only high
   - Cannot directly edit files (`write_file` and `target_edit` are physically unregistered).
   - Destructive shell operations are blocked (including output redirection `>`).
   - Instructed not to perform broad direct codebase scans; delegates discovery to the Researcher.
-- **Subagent Spawning:** Dispatches atomic implementation steps to specialized workers sequentially via `spawn_subagent` or concurrently via `batch_spawn_subagents`.
+- **Subagent Spawning:** Dispatches atomic implementation steps to specialized workers sequentially via `spawn_subagent` or concurrently via `batch_spawn_subagents` (only available when `max_async_subagents` is above 1).
 
 ### Researcher
 - **Role:** Read-only codebase explorer and contextual investigator.

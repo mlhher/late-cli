@@ -27,7 +27,7 @@ Late 将规划与执行分离：**主编排器（Lead Orchestrator）**仅保留
   - 不能直接编辑文件（在物理层面上未注册 `write_file` 和 `target_edit` 工具）。
   - 拦截破坏性的 shell 操作（包括输出重定向 `>`）。
   - 被要求不得直接进行大范围的代码库扫描；将探索发现的任务委托给研究员（Researcher）。
-- **子智能体调度：** 通过 `spawn_subagent`（顺序执行）或 `batch_spawn_subagents`（并发批量执行）将原子化的实现步骤分发给专门的工作智能体。
+- **子智能体调度：** 通过 `spawn_subagent`（顺序执行）或 `batch_spawn_subagents`（并发批量执行，仅当 `max_async_subagents` 大于 1 时可用）将原子化的实现步骤分发给专门的工作智能体。
 
 ### 研究员 (Researcher)
 - **角色：** 只读的代码库探索者和代码上下文研究员。

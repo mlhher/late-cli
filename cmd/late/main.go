@@ -130,7 +130,7 @@ func main() {
 	logitBiasReq := flag.String("logit-bias", "", "Main-agent token bias: JSON object or comma-separated TOKEN_ID:BIAS pairs.")
 	suppressThinkingWordsReq := flag.Bool("suppress-thinking-words", false, "Bias anti-overthinking tokens (requires the same model for main agent and subagents).")
 	subagentLogitBiasReq := flag.String("subagent-logit-bias", "", "Subagent token bias: JSON object or comma-separated TOKEN_ID:BIAS pairs.")
-	maxAsyncSubagentsReq := flag.Int("max-async-subagents", 0, "Maximum number of concurrent subagents (default: 2, or from config)")
+	maxAsyncSubagentsReq := flag.Int("max-async-subagents", 0, "Maximum number of concurrent subagents (default: 1, or from config)")
 
 	flag.Usage = func() {
 		writeHelp(os.Stderr, flag.CommandLine)
@@ -228,6 +228,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Warning: Failed to load app config: %v\n", err)
 	}
 	maxAsyncSubagents := appconfig.ResolveMaxAsyncSubagents(appConfig, *maxAsyncSubagentsReq)
+	// batch_spawn_subagents is only useful when more than one subagent may run at once.
+	batchSpawnEnabled := *enableSubagentsReq && maxAsyncSubagents > 1 &&
+		appConfig != nil && appConfig.EnabledTools["batch_spawn_subagents"]
 
 	// Plugin command handler — dispatches before TUI startup
 	var pluginManager *plugin.PluginManager
@@ -269,7 +272,7 @@ func main() {
 		systemPrompt = envPrompt
 	} else {
 		content, _ := assets.PromptsFS.ReadFile("prompts/instruction-orchestrator.md")
-		systemPrompt = string(content)
+		systemPrompt = common.ApplyOptionalSection(string(content), "batch", batchSpawnEnabled)
 	}
 
 	systemPrompt = common.ReplacePlaceholders(systemPrompt, map[string]string{
@@ -901,7 +904,7 @@ func main() {
 			Runner: runner,
 		})
 
-		if enabledTools["batch_spawn_subagents"] {
+		if batchSpawnEnabled {
 			sess.Registry.Register(tool.BatchSpawnSubagentsTool{
 				Runner:        runner,
 				MaxConcurrent: maxAsyncSubagents,

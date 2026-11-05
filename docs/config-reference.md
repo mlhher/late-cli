@@ -125,7 +125,7 @@ Late prefers a located error over silently accepting a typo'd config:
 | Key | Type | Default | CLI flag | Description |
 | --- | --- | --- | --- | --- |
 | `save_subagent_histories` | boolean | `false` | `--save-subagent-histories` | Persist subagent conversation histories under `<sessions>/<session-id>/subagents/`. |
-| `max_async_subagents` | number | `2` | `--max-async-subagents` | Maximum number of subagents running at the same time. `LATE_MAX_ASYNC_SUBAGENTS` env overrides the config value; the CLI flag wins over both. Values ≤ 0 fall back to the default. |
+| `max_async_subagents` | number | `1` | `--max-async-subagents` | Maximum number of subagents running at the same time. `LATE_MAX_ASYNC_SUBAGENTS` env overrides the config value; the CLI flag wins over both. Values ≤ 0 fall back to the default. `batch_spawn_subagents` is only available when this is above 1. |
 
 ### Supervision and retries
 
