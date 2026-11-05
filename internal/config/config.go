@@ -95,6 +95,11 @@ type Config struct {
 	// Enable via config file or the --save-subagent-histories CLI flag.
 	SaveSubagentHistories bool `json:"save_subagent_histories,omitempty"`
 
+	// MaxAsyncSubagents caps how many subagents run at the same time.
+	// 0/unset = DefaultMaxAsyncSubagents. The LATE_MAX_ASYNC_SUBAGENTS env
+	// var overrides it and the --max-async-subagents CLI flag wins over both.
+	MaxAsyncSubagents int `json:"max_async_subagents,omitempty"`
+
 	// PermissionMode selects how potentially dangerous commands are
 	// supervised. One of the PermissionMode* constants; empty means the
 	// default (ask-for-user-approval). Set via config file; the CLI flags
@@ -121,7 +126,6 @@ type Config struct {
 	// by itself. Terminals narrower than 85 columns keep it closed; /todos
 	// toggles it either way.
 	ShowTodoPane *bool `json:"show-todo-pane,omitempty"`
-	MaxAsyncSubagents int `json:"max_async_subagents,omitempty"`
 
 	Theme       string            `json:"theme,omitempty"`
 	Models      []ModelSetting    `json:"models,omitempty"`
