@@ -95,11 +95,7 @@ func (t BatchSpawnSubagentsTool) Name() string { return "batch_spawn_subagents" 
 
 func (t BatchSpawnSubagentsTool) Description() string {
 	_, asyncList := getAsyncSubagentsMapAndList()
-	max := t.MaxConcurrent
-	if max <= 0 {
-		max = 2
-	}
-	return fmt.Sprintf("Spawn multiple subagents concurrently to execute independent tasks in parallel and return all outputs at once in a single turn (preserving KV-cache). Only subagent types with async capabilities are permitted. These are currently %s. All others cannot be spawned async and will return an error if attempted to do so. Maximum allowed concurrent subagents: %d.", asyncList, max)
+	return fmt.Sprintf("Spawn multiple subagents concurrently to execute independent tasks in parallel and return all outputs at once in a single turn (preserving KV-cache). Only subagent types with async capabilities are permitted. These are currently %s. All others cannot be spawned async and will return an error if attempted to do so. Maximum allowed concurrent subagents: %d.", asyncList, t.MaxConcurrent)
 }
 
 func (t BatchSpawnSubagentsTool) Parameters() json.RawMessage {
@@ -114,10 +110,6 @@ func (t BatchSpawnSubagentsTool) Parameters() json.RawMessage {
 	}
 	enumStr := strings.Join(asyncEnums, ", ")
 	asyncList := strings.Join(asyncNames, ", ")
-	max := t.MaxConcurrent
-	if max <= 0 {
-		max = 2
-	}
 
 	paramStr := fmt.Sprintf(`{
 		"type": "object",
@@ -145,7 +137,7 @@ func (t BatchSpawnSubagentsTool) Parameters() json.RawMessage {
 			}
 		},
 		"required": ["subagents"]
-	}`, enumStr, asyncList, max)
+	}`, enumStr, asyncList, t.MaxConcurrent)
 
 	return json.RawMessage(paramStr)
 }
@@ -156,9 +148,6 @@ func (t BatchSpawnSubagentsTool) Execute(ctx context.Context, args json.RawMessa
 	}
 
 	maxLimit := t.MaxConcurrent
-	if maxLimit <= 0 {
-		maxLimit = 2
-	}
 
 	var params struct {
 		Subagents []SubagentTask `json:"subagents"`
