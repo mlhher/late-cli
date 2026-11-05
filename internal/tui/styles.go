@@ -24,6 +24,10 @@ var (
 	borderColor  = lipgloss.Color("#1C1F26") // Hairline Divider
 	activeBorder = lipgloss.Color("#2D323E") // Focused / Active Border
 
+	// Todo pane focus surface. Elevated so the pane visibly changes color
+	// while focused (userMsgBg aliases appBgColor and would be invisible).
+	todoFocusedBg = chipBgColor
+
 	// Diff row tints (tool approval previews)
 	diffAddBgColor = lipgloss.Color("#10241C") // Added line: emerald-tinted obsidian
 	diffDelBgColor = lipgloss.Color("#2A1519") // Removed line: coral-tinted obsidian
@@ -80,6 +84,7 @@ var (
 	commitHashChipStyle     = chipStyle.Foreground(secondaryColor)
 	commitSelectedChipStyle = chipStyle.Foreground(primaryColor).Bold(true)
 	modelPickerChipStyle    = chipStyle.Foreground(subtextColor)
+	autocompleteCounterChip = chipStyle.Foreground(primaryColor).Bold(true)
 	headBadgeStyle          = lipgloss.NewStyle().
 				Foreground(appBgColor).
 				Background(accentEmerald).
@@ -119,6 +124,14 @@ var (
 	attachmentStyle = lipgloss.NewStyle().
 			Foreground(subtextColor).
 			Italic(true)
+
+	// Optional message timestamps (HH:MM:SS): quiet footers, never italic.
+	userStampStyle = lipgloss.NewStyle().
+			Foreground(subtextColor).
+			Background(cardBgColor)
+	replyStampStyle = lipgloss.NewStyle().
+			Foreground(subtextColor).
+			Background(appBgColor)
 
 	// AI Response
 	aiMsgStyle = baseStyle.Copy().

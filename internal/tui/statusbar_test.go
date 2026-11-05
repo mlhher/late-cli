@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"late/internal/common"
@@ -140,4 +141,73 @@ func TestStatusBarBranchAfterAgentIdentity(t *testing.T) {
 	if childCrumbIdx == -1 || childBranchIdx == -1 || childCrumbIdx >= childBranchIdx {
 		t.Errorf("expected breadcrumbs before branch in child view: %q", childPlain)
 	}
+}
+
+// A subagent waiting for approval blocks its parent: the parent's status bar
+// must name the subagent, say how to reach it, and stop the busy animation (#155).
+func TestStatusBarSubagentAwaitingApproval(t *testing.T) {
+	root := &focusTestOrchestrator{id: common.MainAgentID}
+	child := &focusTestOrchestrator{id: "coder-subagent-0", parent: root}
+	root.children = []common.Orchestrator{child}
+	m := newStatusBarModel(t, root)
+
+	m.GetAgentState(root.ID()).State = StateStreaming
+	busy := m.statusBarView()
+
+	m.GetAgentState(child.ID()).State = StateConfirmTool
+	blocked := m.statusBarView()
+	plain := ansi.Strip(blocked)
+
+	if !strings.Contains(plain, "coder #0 needs approval · tab to switch") {
+		t.Errorf("expected actionable approval warning naming the subagent, got %q", plain)
+	}
+	if strings.Contains(plain, "confirm required") {
+		t.Errorf("old vague label should be gone, got %q", plain)
+	}
+	if !strings.Contains(blocked, m.renderIdleEqualizer()) || strings.Contains(busy, m.renderIdleEqualizer()) {
+		t.Errorf("expected idle indicator only while blocked on a subagent approval")
+	}
+}
+
+// Spawning a subagent is announced with a short toast, not sticky status text
+// that would stay in the parent's status bar for the subagent's whole run.
+func TestChildAddedShowsTransientToast(t *testing.T) {
+	root := &focusTestOrchestrator{id: common.MainAgentID}
+	child := &focusTestOrchestrator{id: "coder-subagent-0", parent: root}
+	m := newStatusBarModel(t, root)
+
+	updated, cmd := m.Update(OrchestratorEventMsg{Event: common.ChildAddedEvent{ParentID: root.ID(), Child: child}})
+	m = updated.(Model)
+
+	if st := m.GetAgentState(root.ID()).StatusText; strings.Contains(st, "spawned") {
+		t.Errorf("spawn should not set sticky status text, got %q", st)
+	}
+	if cmd == nil {
+		t.Fatal("expected a toast command")
+	}
+	toast, ok := findToast(cmd)
+	if !ok {
+		t.Fatal("expected a ToastMsg among the returned commands")
+	}
+	if toast.Text != "coder #0 spawned · tab to view" || toast.Duration <= 0 {
+		t.Errorf("unexpected toast: %+v", toast)
+	}
+}
+
+// findToast runs cmd (unwrapping batches) and returns the first ToastMsg.
+func findToast(cmd tea.Cmd) (ToastMsg, bool) {
+	if cmd == nil {
+		return ToastMsg{}, false
+	}
+	switch msg := cmd().(type) {
+	case ToastMsg:
+		return msg, true
+	case tea.BatchMsg:
+		for _, c := range msg {
+			if t, ok := findToast(c); ok {
+				return t, true
+			}
+		}
+	}
+	return ToastMsg{}, false
 }

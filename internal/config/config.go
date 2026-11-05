@@ -115,11 +115,29 @@ type Config struct {
 
 	SkillsDir string `json:"skills_dir,omitempty"`
 
+	// ShowTodoPane controls the todos side pane. Absent (the default): the
+	// pane starts closed and opens by itself the first time todos are
+	// created. true: it starts open. false: it starts closed and never opens
+	// by itself. Terminals narrower than 85 columns keep it closed; /todos
+	// toggles it either way.
+	ShowTodoPane *bool `json:"show-todo-pane,omitempty"`
 	MaxAsyncSubagents int `json:"max_async_subagents,omitempty"`
 
 	Theme       string            `json:"theme,omitempty"`
 	Models      []ModelSetting    `json:"models,omitempty"`
 	AgentModels map[string]string `json:"agent_models,omitempty"`
+
+	// ShowInfoBar toggles the single-line info row rendered below the
+	// TUI status bar (model, approval mode, todos, subagents, turn time). Toggled
+	// at runtime with the /infobar slash command, which persists the new
+	// value back to config.json.
+	ShowInfoBar bool `json:"show-info-bar,omitempty"`
+
+	// ShowTimestamps toggles the HH:MM:SS stamp rendered at the foot
+	// of each transcript message block. Toggled at runtime with the
+	// /timestamps slash command, which persists the new value back to
+	// config.json.
+	ShowTimestamps bool `json:"show-timestamps,omitempty"`
 
 	// Degraded is set by LoadConfig when config.json exists but could not
 	// be read or parsed: the returned config is a fallback default, not
@@ -359,6 +377,22 @@ func ResolvePermissionMode(cfg *Config, askFlag, unsupervisedFlag bool) (mode st
 		}
 	}
 	return PermissionModeAskForUserApproval, "", nil
+}
+
+// ResolveShowTodoPane returns whether the todos side pane should be open
+// when the TUI starts: only an explicit "show-todo-pane": true opens it at
+// startup. Absent, the pane starts closed and AutoOpenTodoPane opens it once
+// todos exist. Terminal width is not considered here: the TUI keeps the pane
+// closed below 85 columns.
+func (cfg *Config) ResolveShowTodoPane() bool {
+	return cfg != nil && cfg.ShowTodoPane != nil && *cfg.ShowTodoPane
+}
+
+// AutoOpenTodoPane returns whether the pane opens by itself the first time
+// todos are created. That is the default (entry absent); an explicit
+// "show-todo-pane" value, true or false, takes that decision away.
+func (cfg *Config) AutoOpenTodoPane() bool {
+	return cfg == nil || cfg.ShowTodoPane == nil
 }
 
 func nonEmptyEnv(lookup EnvLookup, key string) (string, bool) {

@@ -208,7 +208,11 @@ func (c *Client) connect(ctx context.Context, transport mcp.Transport, serverNam
 	}
 
 	var adapters []*ToolAdapter
-	for tool := range session.Tools(ctx, &mcp.ListToolsParams{}) {
+	for tool, err := range session.Tools(ctx, &mcp.ListToolsParams{}) {
+		if err != nil {
+			_ = session.Close()
+			return nil, fmt.Errorf("failed to list MCP tools: %w", err)
+		}
 		if tool != nil {
 			adapters = append(adapters, &ToolAdapter{
 				mcpTool:    tool,
@@ -289,7 +293,12 @@ func (c *Client) handleToolListChanged(ctx context.Context, req *mcp.ToolListCha
 	// Collect the new tool set without holding the lock; the SDK's Tools
 	// iterator may perform RPCs.
 	var adapters []*ToolAdapter
-	for tool := range sess.Tools(ctx, &mcp.ListToolsParams{}) {
+	for tool, err := range sess.Tools(ctx, &mcp.ListToolsParams{}) {
+		if err != nil {
+			// Keep the tools we already have rather than replacing them with a
+			// partial list.
+			return
+		}
 		if tool != nil {
 			adapters = append(adapters, &ToolAdapter{
 				mcpTool:    tool,

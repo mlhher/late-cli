@@ -104,6 +104,17 @@ func main() {
 		}
 	}
 	maxStreamRetries := flag.Int("max-stream-retries", maxStreamRetriesDefault, "Retries for LLM stream errors with backoff; 0 disables. Env: LATE_MAX_STREAM_RETRIES")
+	// LATE_LOOP_THRESHOLD optionally overrides the default loop-detection
+	// threshold; an explicit -loop-threshold flag wins over it.
+	loopThresholdDefault := executor.DefaultLoopThreshold
+	if v := os.Getenv("LATE_LOOP_THRESHOLD"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			loopThresholdDefault = parsed
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: ignoring invalid LATE_LOOP_THRESHOLD %q: %v\n", v, err)
+		}
+	}
+	loopThreshold := flag.Int("loop-threshold", loopThresholdDefault, "Warn, then stop, after this many identical tool-call turns in a row; 0 disables. Env: LATE_LOOP_THRESHOLD")
 	saveSubagentHistoriesReq := flag.Bool("save-subagent-histories", false, "Persist subagent histories to disk (overrides session and config).")
 	enableSqzReq := flag.Bool("enable-sqz", false, "Compress bash tool output with the external 'sqz' binary if available.")
 	appendSystemPromptReq := flag.String("append-system-prompt", "", "Append this text to the final system prompt.")
@@ -453,6 +464,12 @@ func main() {
 	}
 	resolvedSubagentConfig := appconfig.ResolveSubagentSettings(appConfig, resolvedOpenAIConfig)
 
+	// Resolve the todos side pane: closed until the first todos are created
+	// (then it opens by itself), unless config.json "show-todo-pane" says
+	// otherwise. Width handling happens in the TUI (see model.ShowTodoPane).
+	showTodoPane := appConfig.ResolveShowTodoPane()
+	autoOpenTodoPane := appConfig.AutoOpenTodoPane()
+
 	// Validate --suppress-thinking-words: only allowed in homogeneous setups
 	if err := validateSuppressThinkingWords(*suppressThinkingWordsReq, resolvedClientConfig.Model, resolvedSubagentConfig.Model, appConfig); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: --suppress-thinking-words is currently only supported when orchestrator and subagents use the same model: %v\n", err)
@@ -727,7 +744,18 @@ func main() {
 		model.SubagentInfo = resolvedSubagentConfig.Model
 	}
 	model.ShowCWD = *showCWDReq
+	// Set ShowTodoPane BEFORE the SetSize calls below: SetSize -> updateLayout
+	// reserves the side-pane width for terminals >= 85 cols and silently
+	// closes the pane again below that threshold — the same guard as the
+	// /todos command, without a startup toast. Users on narrow terminals
+	// can open it with /todos later, which shows the standard toast. If the
+	// size cannot be detected here, the initial WindowSizeMsg runs the same
+	// updateLayout path.
+	model.ShowTodoPane = showTodoPane
+	model.TodoPaneAuto = autoOpenTodoPane
 	model.LazyHistory = true
+
+	model.PermissionMode = permissionMode
 
 	pOpts := []tea.ProgramOption{
 		tea.WithFPS(tui.FrameRate),
@@ -802,6 +830,7 @@ func main() {
 			ctx = context.WithValue(ctx, common.SkipConfirmationKey, true)
 		}
 		ctx = context.WithValue(ctx, common.MaxStreamRetriesKey, *maxStreamRetries)
+		ctx = context.WithValue(ctx, common.LoopThresholdKey, *loopThreshold)
 		rootAgent.SetContext(ctx)
 
 		// Set middlewares (see buildMiddlewares for ordering rationale).

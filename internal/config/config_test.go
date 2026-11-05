@@ -638,6 +638,40 @@ func TestConfig_GetModelForAgent(t *testing.T) {
 	}
 }
 
+func TestConfig_ResolveShowTodoPane(t *testing.T) {
+	closed := false
+	open := true
+
+	var absentEntry Config
+	if err := json.Unmarshal([]byte(`{"theme":"late"}`), &absentEntry); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		cfg       *Config
+		wantStart bool
+		wantAuto  bool
+	}{
+		{"nil config: closed, opens by itself", nil, false, true},
+		{"absent entry: closed, opens by itself", &absentEntry, false, true},
+		{"zero-value config: closed, opens by itself", &Config{}, false, true},
+		{"explicit false: closed, never opens by itself", &Config{ShowTodoPane: &closed}, false, false},
+		{"explicit true: open from the start", &Config{ShowTodoPane: &open}, true, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.ResolveShowTodoPane(); got != tt.wantStart {
+				t.Errorf("ResolveShowTodoPane() = %v, want %v", got, tt.wantStart)
+			}
+			if got := tt.cfg.AutoOpenTodoPane(); got != tt.wantAuto {
+				t.Errorf("AutoOpenTodoPane() = %v, want %v", got, tt.wantAuto)
+			}
+		})
+	}
+}
+
 func TestConfig_GetModelForAgentUsesStableID(t *testing.T) {
 	cfg := &Config{
 		Models: []ModelSetting{

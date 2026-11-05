@@ -4,13 +4,16 @@ import (
 	"fmt"
 	"image/color"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"late/internal/common"
+	"late/internal/config"
 	"late/internal/pathutil"
 
 	"charm.land/bubbles/v2/spinner"
@@ -98,6 +101,11 @@ func (m Model) buildScreen() tea.View {
 		content += "\n" + aStr
 	}
 	content += "\n" + iStr + "\n" + sStr
+	// Info bar sits below the status bar (one extra footer row, reserved by
+	// updateLayout via infoBarHeight). Empty while the file picker is open.
+	if infoStr := m.infoBarView(); infoStr != "" {
+		content += "\n" + infoStr
+	}
 
 	v := tea.NewView(sanitizeVTE(content, m.Width))
 	v.AltScreen = true
@@ -168,7 +176,9 @@ func (m *Model) inputView() string {
 		MarginBackground(appBgColor)
 
 	s := m.GetAgentState(m.Focused.ID())
-	if s.State == StateThinking || s.State == StateStreaming || showPluginAction {
+	if (s.State == StateThinking || s.State == StateStreaming) && m.blockedDescendant() != "" {
+		outerStyle = outerStyle.BorderForeground(warnBorderColor)
+	} else if s.State == StateThinking || s.State == StateStreaming || showPluginAction {
 		ms := float64(time.Now().UnixNano()) / 1e6
 		pulse := (math.Sin(ms/250.0) + 1.0) / 2.0
 		borderGrad := lipgloss.Blend1D(100, borderColor, secondaryColor) // rest -> active
@@ -263,17 +273,32 @@ func (m *Model) autocompleteView() string {
 		lines = append(lines, nameStr+descStr)
 	}
 
-	autoH := m.autocompleteHeight()
-	box := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder(), true, false, false, false).
-		BorderForeground(secondaryColor).
-		BorderBackground(cardBgColor).
+	// Body: the visible rows only, padded to full width with cardBgColor so
+	// VTE terminals never paint an unstyled default-background cell.
+	body := lipgloss.NewStyle().
 		Background(cardBgColor).
 		Width(w).
-		Height(autoH).
 		Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 
-	return box
+	return m.autocompleteTopBar(w) + "\n" + body
+}
+
+// autocompleteTopBar renders the single top border row of the dropdown with
+// a "selected / total" counter on the right.
+func (m *Model) autocompleteTopBar(w int) string {
+	total := len(m.AutocompleteItems)
+	if total == 0 || w < 1 {
+		return strings.Repeat(" ", max(w, 0))
+	}
+
+	current := min(max(m.AutocompleteIndex+1, 1), total)
+	chip := autocompleteCounterChip.Render(fmt.Sprintf("%d / %d", current, total))
+
+	border := lipgloss.NewStyle().
+		Foreground(secondaryColor).
+		Background(cardBgColor)
+	fill := max(w-lipgloss.Width(chip), 0)
+	return border.Render(strings.Repeat("─", fill)) + chip
 }
 
 // formatTokenCount formats a token count with k/m suffix for compact display.
@@ -533,6 +558,41 @@ func formatAgentBreadcrumb(id string) string {
 	return id
 }
 
+// otherAgentAwaitingApproval returns the ID of an agent other than the focused
+// one that is waiting for tool approval, or "" if there is none.
+func (m *Model) otherAgentAwaitingApproval() string {
+	ids := make([]string, 0, len(m.AgentStates))
+	for id, state := range m.AgentStates {
+		if id != m.Focused.ID() && !state.Closed && state.State == StateConfirmTool {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return ""
+	}
+	sort.Strings(ids) // map order is random; keep the label stable between frames
+	return ids[0]
+}
+
+// blockedDescendant returns the ID of an agent below the focused one that is
+// waiting for tool approval, or "" if there is none. Until that approval is
+// given, the focused agent cannot make progress.
+func (m *Model) blockedDescendant() string {
+	if m.Focused == nil {
+		return ""
+	}
+	stack := append([]common.Orchestrator(nil), m.Focused.Children()...)
+	for len(stack) > 0 {
+		o := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if st, ok := m.AgentStates[o.ID()]; ok && !st.Closed && st.State == StateConfirmTool {
+			return o.ID()
+		}
+		stack = append(stack, o.Children()...)
+	}
+	return ""
+}
+
 func (m *Model) statusBarView() string {
 	w := max(m.Width, 1)
 
@@ -593,11 +653,22 @@ func (m *Model) statusBarView() string {
 	// State (far left)
 	var statePart string
 	statusText := s.StatusText
+	// While a subagent waits for approval the focused agent is blocked on it,
+	// so show the idle indicator instead of a busy animation.
+	blocked := m.blockedDescendant() != ""
 	switch s.State {
 	case StateThinking:
-		statePart = m.renderScannerTrack("✦", primaryColor)
+		if blocked {
+			statePart = m.renderIdleEqualizer()
+		} else {
+			statePart = m.renderScannerTrack("✦", primaryColor)
+		}
 	case StateStreaming:
-		statePart = m.renderMinimalEqualizer()
+		if blocked {
+			statePart = m.renderIdleEqualizer()
+		} else {
+			statePart = m.renderMinimalEqualizer()
+		}
 	case StateConfirmTool:
 		statePart = m.renderIdleEqualizer()
 		statusText = "authorize execution (y/s/p/g/n) · or type a reply to deny"
@@ -673,16 +744,9 @@ func (m *Model) statusBarView() string {
 		}
 	}
 
-	// Check if any other agent is waiting for confirmation
-	otherWaiting := false
-	for id, state := range m.AgentStates {
-		if id != m.Focused.ID() && state.State == StateConfirmTool {
-			otherWaiting = true
-			break
-		}
-	}
-	if otherWaiting {
-		warn := statusWarningStyle.Render("subagent confirm required")
+	// Tell the user when another agent is waiting for approval, and how to get to it.
+	if waitingID := m.otherAgentAwaitingApproval(); waitingID != "" {
+		warn := statusWarningStyle.Render("⚠ " + formatAgentBreadcrumb(waitingID) + " needs approval · tab to switch")
 		if status != "" {
 			status += " · " + warn
 		} else {
@@ -762,6 +826,54 @@ func agentTypeForID(id string) string {
 	return ""
 }
 
+// focusedModelInfo resolves the endpoint host and model name shown for the
+// focused agent. An explicit config.AgentModels entry for the focused agent's
+// type wins; otherwise the orchestrator model surfaced by main.go (ModelName,
+// kept current by the picker) is used, with the endpoint resolved the same way
+// main.go and the picker resolve it. For a subagent without its own entry,
+// SubagentInfo names the subagent backend when it is a single model (it is a
+// comma-joined "type:model" list only when several subagent types have
+// explicit entries).
+func (m *Model) focusedModelInfo() (host, name string) {
+	agentType := agentTypeForID(m.Focused.ID())
+	if agentType != "" && m.AppConfig != nil {
+		if setting, ok := m.AppConfig.GetModelForAgent(agentType); ok {
+			return endpointHost(setting.URL), setting.Model
+		}
+	}
+	openAI := config.ResolveOpenAISettings(m.AppConfig)
+	baseURL := openAI.BaseURL
+	name = m.ModelName
+	if agentType != "orchestrator" && m.SubagentInfo != "" &&
+		!strings.Contains(m.SubagentInfo, ":") && !strings.Contains(m.SubagentInfo, ",") {
+		name = m.SubagentInfo
+		baseURL = config.ResolveSubagentSettings(m.AppConfig, openAI).BaseURL
+	}
+	if name == "" {
+		name = "default"
+	}
+	return endpointHost(baseURL), name
+}
+
+// endpointHost reduces a base URL to the part that tells endpoints apart:
+// host[:port] without scheme, credentials or path. A port appears only when
+// the URL spells one out, so a hosted API reads api.example.com and a local
+// server reads localhost:9931. Anything unparseable yields "".
+func endpointHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "http://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Host)
+}
+
 func (m *Model) updateViewport() {
 	if m.Focused == nil {
 		return
@@ -829,6 +941,7 @@ func (m *Model) updateViewport() {
   **enter**           Submit prompt
   **alt+enter**       Insert newline into prompt
   **/compose**        Draft prompt in external $EDITOR
+  **/**               Command picker (tab completes, enter runs)
   **@path**           Mention a project file (tab / enter completes)
 
 ### Attachments & Tools
@@ -1715,7 +1828,7 @@ func (m Model) todoPaneView(height int) string {
 	var lines []string
 	focusMarker := ""
 	if m.TodoPaneFocused {
-		focusMarker = "  • focused"
+		focusMarker = "  [focused · esc to unfocus]"
 	}
 	title := lipgloss.NewStyle().
 		Bold(true).
@@ -1758,13 +1871,19 @@ func (m Model) todoPaneView(height int) string {
 	}
 
 	content := strings.Join(lines, "\n")
+	// The pane must be visibly different while focused: elevated background
+	// (applied to the whole box, content lines included) plus a brighter border.
+	bg, border := appBgColor, activeBorder
+	if m.TodoPaneFocused {
+		bg, border = todoFocusedBg, primaryColor
+	}
 	boxStyle := lipgloss.NewStyle().
 		Width(innerWidth).
 		Height(innerHeight).
 		MaxHeight(innerHeight).
 		Border(lipgloss.NormalBorder(), false, false, false, true).
-		BorderForeground(activeBorder).
-		Background(appBgColor)
+		BorderForeground(border).
+		Background(bg)
 
 	return boxStyle.Render(content)
 }

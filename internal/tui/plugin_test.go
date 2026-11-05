@@ -267,6 +267,49 @@ func TestSlashNew_ResetsViewportAndDismissesAutocomplete(t *testing.T) {
 	}
 }
 
+func TestAutocompleteCounter_CountsFullList(t *testing.T) {
+	m := NewModel(&mockOrchestrator{}, nil, nil)
+	m.Width = 80
+	m.Height = 24
+	m.updateLayout()
+
+	// 8 commands, but only maxAutocompleteVisible (6) rows are shown at once.
+	var items []CommandDef
+	for i := 0; i < 8; i++ {
+		items = append(items, CommandDef{Name: fmt.Sprintf("/cmd%d", i)})
+	}
+	m.ShowAutocomplete = true
+	m.AutocompleteItems = items
+
+	for _, tc := range []struct {
+		index int
+		want  string
+	}{
+		{2, "3 / 8"},  // counts the full list, not the window
+		{7, "8 / 8"},  // beyond the visible window
+		{99, "8 / 8"}, // clamped high
+		{-5, "1 / 8"}, // clamped low
+	} {
+		m.AutocompleteIndex = tc.index
+		if got := m.autocompleteTopBar(m.Width); !strings.Contains(got, tc.want) {
+			t.Errorf("index %d: expected top bar to contain %q, got %q", tc.index, tc.want, got)
+		}
+	}
+
+	m.AutocompleteIndex = 2
+	m.updateLayout()
+	view := m.View()
+	if !strings.Contains(view.Content, "3 / 8") {
+		t.Errorf("expected full view to contain '3 / 8', got:\n%s", view.Content)
+	}
+	validateNoVTELeaks(t, "Autocomplete", view.Content)
+
+	// The counter sits on the border and must not add a line.
+	if h := strings.Count(view.Content, "\n") + 1; h != m.Height {
+		t.Errorf("expected view height = %d, got %d", m.Height, h)
+	}
+}
+
 func TestAutocompleteHeight_InvariantScreenHeight(t *testing.T) {
 	orch := &mockOrchestrator{}
 	m := NewModel(orch, nil, nil)

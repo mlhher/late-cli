@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"charm.land/bubbles/v2/spinner"
@@ -69,7 +70,41 @@ type messageHookResultMsg struct {
 // StartPromptMsg submits a prompt as soon as the TUI is ready.
 type StartPromptMsg string
 
+// Update handles one message and then lets the info bar's turn timer see
+// whether any agent is busy, so it starts and freezes on the exact update in
+// which the work begins or ends.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	if nm, ok := next.(Model); ok {
+		nm.turn.observe(nm.hasActiveAgent(), time.Now())
+		return nm.autoOpenTodoPane(), cmd
+	}
+	return next, cmd
+}
+
+// autoOpenTodoPane opens the todos pane the first time the orchestrator has
+// todos, when the pane is armed (show-todo-pane unset) and the terminal is
+// wide enough. If the terminal is too narrow it stays armed, so widening the
+// window later opens it. Opening reflows the transcript to the narrower
+// width, exactly like /todos.
+func (m Model) autoOpenTodoPane() Model {
+	if !m.TodoPaneAuto || m.ShowTodoPane || m.Width < 85 || len(m.todoItems()) == 0 {
+		return m
+	}
+	m.TodoPaneAuto = false
+	m.ShowTodoPane = true
+	m.TodoPaneFocused = false
+	m.TodoScrollOffset = 0
+	for _, s := range m.AgentStates {
+		s.RenderedHistory = nil
+	}
+	m.updateLayout()
+	m.updateViewport()
+	m.screenDirty = true
+	return m
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch event := msg.(type) {
 	case transcriptFrameMsg:
 		return m.transcriptFrame()
@@ -313,6 +348,26 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 				m.TodoScrollOffset = maxOffset
 				return m, nil
 			}
+			// Typing must never be silently trapped while the pane holds
+			// focus: the first printable, non-nav key releases focus and —
+			// with no early return — falls through below so the same key
+			// reaches the chat input. j/k/g/G stay nav keys while focused
+			// (the switch above consumed them); every other printable
+			// character both unfocuses and types. bubbletea v2 populates
+			// Key.Text only for printable characters (the exact bytes the
+			// textarea inserts), so esc/ctrl/alt/pgup-style keystrokes never
+			// match here and keep the pane focused. Combining/dead-key
+			// sequences deliver multi-rune Text ("e"+U+0301 in one event) —
+			// any printable rune in it is typing, so release on the first.
+			if press, ok := keyMsg.(tea.KeyPressMsg); ok &&
+				press.Mod&(tea.ModCtrl|tea.ModAlt|tea.ModMeta|tea.ModHyper|tea.ModSuper) == 0 {
+				for _, r := range press.Text {
+					if !unicode.IsControl(r) {
+						m.TodoPaneFocused = false
+						break
+					}
+				}
+			}
 		}
 
 		if wheelMsg, ok := msg.(tea.MouseWheelMsg); ok {
@@ -330,6 +385,14 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 
 		if clickMsg, ok := msg.(tea.MouseClickMsg); ok {
 			mouse := clickMsg.Mouse()
+			// A left click outside the pane releases its focus but must not
+			// eat the click: no early return, so the click keeps its normal
+			// downstream work (transcript selection/copy, input placement).
+			if mouse.Button == tea.MouseLeft &&
+				m.TodoPaneFocused &&
+				mouse.X < m.Width-todoPaneWidth {
+				m.TodoPaneFocused = false
+			}
 			if mouse.Button == tea.MouseLeft &&
 				mouse.X >= m.Width-todoPaneWidth &&
 				mouse.Y >= 0 && mouse.Y < m.Viewport.Height() {
@@ -1043,9 +1106,11 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			case "up":
 				m.AutocompleteIndex = max(0, m.AutocompleteIndex-1)
 				return m, nil
-			case "down", "tab":
+			case "down":
 				m.AutocompleteIndex = min(len(m.AutocompleteItems)-1, m.AutocompleteIndex+1)
 				return m, nil
+			case "tab":
+				return m.acceptAutocomplete(), nil // fill in, don't submit
 			case "enter":
 				m = m.acceptAutocomplete()
 				// Fall through to normal "enter" handling for submission
@@ -1188,6 +1253,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 					return m, clearCmd
 				}
 				m.ShowTodoPane = !m.ShowTodoPane
+				m.TodoPaneAuto = false // the user has taken control
 				m.TodoPaneFocused = false
 				m.TodoScrollOffset = 0
 				for _, s := range m.AgentStates {
@@ -1195,6 +1261,64 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				}
 				m.updateLayout()
 				return m, nil
+			}
+			if cmd == "/infobar" {
+				m.Input.Reset()
+				m.Input.SetValue("")
+				m.ShowInfoBar = !m.ShowInfoBar
+				m.updateLayout()
+				feedback := "info bar off"
+				if m.ShowInfoBar {
+					feedback = "info bar on"
+				}
+				// Persist best-effort, mirroring the theme-apply SaveConfig
+				// call sites; a save failure keeps the view toggle but is
+				// surfaced as status text.
+				if m.AppConfig != nil {
+					m.AppConfig.ShowInfoBar = m.ShowInfoBar
+					if err := config.SaveConfig(m.AppConfig); err != nil {
+						focusedState.StatusText = "failed to save info bar setting"
+					}
+				}
+				m.ToastMessage = feedback
+				m.ToastWarning = false
+				m.ToastExpireTime = time.Now().UnixMilli() + 3000
+				clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+					return clearToastMsg{}
+				})
+				m.updateViewport()
+				return m, clearCmd
+			}
+			if cmd == "/timestamps" {
+				m.Input.Reset()
+				m.Input.SetValue("")
+				m.ShowTimestamps = !m.ShowTimestamps
+				feedback := "timestamps off"
+				if m.ShowTimestamps {
+					feedback = "timestamps on"
+				}
+				// Persist best-effort, mirroring the theme-apply SaveConfig
+				// call sites; a save failure keeps the view toggle but is
+				// surfaced as status text.
+				if m.AppConfig != nil {
+					m.AppConfig.ShowTimestamps = m.ShowTimestamps
+					if err := config.SaveConfig(m.AppConfig); err != nil {
+						focusedState.StatusText = "failed to save timestamps setting"
+					}
+				}
+				// The toggle changes how every cached block renders; mark
+				// the transcript dirty. The render pass also discards the
+				// block cache whenever the timestamps flag differs from
+				// the state it was rendered with.
+				m.refreshTranscript()
+				m.ToastMessage = feedback
+				m.ToastWarning = false
+				m.ToastExpireTime = time.Now().UnixMilli() + 3000
+				clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+					return clearToastMsg{}
+				})
+				m.updateViewport()
+				return m, clearCmd
 			}
 			if cmd == "/model" {
 				m.Input.Reset()
@@ -1641,6 +1765,10 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 		// the retried attempt actually produced a response; it is returned
 		// after the event switch below.
 		var restoredToast tea.Cmd
+		// spawnedToast briefly announces a new subagent. It is a toast rather
+		// than status text because the parent stays blocked on the subagent,
+		// so status text would sit in the bar for the subagent's whole run.
+		var spawnedToast tea.Cmd
 		// contextExceededToastCmd surfaces the context-exhaustion guidance —
 		// including the executor guard's compaction outcome ("auto-compacted
 		// (saved ~N tokens), retrying" or the unavailable/failed wording) —
@@ -1862,7 +1990,13 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				m.updateViewport()
 			}
 		case common.ChildAddedEvent:
-			s.StatusText = "Subagent spawned"
+			label := "subagent"
+			if event.Child != nil {
+				label = formatAgentBreadcrumb(event.Child.ID())
+			}
+			spawnedToast = func() tea.Msg {
+				return ToastMsg{Text: label + " spawned · tab to view", Duration: 2 * time.Second}
+			}
 			m.updateViewport()
 		case common.StopRequestedEvent:
 			s.Perf.abort()
@@ -1889,6 +2023,9 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 		var eventCmds []tea.Cmd
 		if restoredToast != nil {
 			eventCmds = append(eventCmds, restoredToast)
+		}
+		if spawnedToast != nil {
+			eventCmds = append(eventCmds, spawnedToast)
 		}
 		if contextExceededToastCmd != nil {
 			eventCmds = append(eventCmds, contextExceededToastCmd)
@@ -2076,9 +2213,13 @@ func (m *Model) updateLayout() {
 			s.RenderedHistory = nil
 		}
 	}
-	vHeight := m.Height - (m.Input.Height() + 1) - StatusBarHeight - AppPadding
+	// Reserve one extra footer row while the info bar is shown
+	// (mirrors the StatusBarHeight reservation above).
+	infoH := m.infoBarHeight()
+
+	vHeight := m.Height - (m.Input.Height() + 1) - StatusBarHeight - AppPadding - infoH
 	if m.Mode == ViewModelPicker {
-		vHeight = m.Height - 3 - StatusBarHeight - AppPadding
+		vHeight = m.Height - 3 - StatusBarHeight - AppPadding - infoH
 	}
 
 	// Reserve space for autocomplete dropdown
@@ -2095,7 +2236,9 @@ func (m *Model) updateLayout() {
 
 	// Ensure file picker also respects the layout height to prevent pushing the status bar off-screen
 	// We subtract StatusBarHeight. If we have a 2-line picker status bar, we subtract 3.
-	fpHeight := m.Height - 3
+	// The info bar never renders while the picker is open, so infoBarHeight()
+	// contributes nothing in that mode.
+	fpHeight := m.Height - 3 - m.infoBarHeight()
 	if fpHeight < 1 {
 		fpHeight = 1
 	}

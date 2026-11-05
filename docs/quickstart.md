@@ -156,11 +156,36 @@ The essentials:
 | `/compose`          | Draft a longer instruction in your `$EDITOR`         |
 | `Ctrl+D` / `Ctrl+C` | Quit                                                 |
 
-Type `/` at any time to open the command picker, and `@` anywhere in your prompt to pick a project file by name (fuzzy, `Tab`/`Enter` to insert; files ignored by `.gitignore`/`.llmignore` are not offered).
+Type `/` at any time to open the command picker (`Tab` fills in the highlighted command so you can add arguments, `Enter` runs it), and `@` anywhere in your prompt to pick a project file by name (fuzzy, `Tab`/`Enter` to insert; files ignored by `.gitignore`/`.llmignore` are not offered).
 
 When Late creates subagents, each appears in its own tab while it works and disappears after completing its task.
 
 Every finished tool call shows its outcome on the same row: `✓ +3 -1` for an edit, `✗ exit 1 · FAIL` for a failing command, `⊘ denied` for a call you refused. Click a row (or press `Ctrl+R` for all of them) to see the detail behind it: the diff of an edit, the output of a command, or a subagent's full report. Subagent tabs close when the subagent finishes, but its report stays reachable this way in the orchestrator's transcript.
+
+---
+
+## Message Timestamps
+
+* `/timestamps` toggles quiet `HH:MM:SS` timestamps on transcript messages (bottom-right of your prompt card, right-aligned under each reply).
+* The toggle persists to `config.json` (`show-timestamps`).
+
+---
+
+## Info Bar
+
+* `/infobar` toggles a single-line row under the status bar. Left to right: the focused agent's endpoint host and model (`localhost:9931 · qwen3.5-4b`), the approval mode (`approval ask`, or `approval off` when running unsupervised), todo progress (`todos 3/7`), and the subagents that are running or waiting for your approval (shown only while there are any).
+* On the right, `turn 1m42s` times the current turn: it starts when you send a message, runs while any agent is working, and freezes when they are all idle, so it keeps showing how long the last turn took until you send the next message.
+* On a narrow terminal whole segments are dropped (the host first, then turn time, todos, subagents, approval) rather than cut in half; very long hosts and model names are clipped with an ellipsis.
+* The toggle persists to `config.json` (`show-info-bar`).
+
+---
+
+## Todos Pane
+
+* The todos pane shows the orchestrator's todo list on the right side of the transcript. It stays closed until the first todos are created and then opens by itself, once; the transcript narrows to make room. `/todos` toggles it at any time, and once you have toggled it yourself it never moves on its own.
+* Set `"show-todo-pane": true` in `config.json` to start with it open, or `false` to keep it closed and never open it by itself.
+* Terminals narrower than 85 columns keep it closed; if you widen the window later, a pane still waiting to open does so.
+* Click inside the pane (or press `Ctrl+T`) to focus it for scrolling; a focused pane is highlighted and marked `[focused · esc to unfocus]`. `Esc` or a click anywhere outside releases focus, and so does the first printable key you type, which still lands in the input, so the pane never swallows your typing.
 
 ---
 
@@ -341,6 +366,29 @@ The retry budget is resolved as CLI flag > environment variable > built-in defau
 
 Setting `0` (or a negative value) disables stream retrying entirely. Run `late -h` to see all flags.
 
+## Loop Detection
+
+Small or poorly-sampled models sometimes get stuck issuing the same tool call forever. Late watches each turn's tool calls **and their results**:
+
+* If the last N turns are identical (same calls, same output), or alternate between two identical turns (A, B, A, B, …), Late injects a one-time warning telling the model to change approach or ask you.
+* If the model keeps repeating after the warning, the run stops with an error saying the model kept repeating the same tool calls. Your session is intact; send a new message to continue.
+* Any change in a call or its output counts as progress and resets the detector, so re-running a build after an edit is never flagged.
+
+The threshold N is resolved as CLI flag > environment variable > built-in default:
+
+* `--loop-threshold <n>` — identical turns in a row before warning (default: 5)
+* `LATE_LOOP_THRESHOLD` — environment variable, used when the flag is not passed
+
+Setting `0` (or a negative value) disables loop detection.
+
+**If your local model loops often**, check the server settings first, since they are the usual cause:
+
+* **Temperature too low.** Very low values (e.g. 0.1) make loops likely, especially on MoE models. Use the model's recommended sampling (e.g. Qwen: temp 0.6–1.0, top-p 0.95, top-k 20).
+* **Context shifting / "Truncate Middle".** Silently dropping context confuses the model. Prefer "stop at limit" and a larger context.
+* **No KV-cache quantization.** Q8 (or Q4) KV cache lets you fit a much larger context in the same VRAM.
+
+For non-coding use (specifically with a custom system prompt), you may also want to look at [Minh Nhat Nguyen et al., ICLR 2025: Turning Up the Heat: Min-p Sampling for Creative and Coherent LLM Outputs](https://arxiv.org/abs/2407.01082) for guidance on sampling settings.
+
 ---
 
 ## Common Flags
@@ -360,6 +408,7 @@ Setting `0` (or a negative value) disables stream retrying entirely. Run `late -
 | `--enable-images` | Treat models as supporting images (for non llama.cpp servers) |
 | `--save-subagent-histories` | Persist subagent conversation histories to disk |
 | `--max-stream-retries <n>` | Max retries per LLM stream call with jittered exponential backoff (default: 10); `0` disables stream retrying. Env: `LATE_MAX_STREAM_RETRIES` |
+| `--loop-threshold <n>` | Warn, then stop, after this many identical tool-call turns in a row (default: 5); `0` disables. Env: `LATE_LOOP_THRESHOLD` |
 | `--ask-for-user-approval` | Require user approval for dangerous commands (default; overrides `config.json` `permission-mode`) |
 | `--i-promise-i-have-backups-and-will-not-file-issues` | Run every tool without user confirmation (overrides `config.json` `permission-mode`) |
 
