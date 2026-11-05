@@ -91,9 +91,6 @@ type BatchSpawnSubagentsTool struct {
 	MaxConcurrent int
 }
 
-// Deprecated: SpawnSubagentsAsyncTool is an alias for BatchSpawnSubagentsTool.
-type SpawnSubagentsAsyncTool = BatchSpawnSubagentsTool
-
 func (t BatchSpawnSubagentsTool) Name() string { return "batch_spawn_subagents" }
 
 func (t BatchSpawnSubagentsTool) Description() string {
@@ -165,17 +162,12 @@ func (t BatchSpawnSubagentsTool) Execute(ctx context.Context, args json.RawMessa
 
 	var params struct {
 		Subagents []SubagentTask `json:"subagents"`
-		Tasks     []SubagentTask `json:"tasks"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("failed to parse arguments: %v", err)
 	}
 
 	taskList := params.Subagents
-	if len(taskList) == 0 {
-		taskList = params.Tasks
-	}
-
 	if len(taskList) == 0 {
 		return "Error: No subagent tasks provided. Please provide a list of subagent tasks to execute.", nil
 	}
@@ -248,15 +240,9 @@ func (t BatchSpawnSubagentsTool) CallString(args json.RawMessage) string {
 		Subagents []struct {
 			Goal string `json:"goal"`
 		} `json:"subagents"`
-		Tasks []struct {
-			Goal string `json:"goal"`
-		} `json:"tasks"`
 	}
 	_ = json.Unmarshal(args, &params)
 	list := params.Subagents
-	if len(list) == 0 {
-		list = params.Tasks
-	}
 	if len(list) == 0 {
 		return "Spawning subagents asynchronously"
 	}
