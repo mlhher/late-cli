@@ -407,6 +407,7 @@ For non-coding use (specifically with a custom system prompt), you may also want
 | `--append-system-prompt "..."` | Append text to the system prompt (e.g. further instructions) |
 | `--enable-images` | Treat models as supporting images (for non llama.cpp servers) |
 | `--save-subagent-histories` | Persist subagent conversation histories to disk |
+| `--max-async-subagents <n>` | Max subagents running at the same time (default: 2). Env: `LATE_MAX_ASYNC_SUBAGENTS` |
 | `--max-stream-retries <n>` | Max retries per LLM stream call with jittered exponential backoff (default: 10); `0` disables stream retrying. Env: `LATE_MAX_STREAM_RETRIES` |
 | `--loop-threshold <n>` | Warn, then stop, after this many identical tool-call turns in a row (default: 5); `0` disables. Env: `LATE_LOOP_THRESHOLD` |
 | `--ask-for-user-approval` | Require user approval for dangerous commands (default; overrides `config.json` `permission-mode`) |
