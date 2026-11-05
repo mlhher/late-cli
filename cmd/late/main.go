@@ -130,6 +130,7 @@ func main() {
 	logitBiasReq := flag.String("logit-bias", "", "Main-agent token bias: JSON object or comma-separated TOKEN_ID:BIAS pairs.")
 	suppressThinkingWordsReq := flag.Bool("suppress-thinking-words", false, "Bias anti-overthinking tokens (requires the same model for main agent and subagents).")
 	subagentLogitBiasReq := flag.String("subagent-logit-bias", "", "Subagent token bias: JSON object or comma-separated TOKEN_ID:BIAS pairs.")
+	maxAsyncSubagentsReq := flag.Int("max-async-subagents", 0, "Maximum number of concurrent subagents (default: 1, or from config)")
 
 	flag.Usage = func() {
 		writeHelp(os.Stderr, flag.CommandLine)
@@ -217,6 +218,20 @@ func main() {
 		}
 	}
 
+	// Load App configuration. A load error means the run proceeds with
+	// degraded defaults (LoadConfig already wraps the error with the exact
+	// config path); keep the message so the TUI status bar can surface it
+	// before backend discovery reports.
+	appConfig, err := appconfig.LoadConfig()
+	configLoadWarning := initialBootstrapStatus(err)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to load app config: %v\n", err)
+	}
+	maxAsyncSubagents := appconfig.ResolveMaxAsyncSubagents(appConfig, *maxAsyncSubagentsReq)
+	// batch_spawn_subagents is only useful when more than one subagent may run at once.
+	batchSpawnEnabled := *enableSubagentsReq && maxAsyncSubagents > 1 &&
+		appConfig != nil && appConfig.EnabledTools["batch_spawn_subagents"]
+
 	// Plugin command handler — dispatches before TUI startup
 	var pluginManager *plugin.PluginManager
 	cwd, _ := os.Getwd()
@@ -257,8 +272,12 @@ func main() {
 		systemPrompt = envPrompt
 	} else {
 		content, _ := assets.PromptsFS.ReadFile("prompts/instruction-orchestrator.md")
-		systemPrompt = string(content)
+		systemPrompt = common.ApplyOptionalSection(string(content), "batch", batchSpawnEnabled)
 	}
+
+	systemPrompt = common.ReplacePlaceholders(systemPrompt, map[string]string{
+		"${{MAX_ASYNC_SUBAGENTS}}": fmt.Sprintf("%d", maxAsyncSubagents),
+	})
 
 	if *injectCWDReq {
 		cwd, err := os.Getwd()
@@ -375,15 +394,7 @@ func main() {
 			}
 		}
 	}
-	// Load App configuration. A load error means the run proceeds with
-	// degraded defaults (LoadConfig already wraps the error with the exact
-	// config path); keep the message so the TUI status bar can surface it
-	// before backend discovery reports.
-	appConfig, err := appconfig.LoadConfig()
-	configLoadWarning := initialBootstrapStatus(err)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Failed to load app config: %v\n", err)
-	}
+
 	enabledTools := make(map[string]bool)
 	if appConfig != nil {
 		for toolName, enabled := range appConfig.EnabledTools {
@@ -890,8 +901,16 @@ func main() {
 		}
 
 		sess.Registry.Register(tool.SpawnSubagentTool{
-			Runner: runner,
+			Runner:         runner,
+			BatchAvailable: batchSpawnEnabled,
 		})
+
+		if batchSpawnEnabled {
+			sess.Registry.Register(tool.BatchSpawnSubagentsTool{
+				Runner:        runner,
+				MaxConcurrent: maxAsyncSubagents,
+			})
+		}
 	}
 
 	if _, err := p.Run(); err != nil {

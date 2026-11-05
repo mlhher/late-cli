@@ -2,6 +2,7 @@
   "name": "coder",
   "description": "'coder' for writing/modifying code.",
   "prompt_file": "prompts/instruction-coding.md",
+  "async": true,
   "allowed_tools": [
     "read_file",
     "write_file",

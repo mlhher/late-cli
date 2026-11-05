@@ -94,9 +94,9 @@ func NewSubagentOrchestrator(
 	// Inherit all tools from parent (including MCP tools)
 	if parent != nil && parent.Registry() != nil {
 		for _, t := range parent.Registry().All() {
-			// Skip spawn_subagent and write_implementation_plan to prevent recursion/confusion
+			// Skip spawn_subagent, batch_spawn_subagents and write_implementation_plan to prevent recursion/confusion
 			name := t.Name()
-			if name == "spawn_subagent" || name == "write_implementation_plan" ||
+			if name == "spawn_subagent" || name == "batch_spawn_subagents" || name == "write_implementation_plan" ||
 				name == "create_todos" || name == "list_todos" || name == "finish_todo" {
 				continue
 			}
@@ -136,7 +136,6 @@ func NewSubagentOrchestrator(
 		return nil, fmt.Errorf("failed to add initial message: %w", err)
 	}
 
-	// 4. Create Orchestrator
 	mws := parent.Middlewares()
 
 	if messenger != nil {

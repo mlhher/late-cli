@@ -95,6 +95,11 @@ type Config struct {
 	// Enable via config file or the --save-subagent-histories CLI flag.
 	SaveSubagentHistories bool `json:"save_subagent_histories,omitempty"`
 
+	// MaxAsyncSubagents caps how many subagents run at the same time.
+	// 0/unset = DefaultMaxAsyncSubagents. The LATE_MAX_ASYNC_SUBAGENTS env
+	// var overrides it and the --max-async-subagents CLI flag wins over both.
+	MaxAsyncSubagents int `json:"max_async_subagents,omitempty"`
+
 	// PermissionMode selects how potentially dangerous commands are
 	// supervised. One of the PermissionMode* constants; empty means the
 	// default (ask-for-user-approval). Set via config file; the CLI flags
@@ -148,19 +153,23 @@ type Config struct {
 	Degraded bool `json:"-"`
 }
 
+const DefaultMaxAsyncSubagents = 1
+
 func defaultConfig() Config {
 	return Config{
+		MaxAsyncSubagents: DefaultMaxAsyncSubagents,
 		EnabledTools: map[string]bool{
-			"read_file":      true,
-			"write_file":     true,
-			"target_edit":    true,
-			"spawn_subagent": true,
-			"bash":           true,
-			"search_content": true,
-			"find_files":     true,
-			"create_todos":   true,
-			"list_todos":     true,
-			"finish_todo":    true,
+			"read_file":             true,
+			"write_file":            true,
+			"target_edit":           true,
+			"spawn_subagent":        true,
+			"batch_spawn_subagents": true,
+			"bash":                  true,
+			"search_content":        true,
+			"find_files":            true,
+			"create_todos":          true,
+			"list_todos":            true,
+			"finish_todo":           true,
 		},
 	}
 }
@@ -299,6 +308,26 @@ func ResolveSubagentSettingsWithEnv(cfg *Config, openAI OpenAISettings, lookup E
 	}
 
 	return resolved
+}
+
+func ResolveMaxAsyncSubagents(cfg *Config, flagVal int) int {
+	return ResolveMaxAsyncSubagentsWithEnv(cfg, flagVal, os.LookupEnv)
+}
+
+func ResolveMaxAsyncSubagentsWithEnv(cfg *Config, flagVal int, lookup EnvLookup) int {
+	if flagVal > 0 {
+		return flagVal
+	}
+	if value, ok := nonEmptyEnv(lookup, "LATE_MAX_ASYNC_SUBAGENTS"); ok {
+		var parsed int
+		if _, err := fmt.Sscanf(value, "%d", &parsed); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	if cfg != nil && cfg.MaxAsyncSubagents > 0 {
+		return cfg.MaxAsyncSubagents
+	}
+	return DefaultMaxAsyncSubagents
 }
 
 // ResolveSaveSubagentHistories determines whether subagent history

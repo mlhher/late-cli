@@ -77,6 +77,7 @@ One binary. Zero configuration. If `llama-server` is already running, Late finds
 2. **Disposable Test-Time Compute:** Workers can spend far more aggregate inference than would ever fit cleanly into one useful reasoning trajectory. Late trades cheap compute for a bounded, high-signal orchestrator context.
 3. **Empirical Logit Biasing:** Late implements real-time logit biasing for `llama.cpp`/`llama-server`. It suppresses redundant thinking tokens on the fly, reclaiming wasted CoT compute while leaving room for useful reasoning (varies by model).
 4. **Physical Tool Registry Pruning:** The Orchestrator has no file-writing tools, has repo-mutating bash commands blocked, and cannot bypass delegation. Subagents have no orchestration tools and cannot recursively spawn agents.
+5. **Parallel Subagents:** Independent plan steps run as concurrent, fully isolated Coder or Researcher subagents via `batch_spawn_subagents`, and all results return to the orchestrator in a single turn. Set `max_async_subagents` to what your backend can serve in parallel: locally e.g. `llama-server --parallel 2`, or with a hosted provider like [DeepSeek-Flash](https://api-docs.deepseek.com/quick_start/pricing), which allows up to 2,500 concurrent requests.
 
 See the [Feature Matrix](#the-feature-matrix) and [FAQ](#faq) for a direct comparison and real world examples.
 

@@ -2,6 +2,7 @@
   "name": "researcher",
   "description": "'researcher' for codebase analysis.",
   "prompt_file": "prompts/instruction-researcher.md",
+  "async": true,
   "allowed_tools": [
     "read_file",
     "search_content",

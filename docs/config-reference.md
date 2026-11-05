@@ -39,6 +39,7 @@ Layered exceptions to that order:
   Within config, `late_subagent_*` wins over the legacy `subagent_*` entries,
   which win over the main `openai_*` values.
 * `theme` — `--theme` flag > `LATE_THEME` env > config > bundled base theme.
+* `max_async_subagents` — `--max-async-subagents` flag > `LATE_MAX_ASYNC_SUBAGENTS` env > config > default.
 * The three `permission-mode` flags are mutually exclusive: pass at most one.
 * Booleans are plain JSON booleans here: `true`, `false`, or absent.
 
@@ -124,6 +125,7 @@ Late prefers a located error over silently accepting a typo'd config:
 | Key | Type | Default | CLI flag | Description |
 | --- | --- | --- | --- | --- |
 | `save_subagent_histories` | boolean | `false` | `--save-subagent-histories` | Persist subagent conversation histories under `<sessions>/<session-id>/subagents/`. |
+| `max_async_subagents` | number | `1` | `--max-async-subagents` | Maximum number of subagents running at the same time. `LATE_MAX_ASYNC_SUBAGENTS` env overrides the config value; the CLI flag wins over both. Values ≤ 0 fall back to the default. `batch_spawn_subagents` is only available when this is above 1. |
 
 ### Supervision and retries
 
