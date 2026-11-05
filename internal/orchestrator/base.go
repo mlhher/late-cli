@@ -611,7 +611,6 @@ func (o *BaseOrchestrator) Cancel() {
 
 	children := make([]common.Orchestrator, len(o.children))
 	copy(children, o.children)
-	o.mu.Unlock()
 
 	for _, child := range children {
 		child.Cancel()
