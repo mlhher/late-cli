@@ -193,14 +193,11 @@ func (t BatchSpawnSubagentsTool) Execute(ctx context.Context, args json.RawMessa
 
 	results := make([]taskResult, len(taskList))
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, maxLimit)
 
 	for i, task := range taskList {
 		wg.Add(1)
 		go func(idx int, tsk SubagentTask) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
 
 			out, err := t.Runner(ctx, tsk.Goal, tsk.CtxFiles, tsk.AgentType)
 			results[idx] = taskResult{
