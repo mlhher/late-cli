@@ -173,7 +173,7 @@ Every finished tool call shows its outcome on the same row: `✓ +3 -1` for an e
 
 ## Info Bar
 
-* `/infobar` toggles a single-line row under the status bar. Left to right: the focused agent's endpoint host and model (`localhost:9931 · qwen3.5-4b`), the approval mode (`approval ask`, or `approval off` when running unsupervised), todo progress (`todos 3/7`), and the subagents that are running or waiting for your approval (shown only while there are any).
+* A single-line info row sits under the status bar (shown by default; `/infobar` toggles it). Left to right: the focused agent's endpoint host and model (`localhost:9931 · qwen3.5-4b`), the approval mode (`approval ask`, or `approval off` when running unsupervised), todo progress (`todos 3/7`), and the subagents that are running or waiting for your approval (shown only while there are any).
 * On the right, `turn 1m42s` times the current turn: it starts when you send a message, runs while any agent is working, and freezes when they are all idle, so it keeps showing how long the last turn took until you send the next message.
 * On a narrow terminal whole segments are dropped (the host first, then turn time, todos, subagents, approval) rather than cut in half; very long hosts and model names are clipped with an ellipsis.
 * The toggle persists to `config.json` (`show-info-bar`).

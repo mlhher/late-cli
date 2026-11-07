@@ -1275,7 +1275,8 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				// call sites; a save failure keeps the view toggle but is
 				// surfaced as status text.
 				if m.AppConfig != nil {
-					m.AppConfig.ShowInfoBar = m.ShowInfoBar
+					show := m.ShowInfoBar
+					m.AppConfig.ShowInfoBar = &show
 					if err := config.SaveConfig(m.AppConfig); err != nil {
 						focusedState.StatusText = "failed to save info bar setting"
 					}

@@ -61,48 +61,51 @@ func TestInfoBarTogglePersistsToConfig(t *testing.T) {
 	cfg := &config.Config{}
 	m := NewModel(&mockOrchestrator{}, nil, cfg)
 	m.SetSize(120, 30)
-	if m.ShowInfoBar {
-		t.Fatal("ShowInfoBar should default to false when unset in config")
+	if !m.ShowInfoBar {
+		t.Fatal("ShowInfoBar should default to true when unset in config")
 	}
 
-	// Toggle on: view flag, config struct, and the persisted file all flip.
+	// Toggle off: view flag, config struct, and the persisted file all flip.
 	m.Input.SetValue("/infobar")
 	m = pressEnter(t, m)
-	if !m.ShowInfoBar {
-		t.Fatal("expected ShowInfoBar to be true after /infobar")
+	if m.ShowInfoBar {
+		t.Fatal("expected ShowInfoBar to be false after /infobar")
 	}
-	if m.ToastMessage != "info bar on" {
-		t.Fatalf("toast = %q, want %q", m.ToastMessage, "info bar on")
+	if m.ToastMessage != "info bar off" {
+		t.Fatalf("toast = %q, want %q", m.ToastMessage, "info bar off")
 	}
-	if !cfg.ShowInfoBar {
-		t.Fatal("expected cfg.ShowInfoBar to be true after /infobar")
+	if cfg.InfoBarEnabled() {
+		t.Fatal("expected cfg info bar to be off after /infobar")
 	}
 	loaded, err := config.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	if !loaded.ShowInfoBar {
-		t.Fatal("expected show-info-bar to be persisted as true")
+	if loaded.ShowInfoBar == nil || *loaded.ShowInfoBar {
+		t.Fatal("expected show-info-bar to be persisted as false")
+	}
+	if NewModel(&mockOrchestrator{}, nil, loaded).ShowInfoBar {
+		t.Fatal("an explicit false must keep the info bar off after a restart")
 	}
 
-	// Toggle off again.
+	// Toggle on again.
 	m.Input.SetValue("/infobar")
 	m = pressEnter(t, m)
-	if m.ShowInfoBar {
-		t.Fatal("expected ShowInfoBar to be false after second /infobar")
+	if !m.ShowInfoBar {
+		t.Fatal("expected ShowInfoBar to be true after second /infobar")
 	}
-	if m.ToastMessage != "info bar off" {
-		t.Fatalf("toast = %q, want %q", m.ToastMessage, "info bar off")
+	if m.ToastMessage != "info bar on" {
+		t.Fatalf("toast = %q, want %q", m.ToastMessage, "info bar on")
 	}
-	if cfg.ShowInfoBar {
-		t.Fatal("expected cfg.ShowInfoBar to be false after second /infobar")
+	if !cfg.InfoBarEnabled() {
+		t.Fatal("expected cfg info bar to be on after second /infobar")
 	}
 	loaded, err = config.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	if loaded.ShowInfoBar {
-		t.Fatal("expected show-info-bar to be persisted as false")
+	if loaded.ShowInfoBar == nil || !*loaded.ShowInfoBar {
+		t.Fatal("expected show-info-bar to be persisted as true")
 	}
 }
 
@@ -122,7 +125,7 @@ func TestInfoBarToggleSaveFailureSurfacesStatusText(t *testing.T) {
 	m.Input.SetValue("/infobar")
 	m = pressEnter(t, m)
 
-	if !m.ShowInfoBar {
+	if m.ShowInfoBar {
 		t.Fatal("view toggle should still apply when saving fails")
 	}
 	state := m.GetAgentState(m.Focused.ID())
@@ -132,7 +135,8 @@ func TestInfoBarToggleSaveFailureSurfacesStatusText(t *testing.T) {
 }
 
 func TestInfoBarToggleReservesLayoutRow(t *testing.T) {
-	m := NewModel(&mockOrchestrator{}, nil, &config.Config{})
+	off := false
+	m := NewModel(&mockOrchestrator{}, nil, &config.Config{ShowInfoBar: &off})
 	m.SetSize(80, 24)
 
 	if m.infoBarHeight() != 0 {
@@ -445,7 +449,8 @@ func TestInfoBarDropsWholeSegmentsWhenNarrow(t *testing.T) {
 }
 
 func TestInfoBarHiddenWhenDisabled(t *testing.T) {
-	m := NewModel(&mockOrchestrator{}, nil, &config.Config{})
+	off := false
+	m := NewModel(&mockOrchestrator{}, nil, &config.Config{ShowInfoBar: &off})
 	m.Width = 120
 	m.CWD = "/tmp/project"
 	if got := m.infoBarView(); got != "" {
