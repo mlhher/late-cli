@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -214,6 +215,19 @@ func RegisterTools(reg *tool.Registry, enabledTools map[string]bool) {
 		reg.Register(tool.SkillReadReferenceTool{
 			Skills: skillMap,
 		})
+	}
+}
+
+func RegisterExternalTools(reg *tool.Registry, enabledExternalTools map[string]string) {
+	if reg == nil || len(enabledExternalTools) == 0 {
+		return
+	}
+
+	for name, path := range enabledExternalTools {
+		if strings.TrimSpace(name) == "" || strings.TrimSpace(path) == "" {
+			continue
+		}
+		reg.Register(tool.NewExternalBinaryTool(name, path))
 	}
 }
 
