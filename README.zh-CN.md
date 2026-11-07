@@ -82,6 +82,8 @@ late
 
 4. **物理工具注册表裁剪：** 编排器没有文件写入工具，仓库修改类 Bash 命令会被阻止，也无法绕过委托机制。子智能体没有编排工具，也不能递归创建其他智能体。
 
+5. **并行子智能体：** 互不依赖的计划步骤可通过 `batch_spawn_subagents` 以并发、完全隔离的 Coder 或 Researcher 子智能体运行，所有结果在同一轮中一并返回给编排器。请将 `max_async_subagents` 设置为后端可并行处理的数量：本地例如 `llama-server --parallel 2`，或使用托管服务商，例如 [DeepSeek-Flash](https://api-docs.deepseek.com/quick_start/pricing)，最多支持 2,500 个并发请求。
+
 请参阅[功能矩阵](#功能矩阵)和[常见问题](#常见问题)，了解直接对比和真实使用案例。
 
 <div align="center">

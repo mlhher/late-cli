@@ -77,6 +77,7 @@ One binary. Zero configuration. If `llama-server` is already running, Late finds
 2. **Disposable Test-Time Compute:** Workers can spend far more aggregate inference than would ever fit cleanly into one useful reasoning trajectory. Late trades cheap compute for a bounded, high-signal orchestrator context.
 3. **Empirical Logit Biasing:** Late implements real-time logit biasing for `llama.cpp`/`llama-server`. It suppresses redundant thinking tokens on the fly, reclaiming wasted CoT compute while leaving room for useful reasoning (varies by model).
 4. **Physical Tool Registry Pruning:** The Orchestrator has no file-writing tools, has repo-mutating bash commands blocked, and cannot bypass delegation. Subagents have no orchestration tools and cannot recursively spawn agents.
+5. **Parallel Subagents:** Independent plan steps run as concurrent, fully isolated Coder or Researcher subagents via `batch_spawn_subagents`, and all results return to the orchestrator in a single turn. Off by default: enable it with --max-async-subagents <n> (or max_async_subagents in config.json), set to what your backend can serve in parallel:: locally e.g. `llama-server --parallel 2`, or with a hosted provider like [DeepSeek-Flash](https://api-docs.deepseek.com/quick_start/pricing), which allows up to 2,500 concurrent requests.
 
 See the [Feature Matrix](#the-feature-matrix) and [FAQ](#faq) for a direct comparison and real world examples.
 
@@ -190,6 +191,7 @@ export OPENAI_MODEL="model-name"
 * **Universal Plugin System:** Extend Late with custom slash commands, MCP servers, themes, and lifecycle hooks (`onSessionStart`, `onMessageSend`, `onToolCall`, `onToolResult`). Install via `late plugin install <package>` directly. Subagents automatically inherit active plugins.
 * **Empirical Logit Biasing:** Built on [Chenlong Wang et al., Findings of EMNLP 2025](https://arxiv.org/abs/2506.08343), Late dynamically suppresses repetitive self-reflection tokens ("Wait...", "Hmm") in reasoning models via `llama-server`, reducing CoT token bloat by 27%–51% with zero loss in accuracy (may vary depending on the model).
 * **Overnight Autopilot via Podman (`late-podman`):** Run the agent in an isolated, rootless container sandbox with devcontainer support and `yolo mode`. Turn Late loose on large-scale refactors overnight without risking your host machine.
+* **Parallel Subagents:** Run independent plan steps as concurrent Coder/Researcher subagents (`--max-async-subagents 2`). Workers keep the same tool pruning and context isolation, all results return to the orchestrator in a single turn, and its cache-stable prompt prefix stays intact. Off by default; match it to your backend's parallel slots (e.g. `llama-server --parallel 2`).
 * **Interactive Model Switching & Hybrid Routing:** Press `/model` to reconfigure orchestrator and worker models on the fly. Route planning to frontier reasoning models while delegating execution to fast, cost-efficient workers.
 * **Developer Ergonomics:**
   * `/compose`: Pop open your preferred `$EDITOR` (Neovim, Vim, Helix, VS Code) to draft complex, multi-line instructions.

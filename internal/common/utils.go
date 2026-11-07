@@ -2,6 +2,7 @@ package common
 
 import (
 	"late/internal/client"
+	"regexp"
 	"strings"
 )
 
@@ -11,6 +12,19 @@ func ReplacePlaceholders(text string, placeholders map[string]string) string {
 		text = strings.ReplaceAll(text, p, v)
 	}
 	return text
+}
+
+// ApplyOptionalSection handles text wrapped in <!-- name --> ... <!-- /name -->
+// markers: with keep it removes only the markers, otherwise it removes the
+// markers and the text between them. A marker directly followed by a newline
+// takes that newline with it, so markers on their own line leave no blank line.
+func ApplyOptionalSection(text, name string, keep bool) string {
+	n := regexp.QuoteMeta(name)
+	re := regexp.MustCompile(`(?s)<!-- ` + n + ` -->\n?(.*?)<!-- /` + n + ` -->\n?`)
+	if keep {
+		return re.ReplaceAllString(text, "$1")
+	}
+	return re.ReplaceAllString(text, "")
 }
 
 // EstimateTokenCount returns the true cl100k_base BPE token count for text.
