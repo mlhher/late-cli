@@ -227,7 +227,20 @@ func RegisterExternalTools(reg *tool.Registry, enabledExternalTools map[string]s
 		if strings.TrimSpace(name) == "" || strings.TrimSpace(path) == "" {
 			continue
 		}
-		reg.Register(tool.NewExternalBinaryTool(name, path))
+		// OpenAI-compatible endpoints reject tool names
+		// outside [A-Za-z0-9_-] and names over 64 characters, so
+		// the raw config key is registered under its sanitized form.
+		sanitized := common.SanitizeToolName(name)
+		if sanitized == "" {
+			continue
+		}
+		// First wins: never overwrite a tool that already owns the
+		// name (built-in, earlier external tool, or another config
+		// key that sanitizes to the same name).
+		if reg.Get(sanitized) != nil {
+			continue
+		}
+		reg.Register(tool.NewExternalBinaryTool(sanitized, path))
 	}
 }
 
