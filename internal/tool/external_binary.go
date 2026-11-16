@@ -94,10 +94,10 @@ func (t ExternalBinaryTool) Execute(ctx context.Context, args json.RawMessage) (
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if len(output) > 0 {
-			return "", fmt.Errorf("external tool %q failed: %w: %s", t.name, err, strings.TrimSpace(string(output)))
+			return "", fmt.Errorf("external tool %q failed: %w: %s", t.name, err, strings.TrimSpace(limit_tool_output(output)))
 		}
 		return "", fmt.Errorf("external tool %q failed: %w", t.name, err)
 	}
 
-	return string(output), nil
+	return limit_tool_output(output), nil
 }

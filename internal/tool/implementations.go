@@ -387,26 +387,8 @@ func (t ShellTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		return "(binary output detected)", nil
 	}
 
-	outputStr := string(output)
-	truncated := false
-
-	// Limit by characters first
-	if len(outputStr) > maxBashOutputChars {
-		outputStr = outputStr[:maxBashOutputChars]
-		truncated = true
-	}
-
-	// Limit output to prevent memory exhaustion
-	lines := strings.Split(outputStr, "\n")
-	if len(lines) > maxBashOutputLines {
-		lines = lines[:maxBashOutputLines]
-		truncated = true
-	}
-
-	finalOutput := strings.Join(lines, "\n")
-	if truncated {
-		finalOutput += "\n... (output truncated)"
-	}
+	// Apply the shared output limits: character cap, line cap, truncation suffix.
+	finalOutput := limit_tool_output(output)
 
 	if err != nil {
 		sandwich := ""
