@@ -41,11 +41,6 @@ func (t ExternalBinaryTool) Parameters() json.RawMessage {
             "cwd": {
                 "type": "string",
                 "description": "Optional working directory for the process."
-            },
-            "env": {
-                "type": "object",
-                "additionalProperties": { "type": "string" },
-                "description": "Extra environment variables to set for this call."
             }
         }
     }`)
@@ -68,9 +63,8 @@ func (t ExternalBinaryTool) Execute(ctx context.Context, args json.RawMessage) (
 	}
 
 	var params struct {
-		Args []string          `json:"args"`
-		Cwd  string            `json:"cwd"`
-		Env  map[string]string `json:"env"`
+		Args []string `json:"args"`
+		Cwd  string   `json:"cwd"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid parameters for %q: %w", t.name, err)
@@ -86,13 +80,6 @@ func (t ExternalBinaryTool) Execute(ctx context.Context, args json.RawMessage) (
 	cmd := exec.CommandContext(ctx, resolvedPath, params.Args...)
 	if params.Cwd != "" {
 		cmd.Dir = params.Cwd
-	}
-	if len(params.Env) > 0 {
-		env := os.Environ()
-		for k, v := range params.Env {
-			env = append(env, fmt.Sprintf("%s=%s", k, v))
-		}
-		cmd.Env = env
 	}
 
 	output, err := cmd.CombinedOutput()
