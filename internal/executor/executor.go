@@ -220,12 +220,13 @@ func RegisterTools(reg *tool.Registry, enabledTools map[string]bool) {
 	}
 }
 
-func RegisterExternalTools(reg *tool.Registry, enabledExternalTools map[string]string) {
+func RegisterExternalTools(reg *tool.Registry, enabledExternalTools map[string]common.ExternalTool) {
 	if reg == nil || len(enabledExternalTools) == 0 {
 		return
 	}
 
-	for name, path := range enabledExternalTools {
+	for name, externalTool := range enabledExternalTools {
+		path := externalTool.Path
 		if strings.TrimSpace(name) == "" || strings.TrimSpace(path) == "" {
 			continue
 		}
@@ -257,7 +258,7 @@ func RegisterExternalTools(reg *tool.Registry, enabledExternalTools map[string]s
 			}
 			path = abs
 		}
-		reg.Register(tool.NewExternalBinaryTool(sanitized, path))
+		reg.Register(tool.NewExternalBinaryTool(sanitized, path, externalTool.Description))
 	}
 }
 

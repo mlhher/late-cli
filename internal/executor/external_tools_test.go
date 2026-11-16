@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"late/internal/client"
+	"late/internal/common"
 	"late/internal/session"
 	"os"
 	"path/filepath"
@@ -20,12 +21,12 @@ func TestRegisterExternalTools_SanitizesNames(t *testing.T) {
 	histPath := filepath.Join(t.TempDir(), "history.json")
 	sess := session.New(c, histPath, nil, "", false)
 
-	RegisterExternalTools(sess.Registry, map[string]string{
-		"my.tool name": "/usr/bin/alpha",
-		"My.Tool Name": "/usr/bin/beta",
-		"   ":          "/usr/bin/blank-key",
-		"":             "/usr/bin/empty-key",
-		"empty path":   "",
+	RegisterExternalTools(sess.Registry, map[string]common.ExternalTool{
+		"my.tool name": {Path: "/usr/bin/alpha"},
+		"My.Tool Name": {Path: "/usr/bin/beta"},
+		"   ":          {Path: "/usr/bin/blank-key"},
+		"":             {Path: "/usr/bin/empty-key"},
+		"empty path":   {Path: ""},
 	})
 
 	// The dotted/spaced key must be exposed under its sanitized name,
@@ -78,9 +79,9 @@ func TestRegisterExternalTools_DuplicateNameFirstWins(t *testing.T) {
 	histPath := filepath.Join(t.TempDir(), "history.json")
 	sess := session.New(c, histPath, nil, "", false)
 
-	RegisterExternalTools(sess.Registry, map[string]string{"my.tool name": "/usr/bin/alpha"})
+	RegisterExternalTools(sess.Registry, map[string]common.ExternalTool{"my.tool name": {Path: "/usr/bin/alpha"}})
 	// This key sanitizes to the same 'my_tool_name' as above.
-	RegisterExternalTools(sess.Registry, map[string]string{"my_tool_name": "/usr/bin/omega"})
+	RegisterExternalTools(sess.Registry, map[string]common.ExternalTool{"my_tool_name": {Path: "/usr/bin/omega"}})
 
 	got := sess.Registry.Get("my_tool_name")
 	if got == nil {
@@ -128,9 +129,9 @@ func TestRegisterExternalTools_ResolvesRelativePath(t *testing.T) {
 	histPath := filepath.Join(t.TempDir(), "history.json")
 	sess := session.New(c, histPath, nil, "", false)
 
-	RegisterExternalTools(sess.Registry, map[string]string{
-		"lint": "./scripts/lint",
-		"true": "true",
+	RegisterExternalTools(sess.Registry, map[string]common.ExternalTool{
+		"lint": {Path: "./scripts/lint"},
+		"true": {Path: "true"},
 	})
 
 	lint := sess.Registry.Get("lint")
@@ -164,5 +165,35 @@ func TestRegisterExternalTools_ResolvesRelativePath(t *testing.T) {
 	}
 	if !strings.Contains(out, "marker-a") {
 		t.Errorf("expected marker-a in output, got %q", out)
+	}
+}
+
+// TestRegisterExternalTools_Description verifies that a configured
+// description is exposed to the model, while an entry without one falls
+// back to the auto-generated line.
+func TestRegisterExternalTools_Description(t *testing.T) {
+	c := client.NewClient(client.Config{BaseURL: "http://localhost:0"})
+	histPath := filepath.Join(t.TempDir(), "history.json")
+	sess := session.New(c, histPath, nil, "", false)
+
+	RegisterExternalTools(sess.Registry, map[string]common.ExternalTool{
+		"linter": {Path: "/usr/bin/lint", Description: "Runs the project linter."},
+		"bare":   {Path: "true"},
+	})
+
+	described := sess.Registry.Get("linter")
+	if described == nil {
+		t.Fatal("expected tool 'linter' to be registered")
+	}
+	if described.Description() != "Runs the project linter." {
+		t.Errorf("expected configured description, got %q", described.Description())
+	}
+
+	fallback := sess.Registry.Get("bare")
+	if fallback == nil {
+		t.Fatal("expected tool 'bare' to be registered")
+	}
+	if want := fmt.Sprintf("Execute the external binary %q without a shell.", "true"); fallback.Description() != want {
+		t.Errorf("expected fallback description, got %q", fallback.Description())
 	}
 }

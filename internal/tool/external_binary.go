@@ -11,17 +11,21 @@ import (
 
 // ExternalBinaryTool executes a configured external binary directly without a shell.
 type ExternalBinaryTool struct {
-	name string
-	path string
+	name        string
+	path        string
+	description string
 }
 
-func NewExternalBinaryTool(name, path string) ExternalBinaryTool {
-	return ExternalBinaryTool{name: name, path: path}
+func NewExternalBinaryTool(name, path, description string) ExternalBinaryTool {
+	return ExternalBinaryTool{name: name, path: path, description: description}
 }
 
 func (t ExternalBinaryTool) Name() string { return t.name }
 
 func (t ExternalBinaryTool) Description() string {
+	if strings.TrimSpace(t.description) != "" {
+		return t.description
+	}
 	return fmt.Sprintf("Execute the external binary %q without a shell.", t.path)
 }
 

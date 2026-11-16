@@ -873,6 +873,45 @@ func TestConfig_PermissionModeJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_EnabledExternalToolsForms(t *testing.T) {
+	configRoot := t.TempDir()
+	setUserConfigEnv(t, configRoot)
+	configPath := lateConfigPath(t)
+
+	content := `{
+		"enabled_external_tools": {
+			"gofmt": "gofmt",
+			"linter": {
+				"path": "./scripts/lint",
+				"description": "Runs the project linter."
+			},
+			"orphan": {
+				"description": "missing path"
+			}
+		}
+	}`
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+
+	if got := cfg.EnabledExternalTools["gofmt"]; got.Path != "gofmt" || got.Description != "" {
+		t.Fatalf("plain-string entry = %#v, want path %q and empty description", got, "gofmt")
+	}
+	if got := cfg.EnabledExternalTools["linter"]; got.Path != "./scripts/lint" || got.Description != "Runs the project linter." {
+		t.Fatalf("object entry = %#v, want both path and description", got)
+	}
+	if got := cfg.EnabledExternalTools["orphan"]; got.Path != "" {
+		t.Fatalf("object without path = %#v, want empty path", got)
+	}
+}
 func TestResolveMaxAsyncSubagents(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -401,11 +401,11 @@ func main() {
 			enabledTools[toolName] = enabled
 		}
 	}
-	enabledExternalTools := make(map[string]string)
+	enabledExternalTools := make(map[string]common.ExternalTool)
 	if appConfig != nil {
-		for name, path := range appConfig.EnabledExternalTools {
-			if strings.TrimSpace(name) != "" && strings.TrimSpace(path) != "" {
-				enabledExternalTools[name] = path
+		for name, externalTool := range appConfig.EnabledExternalTools {
+			if strings.TrimSpace(name) != "" && strings.TrimSpace(externalTool.Path) != "" {
+				enabledExternalTools[name] = externalTool
 			}
 		}
 	}
