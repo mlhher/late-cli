@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 )
@@ -18,6 +17,11 @@ type ExternalBinaryTool struct {
 
 func NewExternalBinaryTool(name, path, description string) ExternalBinaryTool {
 	return ExternalBinaryTool{name: name, path: path, description: description}
+}
+
+type externalBinaryArgs struct {
+	Args []string `json:"args"`
+	Cwd  string   `json:"cwd"`
 }
 
 func (t ExternalBinaryTool) Name() string { return t.name }
@@ -51,7 +55,11 @@ func (t ExternalBinaryTool) RequiresConfirmation(args json.RawMessage) bool {
 }
 
 func (t ExternalBinaryTool) CallString(args json.RawMessage) string {
-	return fmt.Sprintf("Running external tool %q...", t.name)
+	var params externalBinaryArgs
+	if json.Unmarshal(args, &params) != nil || len(params.Args) == 0 {
+		return fmt.Sprintf("Running external tool %q...", t.name)
+	}
+	return fmt.Sprintf("Running external tool %q with args: %s...", t.name, strings.Join(params.Args, " "))
 }
 
 func (t ExternalBinaryTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
@@ -62,22 +70,12 @@ func (t ExternalBinaryTool) Execute(ctx context.Context, args json.RawMessage) (
 		return "", fmt.Errorf("external tool path is required for %q", t.name)
 	}
 
-	var params struct {
-		Args []string `json:"args"`
-		Cwd  string   `json:"cwd"`
-	}
+	var params externalBinaryArgs
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid parameters for %q: %w", t.name, err)
 	}
 
-	resolvedPath := t.path
-	if !strings.ContainsRune(resolvedPath, os.PathSeparator) && resolvedPath != "" {
-		if _, err := exec.LookPath(resolvedPath); err != nil {
-			return "", fmt.Errorf("external binary %q not found in PATH: %w", resolvedPath, err)
-		}
-	}
-
-	cmd := exec.CommandContext(ctx, resolvedPath, params.Args...)
+	cmd := exec.CommandContext(ctx, t.path, params.Args...)
 	if params.Cwd != "" {
 		cmd.Dir = params.Cwd
 	}
