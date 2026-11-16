@@ -1,8 +1,11 @@
 package executor
 
 import (
+	"context"
+	"fmt"
 	"late/internal/client"
 	"late/internal/session"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -88,5 +91,78 @@ func TestRegisterExternalTools_DuplicateNameFirstWins(t *testing.T) {
 	}
 	if strings.Contains(got.Description(), "/usr/bin/omega") {
 		t.Errorf("later duplicate must not overwrite the first binary, got %q", got.Description())
+	}
+}
+
+// TestRegisterExternalTools_ResolvesRelativePath verifies the security
+// property end to end: a config path that is relative to the project
+// (a relative path containing a path separator) is resolved to an
+// absolute path once, at registration, so the SAME binary runs no
+// matter what per-call cwd a later execution supplies. Bare
+// single-segment names (e.g. "true") must stay bare so they keep
+// resolving via PATH at exec time.
+func TestRegisterExternalTools_ResolvesRelativePath(t *testing.T) {
+	// Temp dir A plays the project directory; it holds the script the
+	// config path points at.
+	aDir := t.TempDir()
+	scriptPath := filepath.Join(aDir, "scripts", "lint")
+	if err := os.MkdirAll(filepath.Dir(scriptPath), 0o755); err != nil {
+		t.Fatalf("mkdir scripts dir: %v", err)
+	}
+	script := "#!/bin/sh\necho marker-a\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write lint script: %v", err)
+	}
+	if err := os.Chmod(scriptPath, 0o755); err != nil {
+		t.Fatalf("chmod lint script: %v", err)
+	}
+	// Temp dir B is the per-call cwd; it must not influence which
+	// binary runs.
+	bDir := t.TempDir()
+
+	// The late process never chdirs in production, so at startup the
+	// process cwd is the project directory; emulate that.
+	t.Chdir(aDir)
+
+	c := client.NewClient(client.Config{BaseURL: "http://localhost:0"})
+	histPath := filepath.Join(t.TempDir(), "history.json")
+	sess := session.New(c, histPath, nil, "", false)
+
+	RegisterExternalTools(sess.Registry, map[string]string{
+		"lint": "./scripts/lint",
+		"true": "true",
+	})
+
+	lint := sess.Registry.Get("lint")
+	if lint == nil {
+		t.Fatal("expected tool 'lint' to be registered")
+	}
+	if !strings.Contains(lint.Description(), aDir) {
+		t.Errorf("expected relative path pinned under %s, got %q", aDir, lint.Description())
+	}
+
+	// The bare name must be registered exactly as-is.
+	bare := sess.Registry.Get("true")
+	if bare == nil {
+		t.Fatal("expected tool 'true' to be registered")
+	}
+	if want := fmt.Sprintf("Execute the external binary %q without a shell.", "true"); bare.Description() != want {
+		t.Errorf("bare name must not be made absolute, got %q want %q", bare.Description(), want)
+	}
+
+	// Execute through the session with cwd = B and no args: the A
+	// script must still run, because its path was pinned to an absolute
+	// path at registration.
+	out, err := sess.ExecuteTool(context.Background(), client.ToolCall{
+		Function: client.FunctionCall{
+			Name:      "lint",
+			Arguments: fmt.Sprintf(`{"cwd": %q}`, bDir),
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute lint: %v", err)
+	}
+	if !strings.Contains(out, "marker-a") {
+		t.Errorf("expected marker-a in output, got %q", out)
 	}
 }
