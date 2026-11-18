@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -214,6 +217,48 @@ func RegisterTools(reg *tool.Registry, enabledTools map[string]bool) {
 		reg.Register(tool.SkillReadReferenceTool{
 			Skills: skillMap,
 		})
+	}
+}
+
+func RegisterExternalTools(reg *tool.Registry, enabledExternalTools map[string]common.ExternalTool) {
+	if reg == nil || len(enabledExternalTools) == 0 {
+		return
+	}
+
+	for name, externalTool := range enabledExternalTools {
+		path := externalTool.Path
+		if strings.TrimSpace(name) == "" || strings.TrimSpace(path) == "" {
+			continue
+		}
+		// OpenAI-compatible endpoints reject tool names
+		// outside [A-Za-z0-9_-] and names over 64 characters, so
+		// the raw config key is registered under its sanitized form.
+		sanitized := common.SanitizeToolName(name)
+		if sanitized == "" {
+			continue
+		}
+		// First wins: never overwrite a tool that already owns the
+		// name (built-in, earlier external tool, or another config
+		// key that sanitizes to the same name).
+		if reg.Get(sanitized) != nil {
+			continue
+		}
+		// Pin a project-relative path to an absolute path once, at
+		// registration: the late process never chdirs after startup, so
+		// the current working directory is the project directory.
+		// Resolving here (not at exec time) keeps a later per-call cwd
+		// from redirecting exec to a different binary than the one
+		// configured. Entries whose path fails to resolve are skipped,
+		// and bare single-segment names (e.g. "gofmt") are left
+		// as-is to keep resolving via PATH at exec time.
+		if !filepath.IsAbs(path) && strings.ContainsRune(path, os.PathSeparator) {
+			abs, err := filepath.Abs(path)
+			if err != nil {
+				continue
+			}
+			path = abs
+		}
+		reg.Register(tool.NewExternalBinaryTool(sanitized, path, externalTool.Description))
 	}
 }
 

@@ -128,3 +128,35 @@ func IsBinary(data []byte) bool {
 	}
 	return false
 }
+
+// limit_tool_output applies the shared output limits to raw command output
+// before it is shown to the model: binary detection, a character cap, a line
+// cap, and the truncation suffix.
+func limit_tool_output(output []byte) string {
+	if IsBinary(output) {
+		return "(binary output detected)"
+	}
+
+	outputStr := string(output)
+	truncated := false
+
+	// Limit by characters first
+	if len(outputStr) > maxBashOutputChars {
+		outputStr = outputStr[:maxBashOutputChars]
+		truncated = true
+	}
+
+	// Limit output to prevent memory exhaustion
+	lines := strings.Split(outputStr, "\n")
+	if len(lines) > maxBashOutputLines {
+		lines = lines[:maxBashOutputLines]
+		truncated = true
+	}
+
+	finalOutput := strings.Join(lines, "\n")
+	if truncated {
+		finalOutput += "\n... (output truncated)"
+	}
+
+	return finalOutput
+}

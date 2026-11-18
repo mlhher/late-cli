@@ -138,6 +138,7 @@ Late prefers a located error over silently accepting a typo'd config:
 | Key | Type | Default | CLI flag | Description |
 | --- | --- | --- | --- | --- |
 | `enabled_tools` | object | all built-in tools `true` | — | Per-tool switches (see the nested schema below); missing entries are filled from the defaults. |
+| `enabled_external_tools` | object | `{}` | — | External binaries exposed as tools to the agent. Keys are tool names; values are a path (executable file or PATH-resolved binary) or an object `{"path": "...", "description": "..."}` (see the nested schema below). |
 | `skills_dir` | string | `""` | — | Legacy entry, currently unused: skill discovery reads the platform skills directory (`~/.config/late/skills/` etc.) and project-local `.late/skills/`, not this value. |
 | `theme` | string | `""` | `--theme` | Plugin theme id (`plugin:name` or bare name); precedence `--theme` > `LATE_THEME` env > this entry > bundled base; persisted by `/themes`. |
 | `show-timestamps` | boolean | `false` | — | Show an `HH:MM:SS` timestamp on each transcript message (bottom-right of your prompt card, right-aligned under each reply); toggled and persisted by `/timestamps`. |
@@ -186,6 +187,13 @@ Keys are tool names, values booleans. Defaults (all `true`): `read_file`,
 `write_file`, `target_edit`, `spawn_subagent`, `bash`, `search_content`,
 `find_files`, `create_todos`, `list_todos`, `finish_todo`. Missing entries are
 merged from the defaults on load.
+
+### `enabled_external_tools` entries
+
+Keys are tool names (sanitized to `[A-Za-z0-9_-]` at registration). Each value is one of two forms:
+
+* `"gofmt"` (string) — the executable path, or a bare name resolved via `PATH`.
+* `{"path": "./scripts/lint", "description": "Runs the project linter."}` (object) — `path` (string) as in the string form; `description` (string, optional) is shown to the model instead of the auto-generated `Execute the external binary ...` line, so the model knows what the tool does and which arguments it takes.
 
 ## Internal fields
 

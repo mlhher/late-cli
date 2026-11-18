@@ -401,6 +401,14 @@ func main() {
 			enabledTools[toolName] = enabled
 		}
 	}
+	enabledExternalTools := make(map[string]common.ExternalTool)
+	if appConfig != nil {
+		for name, externalTool := range appConfig.EnabledExternalTools {
+			if strings.TrimSpace(name) != "" && strings.TrimSpace(externalTool.Path) != "" {
+				enabledExternalTools[name] = externalTool
+			}
+		}
+	}
 
 	// Parse explicit user logit bias overrides if provided
 	var explicitUserLogitBias map[string]int
@@ -554,6 +562,7 @@ func main() {
 		sess.SetSubagentMetadata(0, &saveSubagentHistories)
 	}
 	executor.RegisterTools(sess.Registry, mainTools)
+	executor.RegisterExternalTools(sess.Registry, enabledExternalTools)
 
 	// Register MCP tools into the session registry.
 	// MCP tool names are now namespaced as "{server}__{tool}" (sanitized —
