@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -225,7 +226,14 @@ func RegisterExternalTools(reg *tool.Registry, enabledExternalTools map[string]c
 		return
 	}
 
-	for name, externalTool := range enabledExternalTools {
+	keys := make([]string, 0, len(enabledExternalTools))
+	for name := range enabledExternalTools {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+
+	for _, name := range keys {
+		externalTool := enabledExternalTools[name]
 		path := externalTool.Path
 		if strings.TrimSpace(name) == "" || strings.TrimSpace(path) == "" {
 			continue

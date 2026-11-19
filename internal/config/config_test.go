@@ -912,6 +912,63 @@ func TestLoadConfig_EnabledExternalToolsForms(t *testing.T) {
 		t.Fatalf("object without path = %#v, want empty path", got)
 	}
 }
+
+func TestSaveConfig_PreservesEnabledExternalToolsShape(t *testing.T) {
+	configRoot := t.TempDir()
+	setUserConfigEnv(t, configRoot)
+	configPath := lateConfigPath(t)
+
+	initial := `{
+		"enabled_external_tools": {
+			"gofmt": "gofmt",
+			"linter": {
+				"path": "./scripts/lint",
+				"description": "Runs the project linter."
+			}
+		}
+	}`
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(initial), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if err := SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	saved, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	var raw struct {
+		EnabledExternalTools map[string]json.RawMessage `json:"enabled_external_tools"`
+	}
+	if err := json.Unmarshal(saved, &raw); err != nil {
+		t.Fatalf("Unmarshal saved config error = %v", err)
+	}
+
+	var gofmtVal string
+	if err := json.Unmarshal(raw.EnabledExternalTools["gofmt"], &gofmtVal); err != nil || gofmtVal != "gofmt" {
+		t.Fatalf("saved gofmt entry = %s, want plain string %q", raw.EnabledExternalTools["gofmt"], "gofmt")
+	}
+
+	var linterMap map[string]string
+	if err := json.Unmarshal(raw.EnabledExternalTools["linter"], &linterMap); err != nil {
+		t.Fatalf("saved linter entry = %s, want JSON object: %v", raw.EnabledExternalTools["linter"], err)
+	}
+	if linterMap["path"] != "./scripts/lint" || linterMap["description"] != "Runs the project linter." {
+		t.Fatalf("saved linter keys = %#v, want lowercase path and description", linterMap)
+	}
+	if _, hasPascal := linterMap["Path"]; hasPascal {
+		t.Fatalf("saved linter entry has unexpected PascalCase keys: %#v", linterMap)
+	}
+}
 func TestResolveMaxAsyncSubagents(t *testing.T) {
 	tests := []struct {
 		name    string

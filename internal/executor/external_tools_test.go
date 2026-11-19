@@ -95,6 +95,31 @@ func TestRegisterExternalTools_DuplicateNameFirstWins(t *testing.T) {
 	}
 }
 
+// TestRegisterExternalTools_SingleMapCollisionIsDeterministic verifies that
+// when one config map contains multiple keys sanitizing to the same name,
+// sorted-key iteration deterministically picks the lexicographically first key.
+func TestRegisterExternalTools_SingleMapCollisionIsDeterministic(t *testing.T) {
+	c := client.NewClient(client.Config{BaseURL: "http://localhost:0"})
+	entries := map[string]common.ExternalTool{
+		"my_tool_name": {Path: "/usr/bin/underscore"},
+		"my.tool name": {Path: "/usr/bin/dot-and-space"}, // '.' (0x2e) < '_' (0x5f)
+	}
+
+	for i := 0; i < 20; i++ {
+		histPath := filepath.Join(t.TempDir(), "history.json")
+		sess := session.New(c, histPath, nil, "", false)
+		RegisterExternalTools(sess.Registry, entries)
+
+		got := sess.Registry.Get("my_tool_name")
+		if got == nil {
+			t.Fatal("expected tool 'my_tool_name' to be registered")
+		}
+		if !strings.Contains(got.Description(), "/usr/bin/dot-and-space") {
+			t.Fatalf("iteration %d: expected deterministic winner /usr/bin/dot-and-space, got %q", i, got.Description())
+		}
+	}
+}
+
 // TestRegisterExternalTools_ResolvesRelativePath verifies the security
 // property end to end: a config path that is relative to the project
 // (a relative path containing a path separator) is resolved to an

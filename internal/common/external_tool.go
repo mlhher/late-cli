@@ -9,8 +9,26 @@ import (
 // binary to run plus an optional description shown to the model so it
 // knows what the tool does and which arguments it takes.
 type ExternalTool struct {
-	Path        string
-	Description string
+	Path        string `json:"path"`
+	Description string `json:"description,omitempty"`
+}
+
+// MarshalJSON writes the entry back as a plain path string when there is
+// no description, or {"path": "...", "description": "..."} otherwise.
+// Value receiver so it also applies to map values.
+func (t ExternalTool) MarshalJSON() ([]byte, error) {
+	path := strings.TrimSpace(t.Path)
+	desc := strings.TrimSpace(t.Description)
+	if desc == "" {
+		return json.Marshal(path)
+	}
+	return json.Marshal(struct {
+		Path        string `json:"path"`
+		Description string `json:"description"`
+	}{
+		Path:        path,
+		Description: desc,
+	})
 }
 
 // UnmarshalJSON accepts either a plain string (the binary path, the form
