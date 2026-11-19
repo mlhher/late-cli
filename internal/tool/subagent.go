@@ -117,7 +117,8 @@ func (t SpawnSubagentsTool) Description() string {
 			syncOnlyNames = append(syncOnlyNames, c.Name)
 		}
 	}
-	desc := fmt.Sprintf("Spawn one or more specialist subagents. Pass 1 entry for a single or sequential step, or multiple entries to run independent steps in parallel and return all results in one turn. Up to %d subagents run concurrently (additional entries queue automatically). Keep each subagent focused on one atomic step.", t.maxLimit())
+	maxLimit := t.maxLimit()
+	desc := fmt.Sprintf("Spawn one or more specialist subagents. Pass 1 entry for a single or sequential step, or up to %d entries to run independent steps in parallel and return all results in one turn. If more independent steps remain, split them into batches of at most %d across consecutive calls. Keep each subagent focused on one atomic step.", maxLimit, maxLimit)
 	if len(syncOnlyNames) > 0 {
 		desc += fmt.Sprintf(" Note: %s cannot run concurrently and will run sequentially.", strings.Join(syncOnlyNames, ", "))
 	}
@@ -147,12 +148,13 @@ func (t SpawnSubagentsTool) Parameters() json.RawMessage {
 		agentTypeDesc += " Note: " + strings.Join(syncOnlyNames, ", ") + " run sequentially rather than concurrently."
 	}
 
+	maxLimit := t.maxLimit()
 	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"subagents": map[string]any{
 				"type":        "array",
-				"description": "One or more subagent tasks to execute. Pass 1 entry for a sequential step, or multiple entries for independent steps that do not edit the same files.",
+				"description": fmt.Sprintf("One or more subagent tasks to execute (maximum %d per call). Pass 1 entry for a sequential step, or up to %d entries for independent steps that do not edit the same files.", maxLimit, maxLimit),
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -213,6 +215,11 @@ func (t SpawnSubagentsTool) Execute(ctx context.Context, args json.RawMessage) (
 		}
 	}
 
+	maxLimit := t.maxLimit()
+	if len(taskList) > maxLimit {
+		return fmt.Sprintf("Error: Requested %d subagents in one call, but the limit is %d per call. Call spawn_subagents with at most %d entries now and run the remaining steps in the next call — do not combine multiple steps into one goal.", len(taskList), maxLimit, maxLimit), nil
+	}
+
 	if len(taskList) == 1 {
 		task := taskList[0]
 		return t.Runner(ctx, task.Goal, task.CtxFiles, task.AgentType)
@@ -239,25 +246,11 @@ func (t SpawnSubagentsTool) Execute(ctx context.Context, args json.RawMessage) (
 	results := make([]taskResult, len(taskList))
 
 	if len(asyncIndices) > 0 {
-		sem := make(chan struct{}, t.maxLimit())
 		var wg sync.WaitGroup
 		for _, idx := range asyncIndices {
 			wg.Add(1)
 			go func(idx int, tsk SubagentTask) {
 				defer wg.Done()
-
-				select {
-				case sem <- struct{}{}:
-					defer func() { <-sem }()
-				case <-ctx.Done():
-					results[idx] = taskResult{
-						index:     idx + 1,
-						agentType: tsk.AgentType,
-						goal:      tsk.Goal,
-						err:       ctx.Err(),
-					}
-					return
-				}
 
 				out, err := t.Runner(ctx, tsk.Goal, tsk.CtxFiles, tsk.AgentType)
 				results[idx] = taskResult{
@@ -294,7 +287,7 @@ func (t SpawnSubagentsTool) Execute(ctx context.Context, args json.RawMessage) (
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("All %d subagent tasks have finished executing:\n\n", len(taskList)))
+	sb.WriteString(fmt.Sprintf("All %d subagent tasks have finished executing\n\n", len(taskList)))
 	for _, res := range results {
 		sb.WriteString(fmt.Sprintf("### Subagent %d (%s) - Goal: %s\n", res.index, res.agentType, truncate(res.goal, 60)))
 		if res.err != nil {

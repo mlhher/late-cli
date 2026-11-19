@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -132,8 +131,10 @@ func TestSpawnSubagentsTool_SchemaWithSyncOnlyAgent(t *testing.T) {
 }
 
 func TestSpawnSubagentsTool_Validation(t *testing.T) {
+	var calls int32
 	tool := SpawnSubagentsTool{
 		Runner: func(ctx context.Context, goal string, ctxFiles []string, agentType string) (string, error) {
+			atomic.AddInt32(&calls, 1)
 			return "done", nil
 		},
 		MaxConcurrent: 2,
@@ -164,6 +165,25 @@ func TestSpawnSubagentsTool_Validation(t *testing.T) {
 	if !strings.Contains(res, "unknown agent_type 'unsupported'") {
 		t.Errorf("expected unknown agent_type error, got: %s", res)
 	}
+
+	// 3. Exceeds MaxConcurrent per-call cap
+	tooManyArgs := json.RawMessage(`{
+		"subagents": [
+			{"goal": "task 1", "agent_type": "coder"},
+			{"goal": "task 2", "agent_type": "coder"},
+			{"goal": "task 3", "agent_type": "coder"}
+		]
+	}`)
+	res, err = tool.Execute(ctx, tooManyArgs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(res, "limit is 2 per call") || !strings.Contains(res, "do not combine multiple steps") {
+		t.Errorf("expected per-call limit error with anti-cramming guidance, got: %s", res)
+	}
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Errorf("expected Runner not to be invoked on validation errors, got %d calls", got)
+	}
 }
 
 func TestSpawnSubagentsTool_SingleTaskFastPath(t *testing.T) {
@@ -188,7 +208,7 @@ func TestSpawnSubagentsTool_SingleTaskFastPath(t *testing.T) {
 	}
 }
 
-func TestSpawnSubagentsTool_SemaphoreAndOrder(t *testing.T) {
+func TestSpawnSubagentsTool_ExecuteConcurrentlyAndOrder(t *testing.T) {
 	var running int32
 	var maxObservedRunning int32
 
@@ -211,9 +231,7 @@ func TestSpawnSubagentsTool_SemaphoreAndOrder(t *testing.T) {
 	args := json.RawMessage(`{
 		"subagents": [
 			{"goal": "task 1", "agent_type": "coder"},
-			{"goal": "task 2", "agent_type": "researcher"},
-			{"goal": "task 3", "agent_type": "coder"},
-			{"goal": "task 4", "agent_type": "researcher"}
+			{"goal": "task 2", "agent_type": "researcher"}
 		]
 	}`)
 
@@ -223,17 +241,20 @@ func TestSpawnSubagentsTool_SemaphoreAndOrder(t *testing.T) {
 	}
 
 	if got := atomic.LoadInt32(&maxObservedRunning); got != 2 {
-		t.Errorf("expected max concurrent running to be capped at 2, got %d", got)
+		t.Errorf("expected max concurrent running to be 2, got %d", got)
+	}
+
+	firstLine, _, _ := strings.Cut(res, "\n")
+	if firstLine != "All 2 subagent tasks have finished executing" {
+		t.Errorf("unexpected header line %q (should have no trailing colon)", firstLine)
 	}
 
 	pos1 := strings.Index(res, "### Subagent 1 (coder) - Goal: task 1")
 	pos2 := strings.Index(res, "### Subagent 2 (researcher) - Goal: task 2")
-	pos3 := strings.Index(res, "### Subagent 3 (coder) - Goal: task 3")
-	pos4 := strings.Index(res, "### Subagent 4 (researcher) - Goal: task 4")
-	if pos1 < 0 || pos2 <= pos1 || pos3 <= pos2 || pos4 <= pos3 {
-		t.Errorf("expected ordered outputs 1..4, got positions %d,%d,%d,%d in:\n%s", pos1, pos2, pos3, pos4, res)
+	if pos1 < 0 || pos2 <= pos1 {
+		t.Errorf("expected ordered outputs 1..2, got positions %d,%d in:\n%s", pos1, pos2, res)
 	}
-	for _, g := range []string{"completed: task 1", "completed: task 2", "completed: task 3", "completed: task 4"} {
+	for _, g := range []string{"completed: task 1", "completed: task 2"} {
 		if !strings.Contains(res, g) {
 			t.Errorf("missing %q in output:\n%s", g, res)
 		}
@@ -246,7 +267,7 @@ func TestSpawnSubagentsTool_MixedAsyncAndSync(t *testing.T) {
 	var asyncMax int32
 
 	tool := SpawnSubagentsTool{
-		MaxConcurrent: 3,
+		MaxConcurrent: 4,
 		Subagents: func() []assets.SubagentConfig {
 			return []assets.SubagentConfig{
 				{Name: "coder", Description: "coder", Async: true},
@@ -304,46 +325,5 @@ func TestSpawnSubagentsTool_MixedAsyncAndSync(t *testing.T) {
 	pos4 := strings.Index(res, "### Subagent 4 (coder) - Goal: a2")
 	if pos1 < 0 || pos2 <= pos1 || pos3 <= pos2 || pos4 <= pos3 {
 		t.Errorf("expected original input ordering preserved, got:\n%s", res)
-	}
-}
-
-func TestSpawnSubagentsTool_ContextCanceledWhileQueued(t *testing.T) {
-	startedAny := make(chan struct{})
-	var startedOnce sync.Once
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	tool := SpawnSubagentsTool{
-		MaxConcurrent: 1,
-		Runner: func(ctx context.Context, goal string, ctxFiles []string, agentType string) (string, error) {
-			startedOnce.Do(func() {
-				close(startedAny)
-			})
-			<-ctx.Done()
-			return "", ctx.Err()
-		},
-	}
-
-	done := make(chan string, 1)
-	go func() {
-		res, _ := tool.Execute(ctx, json.RawMessage(`{
-			"subagents": [
-				{"goal": "first", "agent_type": "coder"},
-				{"goal": "queued", "agent_type": "coder"}
-			]
-		}`))
-		done <- res
-	}()
-
-	<-startedAny
-	cancel()
-
-	select {
-	case res := <-done:
-		if !strings.Contains(res, "context canceled") {
-			t.Errorf("expected context canceled error in result, got:\n%s", res)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Execute did not return promptly after context cancellation while queued")
 	}
 }
