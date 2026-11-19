@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"late/internal/agent"
+	"late/internal/assets"
 	"late/internal/client"
+	"late/internal/common"
 	appconfig "late/internal/config"
 	"late/internal/orchestrator"
 	"late/internal/plugin"
@@ -484,5 +486,49 @@ func TestPermissionFlagUsageRendersWithoutValueName(t *testing.T) {
 	name, _ := flag.UnquoteUsage(fs.Lookup("ask-for-user-approval"))
 	if name != "" {
 		t.Errorf("expected no rendered value name for this boolean flag, got %q (help would show -ask-for-user-approval %s)", name, name)
+	}
+}
+
+func TestOrchestratorPromptSingleVsBatchSections(t *testing.T) {
+	raw, err := assets.PromptsFS.ReadFile("prompts/instruction-orchestrator.md")
+	if err != nil {
+		t.Fatalf("ReadFile(instruction-orchestrator.md) error = %v", err)
+	}
+
+	render := func(batch bool) string {
+		s := common.ApplyOptionalSection(string(raw), "batch", batch)
+		s = common.ApplyOptionalSection(s, "single", !batch)
+		return common.ReplacePlaceholders(s, map[string]string{
+			"${{MAX_ASYNC_SUBAGENTS}}": "4",
+		})
+	}
+
+	batchPrompt := render(true)
+	for _, marker := range []string{"<!-- batch -->", "<!-- /batch -->", "<!-- single -->", "<!-- /single -->"} {
+		if strings.Contains(batchPrompt, marker) {
+			t.Errorf("batch prompt leaked section marker %q", marker)
+		}
+	}
+	if !strings.Contains(batchPrompt, "`spawn_subagents`") {
+		t.Errorf("batch prompt missing `spawn_subagents`")
+	}
+	if strings.Contains(batchPrompt, "`spawn_subagent`") {
+		t.Errorf("batch prompt must not mention singular `spawn_subagent`")
+	}
+	if strings.Contains(batchPrompt, "batch_spawn_subagents") {
+		t.Errorf("batch prompt must not mention legacy batch_spawn_subagents")
+	}
+
+	singlePrompt := render(false)
+	for _, marker := range []string{"<!-- batch -->", "<!-- /batch -->", "<!-- single -->", "<!-- /single -->"} {
+		if strings.Contains(singlePrompt, marker) {
+			t.Errorf("single prompt leaked section marker %q", marker)
+		}
+	}
+	if !strings.Contains(singlePrompt, "`spawn_subagent`") {
+		t.Errorf("single prompt missing `spawn_subagent`")
+	}
+	if strings.Contains(singlePrompt, "`spawn_subagents`") {
+		t.Errorf("single prompt must not mention `spawn_subagents`")
 	}
 }

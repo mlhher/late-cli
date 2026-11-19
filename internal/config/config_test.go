@@ -1163,3 +1163,60 @@ func TestConfig_DegradedNotSerialized(t *testing.T) {
 		t.Fatalf("Degraded must not be serialized, got %s", data)
 	}
 }
+
+func TestConfig_BatchSubagentsEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *Config
+		want bool
+	}{
+		{
+			name: "nil config",
+			cfg:  nil,
+			want: false,
+		},
+		{
+			name: "nil enabled tools",
+			cfg:  &Config{},
+			want: false,
+		},
+		{
+			name: "default config enables spawn_subagents",
+			cfg: func() *Config {
+				c := defaultConfig()
+				return &c
+			}(),
+			want: true,
+		},
+		{
+			name: "explicit spawn_subagents false disables",
+			cfg: &Config{EnabledTools: map[string]bool{
+				"spawn_subagents": false,
+			}},
+			want: false,
+		},
+		{
+			name: "legacy batch_spawn_subagents false disables even if spawn_subagents true",
+			cfg: &Config{EnabledTools: map[string]bool{
+				"spawn_subagents":       true,
+				"batch_spawn_subagents": false,
+			}},
+			want: false,
+		},
+		{
+			name: "legacy batch_spawn_subagents true enables",
+			cfg: &Config{EnabledTools: map[string]bool{
+				"batch_spawn_subagents": true,
+			}},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.BatchSubagentsEnabled(); got != tt.want {
+				t.Fatalf("BatchSubagentsEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

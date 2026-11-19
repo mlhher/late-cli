@@ -378,3 +378,23 @@ func TestToolResultsAfterStopsAtTheNextNonToolMessage(t *testing.T) {
 		t.Fatal("scan must start right after the given message and end at the history's end")
 	}
 }
+
+func TestSpawnSubagentsResultRendersAsMarkdownReport(t *testing.T) {
+	history := []client.ChatMessage{
+		{Role: "user", Content: client.TextContent("run batch")},
+		{Role: "assistant", Content: client.TextContent("Running."), ToolCalls: []client.ToolCall{
+			tcall("b1", "spawn_subagents", `{"subagents":[{"goal":"map it","agent_type":"researcher"}]}`),
+		}},
+		tresult("b1", "## Findings\n\n- bullet one\n- bullet two\n"),
+	}
+	m, _ := newViewportBenchmarkModel(history)
+	m.SetSize(100, 60)
+	m.ShowToolOutput = true
+	view := ansi.Strip(testTranscriptContent(m))
+	if !strings.Contains(view, "• bullet two") {
+		t.Errorf("expected Markdown bullet rendering for spawn_subagents report, got:\n%s", view)
+	}
+	if strings.Contains(view, "- bullet one") || strings.Contains(view, "## Findings") {
+		t.Errorf("expected spawn_subagents report to be Markdown-rendered rather than raw:\n%s", view)
+	}
+}

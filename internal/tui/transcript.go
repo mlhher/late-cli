@@ -133,7 +133,7 @@ func toolResultsAfter(history []client.ChatMessage, i int) map[string]string {
 
 // toolDetail returns the rows shown under an expanded tool call.
 func (m *Model) toolDetail(tc client.ToolCall, result string, width int) []string {
-	if tc.Function.Name != "spawn_subagent" {
+	if tc.Function.Name != "spawn_subagent" && tc.Function.Name != "spawn_subagents" && tc.Function.Name != "batch_spawn_subagents" {
 		return toolDetailRows(tc.Function.Name, tc.Function.Arguments, result, width)
 	}
 	// A subagent's report is Markdown; render it once per theme and width.

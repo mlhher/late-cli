@@ -163,6 +163,22 @@ func (c *Config) InfoBarEnabled() bool {
 	return c == nil || c.ShowInfoBar == nil || *c.ShowInfoBar
 }
 
+// BatchSubagentsEnabled reports whether concurrent subagent spawning via
+// spawn_subagents is enabled in config. An explicit "batch_spawn_subagents": false
+// from older config files is still honored for backward compatibility.
+func (c *Config) BatchSubagentsEnabled() bool {
+	if c == nil || c.EnabledTools == nil {
+		return false
+	}
+	if v, ok := c.EnabledTools["spawn_subagents"]; ok && !v {
+		return false
+	}
+	if v, ok := c.EnabledTools["batch_spawn_subagents"]; ok && !v {
+		return false
+	}
+	return c.EnabledTools["spawn_subagents"] || c.EnabledTools["batch_spawn_subagents"]
+}
+
 func defaultConfig() Config {
 	return Config{
 		MaxAsyncSubagents: DefaultMaxAsyncSubagents,
@@ -171,7 +187,7 @@ func defaultConfig() Config {
 			"write_file":            true,
 			"target_edit":           true,
 			"spawn_subagent":        true,
-			"batch_spawn_subagents": true,
+			"spawn_subagents":       true,
 			"bash":                  true,
 			"search_content":        true,
 			"find_files":            true,

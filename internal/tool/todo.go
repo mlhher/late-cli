@@ -41,7 +41,7 @@ func (t CreateTodosTool) Description() string {
 	return `Create a list of todos to track your progress.
 
 Instructions:
-1. Break down the work into clear, sequential milestones or steps.
+1. Break down the work into clear, ordered milestones or steps.
 2. Call this tool with ALL steps at once, in order.
 3. Once created, use 'list_todos' to check your progress.
 4. Use 'finish_todo' as you complete each step.

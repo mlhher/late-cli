@@ -284,7 +284,7 @@ func (t *ShellTool) WrapError(ctx context.Context, err error) error {
 	if strings.Contains(strings.ToLower(orchestratorID), "coder") {
 		errorMsg = fmt.Sprintf("Do not use %s commands like `cat > file` or `echo > file` to write files. Use the native `write_file` or `target_edit` tools instead. %s", shellDisplayName(), err.Error())
 	} else {
-		errorMsg = fmt.Sprintf("You are an architect/planner agent. You cannot write files. To modify files, you must spawn a coder subagent using `spawn_subagent` tool. %s", err.Error())
+		errorMsg = fmt.Sprintf("You are an architect/planner agent. You cannot write files. To modify files, you must delegate to a coder subagent. %s", err.Error())
 	}
 
 	return fmt.Errorf("%s", errorMsg)

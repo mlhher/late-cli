@@ -228,9 +228,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Warning: Failed to load app config: %v\n", err)
 	}
 	maxAsyncSubagents := appconfig.ResolveMaxAsyncSubagents(appConfig, *maxAsyncSubagentsReq)
-	// batch_spawn_subagents is only useful when more than one subagent may run at once.
+	// spawn_subagents replaces spawn_subagent when more than one subagent may run at once.
 	batchSpawnEnabled := *enableSubagentsReq && maxAsyncSubagents > 1 &&
-		appConfig != nil && appConfig.EnabledTools["batch_spawn_subagents"]
+		appConfig != nil && appConfig.BatchSubagentsEnabled()
 
 	// Plugin command handler — dispatches before TUI startup
 	var pluginManager *plugin.PluginManager
@@ -273,6 +273,7 @@ func main() {
 	} else {
 		content, _ := assets.PromptsFS.ReadFile("prompts/instruction-orchestrator.md")
 		systemPrompt = common.ApplyOptionalSection(string(content), "batch", batchSpawnEnabled)
+		systemPrompt = common.ApplyOptionalSection(systemPrompt, "single", !batchSpawnEnabled)
 	}
 
 	systemPrompt = common.ReplacePlaceholders(systemPrompt, map[string]string{
@@ -909,15 +910,14 @@ func main() {
 			return fmt.Sprintf("The subagent successfully completed its task. Final result:\n\n%s", res), nil
 		}
 
-		sess.Registry.Register(tool.SpawnSubagentTool{
-			Runner:         runner,
-			BatchAvailable: batchSpawnEnabled,
-		})
-
 		if batchSpawnEnabled {
-			sess.Registry.Register(tool.BatchSpawnSubagentsTool{
+			sess.Registry.Register(tool.SpawnSubagentsTool{
 				Runner:        runner,
 				MaxConcurrent: maxAsyncSubagents,
+			})
+		} else {
+			sess.Registry.Register(tool.SpawnSubagentTool{
+				Runner: runner,
 			})
 		}
 	}

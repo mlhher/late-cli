@@ -9,8 +9,10 @@ import (
 	"testing"
 
 	"late/internal/client"
+	"late/internal/common"
 	"late/internal/orchestrator"
 	"late/internal/session"
+	"late/internal/tool"
 )
 
 // TestNewSubagentOrchestratorWithGemmaThinking verifies that the gemmaThinking
@@ -619,5 +621,41 @@ func TestSubagentRegistryHasNoTodoTools(t *testing.T) {
 	}
 	if sess.Registry.Get("read_file") == nil {
 		t.Fatalf("expected subagent registry to contain read_file")
+	}
+}
+
+func TestSubagentRegistryDoesNotInheritSpawnTools(t *testing.T) {
+	tmp := t.TempDir()
+	setSessionDirForTest(t, tmp)
+
+	c := client.NewClient(client.Config{BaseURL: "http://localhost:9931"})
+	mockSession := session.New(c, filepath.Join(tmp, "mock-session.json"), []client.ChatMessage{}, "mock system prompt", true)
+	mockSession.Registry.Register(tool.SpawnSubagentTool{})
+	mockSession.Registry.Register(tool.SpawnSubagentsTool{})
+	parent := orchestrator.NewBaseOrchestrator(common.MainAgentID, mockSession, nil, 100)
+
+	child, err := NewSubagentOrchestrator(
+		c,
+		"test goal",
+		nil,
+		"coder",
+		map[string]bool{"read_file": true},
+		false,
+		false,
+		100,
+		"",
+		false,
+		parent,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create subagent orchestrator: %v", err)
+	}
+
+	childReg := child.Registry()
+	for _, forbidden := range []string{"spawn_subagent", "spawn_subagents", "batch_spawn_subagents"} {
+		if childReg.Get(forbidden) != nil {
+			t.Fatalf("expected subagent registry NOT to contain %s", forbidden)
+		}
 	}
 }

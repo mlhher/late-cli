@@ -125,7 +125,7 @@ Late prefers a located error over silently accepting a typo'd config:
 | Key | Type | Default | CLI flag | Description |
 | --- | --- | --- | --- | --- |
 | `save_subagent_histories` | boolean | `false` | `--save-subagent-histories` | Persist subagent conversation histories under `<sessions>/<session-id>/subagents/`. |
-| `max_async_subagents` | number | `1` | `--max-async-subagents` | Maximum number of subagents running at the same time. `LATE_MAX_ASYNC_SUBAGENTS` env overrides the config value; the CLI flag wins over both. Values ≤ 0 fall back to the default. `batch_spawn_subagents` is only available when this is above 1. |
+| `max_async_subagents` | number | `1` | `--max-async-subagents` | Maximum number of subagents running at the same time. `LATE_MAX_ASYNC_SUBAGENTS` env overrides the config value; the CLI flag wins over both. Values ≤ 0 fall back to the default. Above 1, `spawn_subagents` replaces `spawn_subagent` (unless disabled via `enabled_tools`). |
 
 ### Supervision and retries
 
@@ -184,7 +184,7 @@ model name.
 ### `enabled_tools` entries
 
 Keys are tool names, values booleans. Defaults (all `true`): `read_file`,
-`write_file`, `target_edit`, `spawn_subagent`, `bash`, `search_content`,
+`write_file`, `target_edit`, `spawn_subagent`, `spawn_subagents` (legacy alias `batch_spawn_subagents` also disables it when `false`), `bash`, `search_content`,
 `find_files`, `create_todos`, `list_todos`, `finish_todo`. Missing entries are
 merged from the defaults on load.
 

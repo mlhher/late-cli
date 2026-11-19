@@ -798,7 +798,7 @@ func TestBashTool_WrapError(t *testing.T) {
 	otherErr := fmt.Errorf("some other error")
 	ctx := context.WithValue(context.Background(), common.OrchestratorIDKey, "planner")
 	wrappedOtherErr := tool.WrapError(ctx, otherErr)
-	expectedOtherStr := "You are an architect/planner agent. You cannot write files. To modify files, you must spawn a coder subagent using `spawn_subagent` tool. some other error"
+	expectedOtherStr := "You are an architect/planner agent. You cannot write files. To modify files, you must delegate to a coder subagent. some other error"
 	if wrappedOtherErr.Error() != expectedOtherStr {
 		t.Errorf("Expected wrapped non-cd error to match %q, got %q", expectedOtherStr, wrappedOtherErr.Error())
 	}
