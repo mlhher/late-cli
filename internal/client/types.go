@@ -33,6 +33,23 @@ type ChatMessage struct {
 	Timestamp string `json:"timestamp,omitempty"`
 }
 
+func (m *ChatMessage) UnmarshalJSON(data []byte) error {
+	type Alias ChatMessage
+	aux := struct {
+		*Alias
+		Reasoning string `json:"reasoning,omitempty"`
+	}{
+		Alias: (*Alias)(m),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if m.ReasoningContent == "" && aux.Reasoning != "" {
+		m.ReasoningContent = aux.Reasoning
+	}
+	return nil
+}
+
 type MessageContent struct {
 	Text  string
 	Parts []ContentPart

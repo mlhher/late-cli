@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -282,5 +283,73 @@ func TestParseRetryAfterAt_ExtremeValues(t *testing.T) {
 func TestParseRetryAfterAt_HugeButValidSecondsDoesNotPanic(t *testing.T) {
 	if d := parseRetryAfterAt("999999999", time.Now()); d <= 0 {
 		t.Fatalf("parseRetryAfterAt(999999999) = %v, want > 0", d)
+	}
+}
+
+func TestChatMessage_UnmarshalReasoningAlias(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "reasoning alias populates ReasoningContent",
+			raw:  `{"role":"assistant","content":"ok","reasoning":"thought"}`,
+			want: "thought",
+		},
+		{
+			name: "reasoning_content populates ReasoningContent",
+			raw:  `{"role":"assistant","content":"ok","reasoning_content":"native"}`,
+			want: "native",
+		},
+		{
+			name: "reasoning_content takes precedence when both present",
+			raw:  `{"role":"assistant","content":"ok","reasoning_content":"native","reasoning":"alias"}`,
+			want: "native",
+		},
+		{
+			name: "neither field leaves ReasoningContent empty",
+			raw:  `{"role":"assistant","content":"ok"}`,
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var msg ChatMessage
+			if err := json.Unmarshal([]byte(tt.raw), &msg); err != nil {
+				t.Fatalf("json.Unmarshal failed: %v", err)
+			}
+			if msg.Role != "assistant" || msg.Content.String() != "ok" {
+				t.Errorf("unexpected Role/Content: %+v", msg)
+			}
+			if msg.ReasoningContent != tt.want {
+				t.Errorf("ReasoningContent = %q, want %q", msg.ReasoningContent, tt.want)
+			}
+		})
+	}
+}
+
+func TestChatCompletionStream_ReasoningFieldAlias(t *testing.T) {
+	chunk1 := `{"id":"1","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":{"role":"assistant","reasoning":"step 1"},"finish_reason":""}]}`
+	chunk2 := `{"id":"1","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}]}`
+	body := sseChunks(chunk1, chunk2, "[DONE]")
+
+	st := newStreamTest(t)
+	defer st.Close()
+	st.Handle(sseBodyHandler(body))
+
+	chunks, err := collectStream(t, context.Background(), st.client, defaultRequest())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("got %d chunks, want 2", len(chunks))
+	}
+	if got := chunks[0].Choices[0].Delta.ReasoningContent; got != "step 1" {
+		t.Errorf("chunk[0].Delta.ReasoningContent = %q, want %q", got, "step 1")
+	}
+	if got := chunks[1].Choices[0].Delta.Content.String(); got != "done" {
+		t.Errorf("chunk[1].Delta.Content = %q, want %q", got, "done")
 	}
 }
