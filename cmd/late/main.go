@@ -562,7 +562,7 @@ func main() {
 	} else {
 		sess.SetSubagentMetadata(0, &saveSubagentHistories)
 	}
-	executor.RegisterTools(sess.Registry, mainTools)
+	executor.RegisterTools(sess.Registry, mainTools, "Orchestrator")
 	executor.RegisterExternalTools(sess.Registry, enabledExternalTools)
 
 	// Register MCP tools into the session registry.

@@ -309,7 +309,10 @@ const maxReadFileChars = 32768
 const maxBashOutputChars = 32768
 
 // ShellTool executes host-native shell commands with security restrictions.
-type ShellTool struct{}
+type ShellTool struct {
+	HasWriteTools bool
+	Role          string
+}
 
 func shellDisplayName() string {
 	if runtime.GOOS == "windows" {
@@ -318,9 +321,36 @@ func shellDisplayName() string {
 	return "bash"
 }
 
+func allowedRedirectNote() string {
+	if runtime.GOOS == "windows" {
+		return "'2>&1' is allowed"
+	}
+	return "'2>&1' and '/dev/null' are allowed"
+}
+
 func (t ShellTool) Name() string { return "bash" }
 func (t ShellTool) Description() string {
-	return fmt.Sprintf("Execute a %s command.", shellDisplayName())
+	base := fmt.Sprintf(
+		"Execute a %s command (e.g., builds, tests, git, CLI tools). Do not use 'cd' — set the 'cwd' parameter instead. Do not use grep/rg/find — use search_content or find_files instead. ",
+		shellDisplayName(),
+	)
+	if t.HasWriteTools {
+		return base + fmt.Sprintf(
+			"Do not redirect output to files ('>'/'>>') — use write_file or target_edit instead (%s).",
+			allowedRedirectNote(),
+		)
+	}
+	if role := strings.TrimSpace(t.Role); role != "" {
+		return base + fmt.Sprintf(
+			"Do not write or redirect output to files ('>'/'>>') — file writes are forbidden in your current role as %s (%s).",
+			role,
+			allowedRedirectNote(),
+		)
+	}
+	return base + fmt.Sprintf(
+		"Do not write or redirect output to files ('>'/'>>') — file writes are forbidden in your current role (%s).",
+		allowedRedirectNote(),
+	)
 }
 func (t ShellTool) Parameters() json.RawMessage {
 	return json.RawMessage(fmt.Sprintf(`{

@@ -824,3 +824,59 @@ func TestBashTool_WrapError(t *testing.T) {
 		t.Errorf("Expected wrapped non-cd error to match %q, got %q", expectedOtherStr, wrappedOtherErr.Error())
 	}
 }
+
+func TestShellTool_Description(t *testing.T) {
+	t.Run("with write tools", func(t *testing.T) {
+		desc := (ShellTool{HasWriteTools: true, Role: "Coder"}).Description()
+		for _, want := range []string{"cwd", "search_content", "find_files", "write_file", "target_edit", "'2>&1'"} {
+			if !strings.Contains(desc, want) {
+				t.Errorf("expected description to contain %q, got %q", want, desc)
+			}
+		}
+		if strings.Contains(desc, "forbidden in your current role") {
+			t.Errorf("did not expect role-forbidden text when HasWriteTools is true, got %q", desc)
+		}
+		if runtime.GOOS != "windows" && !strings.Contains(desc, "'/dev/null'") {
+			t.Errorf("expected non-Windows description to allow '/dev/null', got %q", desc)
+		}
+	})
+
+	t.Run("without write tools as Orchestrator", func(t *testing.T) {
+		desc := (ShellTool{HasWriteTools: false, Role: "Orchestrator"}).Description()
+		if !strings.Contains(desc, "forbidden in your current role as Orchestrator") {
+			t.Errorf("expected Orchestrator role wording, got %q", desc)
+		}
+		for _, forbidden := range []string{"write_file", "target_edit"} {
+			if strings.Contains(desc, forbidden) {
+				t.Errorf("did not expect %q when HasWriteTools is false, got %q", forbidden, desc)
+			}
+		}
+	})
+
+	t.Run("without write tools as Researcher", func(t *testing.T) {
+		desc := (ShellTool{HasWriteTools: false, Role: "Researcher"}).Description()
+		if !strings.Contains(desc, "forbidden in your current role as Researcher") {
+			t.Errorf("expected Researcher role wording, got %q", desc)
+		}
+		for _, forbidden := range []string{"write_file", "target_edit"} {
+			if strings.Contains(desc, forbidden) {
+				t.Errorf("did not expect %q when HasWriteTools is false, got %q", forbidden, desc)
+			}
+		}
+	})
+
+	t.Run("zero value without role", func(t *testing.T) {
+		desc := (ShellTool{}).Description()
+		if !strings.Contains(desc, "forbidden in your current role (") {
+			t.Errorf("expected generic role wording without dangling 'as ', got %q", desc)
+		}
+		if strings.Contains(desc, "as ") {
+			t.Errorf("did not expect dangling 'as ' when Role is empty, got %q", desc)
+		}
+		for _, forbidden := range []string{"write_file", "target_edit"} {
+			if strings.Contains(desc, forbidden) {
+				t.Errorf("did not expect %q on zero-value ShellTool, got %q", forbidden, desc)
+			}
+		}
+	})
+}

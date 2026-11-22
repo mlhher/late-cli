@@ -152,9 +152,14 @@ func ExecuteToolCalls(ctx context.Context, sess *session.Session, toolCalls []cl
 // RegisterTools registers the common tool set on a session's registry.
 // If isPlanning is true, it only registers read-only tools and the planning tool.
 // Otherwise, it registers the full set of coding tools.
-func RegisterTools(reg *tool.Registry, enabledTools map[string]bool) {
+func RegisterTools(reg *tool.Registry, enabledTools map[string]bool, role ...string) {
 	if enabledTools == nil {
 		enabledTools = make(map[string]bool)
+	}
+
+	roleName := ""
+	if len(role) > 0 {
+		roleName = strings.TrimSpace(role[0])
 	}
 
 	if enabledTools["read_file"] {
@@ -167,7 +172,10 @@ func RegisterTools(reg *tool.Registry, enabledTools map[string]bool) {
 		reg.Register(&tool.FindFilesTool{})
 	}
 	if enabledTools["bash"] {
-		reg.Register(&tool.ShellTool{})
+		reg.Register(&tool.ShellTool{
+			HasWriteTools: enabledTools["write_file"] || enabledTools["target_edit"],
+			Role:          roleName,
+		})
 	}
 	if enabledTools["write_implementation_plan"] {
 		reg.Register(tool.WriteImplementationPlanTool{})

@@ -117,7 +117,11 @@ func NewSubagentOrchestrator(
 	for _, name := range []string{"create_todos", "list_todos", "finish_todo"} {
 		delete(subagentTools, name)
 	}
-	executor.RegisterTools(sess.Registry, subagentTools)
+	role := config.Name
+	if role == "" {
+		role = agentType
+	}
+	executor.RegisterTools(sess.Registry, subagentTools, formatRoleName(role))
 
 	// 3. Construct Initial Context
 	initialMsg := fmt.Sprintf("Goal: %s", goal)
@@ -162,4 +166,16 @@ func FormatToolConfirmPrompt(tc client.ToolCall) string {
 		args = string(pretty)
 	}
 	return fmt.Sprintf("Execute **%s**:\n\n```json\n%s\n```", tc.Function.Name, args)
+}
+
+func formatRoleName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	b := name[0]
+	if b >= 'a' && b <= 'z' {
+		return string(b-'a'+'A') + name[1:]
+	}
+	return name
 }

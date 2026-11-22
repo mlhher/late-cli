@@ -5,6 +5,7 @@ import (
 	"late/internal/client"
 	"late/internal/common"
 	"late/internal/session"
+	"late/internal/tool"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -431,5 +432,36 @@ func TestStreamAccumulatorKeepsLatestTimingsAndProgress(t *testing.T) {
 	acc.Reset()
 	if acc.Progress != nil || acc.Timings != (client.Timings{}) {
 		t.Errorf("Reset must clear speed data: %+v %+v", acc.Progress, acc.Timings)
+	}
+}
+
+func TestRegisterTools_ShellToolCapabilities(t *testing.T) {
+	c := client.NewClient(client.Config{BaseURL: "http://localhost:0"})
+	histPath := filepath.Join(t.TempDir(), "history.json")
+
+	sessOrch := session.New(c, histPath, nil, "", false)
+	RegisterTools(sessOrch.Registry, map[string]bool{"bash": true}, "Orchestrator")
+	orchBash, ok := sessOrch.Registry.Get("bash").(*tool.ShellTool)
+	if !ok {
+		t.Fatalf("expected *tool.ShellTool registered for Orchestrator, got %T", sessOrch.Registry.Get("bash"))
+	}
+	if orchBash.HasWriteTools {
+		t.Error("expected HasWriteTools == false for Orchestrator")
+	}
+	if orchBash.Role != "Orchestrator" {
+		t.Errorf("expected Role == %q, got %q", "Orchestrator", orchBash.Role)
+	}
+
+	sessCoder := session.New(c, histPath, nil, "", false)
+	RegisterTools(sessCoder.Registry, map[string]bool{"bash": true, "write_file": true}, "Coder")
+	coderBash, ok := sessCoder.Registry.Get("bash").(*tool.ShellTool)
+	if !ok {
+		t.Fatalf("expected *tool.ShellTool registered for Coder, got %T", sessCoder.Registry.Get("bash"))
+	}
+	if !coderBash.HasWriteTools {
+		t.Error("expected HasWriteTools == true for Coder")
+	}
+	if coderBash.Role != "Coder" {
+		t.Errorf("expected Role == %q, got %q", "Coder", coderBash.Role)
 	}
 }
