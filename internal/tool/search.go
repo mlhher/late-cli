@@ -586,7 +586,7 @@ func readFileContentWithCount(path string, countFunc func(string) int, contextLi
 				}
 				for j := start; j < i; j++ {
 					cl := truncateLine(lines[j])
-					entry := fmt.Sprintf("%s:%d- %s\n", path, j+1, cl)
+					entry := fmt.Sprintf("%s:%d-%s\n", path, j+1, cl)
 					if fileBuf.Len()+len(entry) > maxSearchChars {
 						return fileBuf.String(), localMatchCount, nil
 					}
@@ -594,7 +594,7 @@ func readFileContentWithCount(path string, countFunc func(string) int, contextLi
 				}
 			}
 
-			entry := fmt.Sprintf("%s:%d: %s\n", path, i+1, truncateLine(line))
+			entry := fmt.Sprintf("%s:%d:%s\n", path, i+1, truncateLine(line))
 			if fileBuf.Len()+len(entry) > maxSearchChars {
 				return fileBuf.String(), localMatchCount, nil
 			}
@@ -612,7 +612,7 @@ func readFileContentWithCount(path string, countFunc func(string) int, contextLi
 						break
 					}
 					cl := truncateLine(lines[j])
-					entry := fmt.Sprintf("%s:%d- %s\n", path, j+1, cl)
+					entry := fmt.Sprintf("%s:%d-%s\n", path, j+1, cl)
 					if fileBuf.Len()+len(entry) > maxSearchChars {
 						return fileBuf.String(), localMatchCount, nil
 					}

@@ -37,7 +37,7 @@ func TestReadFileTool_PartialRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	expected := "2 | line2\n3 | line3\n4 | line4\n"
+	expected := "2|line2\n3|line3\n4|line4\n"
 	if result != expected {
 		t.Errorf("Expected:\n%q\nGot:\n%q", expected, result)
 	}
@@ -126,6 +126,27 @@ func TestReadFileTool_OutputTruncation(t *testing.T) {
 
 	if !strings.Contains(result, "... (output truncated)") {
 		t.Error("Expected output to contain truncation message")
+	}
+}
+
+func TestReadFileTool_PreservesLeadingIndentation(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.ToSlash(filepath.Join(tmpDir, "indent.ts"))
+	content := "  two\n    four\n\ttab\n"
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewReadFileTool()
+	args := json.RawMessage(`{"path": "` + filePath + `", "start_line": 1, "end_line": 3}`)
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := "1|  two\n2|    four\n3|\ttab\n"
+	if result != expected {
+		t.Errorf("Expected:\n%q\nGot:\n%q", expected, result)
 	}
 }
 

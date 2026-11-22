@@ -57,7 +57,7 @@ func TestSearchContentTool_RegexSearch(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(res, "sample.go:3: func LoginUser() {") {
+	if !strings.Contains(res, "sample.go:3:func LoginUser() {") {
 		t.Errorf("expected match on line 3, got:\n%s", res)
 	}
 }
@@ -77,7 +77,7 @@ func TestSearchContentTool_LiteralSearch(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(res, "sample.txt:2: [bracket.text]") {
+	if !strings.Contains(res, "sample.txt:2:[bracket.text]") {
 		t.Errorf("expected literal match, got:\n%s", res)
 	}
 }
@@ -128,14 +128,41 @@ func TestSearchContentTool_ContextLines(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !strings.Contains(res, "lines.txt:2- line 2") {
+	if !strings.Contains(res, "lines.txt:2-line 2") {
 		t.Errorf("expected before-context line 2, got:\n%s", res)
 	}
-	if !strings.Contains(res, "lines.txt:3: line 3 TARGET") {
+	if !strings.Contains(res, "lines.txt:3:line 3 TARGET") {
 		t.Errorf("expected target line 3, got:\n%s", res)
 	}
-	if !strings.Contains(res, "lines.txt:4- line 4") {
+	if !strings.Contains(res, "lines.txt:4-line 4") {
 		t.Errorf("expected after-context line 4, got:\n%s", res)
+	}
+}
+
+func TestSearchContentTool_PreservesLeadingIndentation(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "indent.ts")
+	content := "  ctxBefore()\n    targetSpaces()\n\ttargetTab()\n  ctxAfter()\n"
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &SearchContentTool{}
+	args := json.RawMessage(`{"pattern": "target", "path": "` + tmpDir + `", "literal": true, "context_lines": 1}`)
+	res, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range []string{
+		"indent.ts:1-  ctxBefore()",
+		"indent.ts:2:    targetSpaces()",
+		"indent.ts:3:\ttargetTab()",
+		"indent.ts:4-  ctxAfter()",
+	} {
+		if !strings.Contains(res, want) {
+			t.Errorf("expected %q in output, got:\n%s", want, res)
+		}
 	}
 }
 

@@ -31,8 +31,10 @@ func NewReadFileTool() *ReadFileTool {
 	}
 }
 
-func (t *ReadFileTool) Name() string        { return "read_file" }
-func (t *ReadFileTool) Description() string { return "Read the content of a file" }
+func (t *ReadFileTool) Name() string { return "read_file" }
+func (t *ReadFileTool) Description() string {
+	return "Read the content of a file. Output lines use '<line_number>|<content>' with no extra space after '|'; everything after '|' is exact file content."
+}
 func (t *ReadFileTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
@@ -98,7 +100,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 
 	var sb strings.Builder
 	for _, l := range result {
-		lineStr := fmt.Sprintf("%d | %s\n", l.lineNum, l.content)
+		lineStr := fmt.Sprintf("%d|%s\n", l.lineNum, l.content)
 		if sb.Len()+len(lineStr) > maxReadFileChars {
 			sb.WriteString("... (output truncated)")
 			break
