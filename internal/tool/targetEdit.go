@@ -68,6 +68,9 @@ func (t *TargetEditTool) Execute(ctx context.Context, args json.RawMessage) (str
 	// count occurrences
 	count := strings.Count(content, search)
 	if count == 0 {
+		if hint := formatWhitespaceMismatchHint(content, search); hint != "" {
+			return "", fmt.Errorf("search block not found in file, %s", hint)
+		}
 		return "", fmt.Errorf("search block not found in file")
 	}
 	if count > 1 {
@@ -105,4 +108,152 @@ func (t *TargetEditTool) CallString(args json.RawMessage) string {
 	// Use just the filename for display, with truncated path if needed
 	filename := filepath.Base(file)
 	return fmt.Sprintf("Editing file %s...", truncate(filename, 50))
+}
+
+const (
+	maxTargetEditHintLines     = 25
+	maxTargetEditHintLocations = 5
+	maxTargetEditHintDiffs     = 5
+)
+
+func trimHorizontal(s string) string {
+	return strings.Trim(s, " \t")
+}
+
+func leadingHorizontal(s string) string {
+	i := 0
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	return s[:i]
+}
+
+func describeIndent(prefix string) string {
+	if prefix == "" {
+		return "no leading whitespace"
+	}
+	hasSpace := strings.ContainsRune(prefix, ' ')
+	hasTab := strings.ContainsRune(prefix, '\t')
+	if hasSpace && hasTab {
+		return fmt.Sprintf("mixed whitespace %q", prefix)
+	}
+	if hasSpace {
+		if len(prefix) == 1 {
+			return "1 space"
+		}
+		return fmt.Sprintf("%d spaces", len(prefix))
+	}
+	if len(prefix) == 1 {
+		return "1 tab"
+	}
+	return fmt.Sprintf("%d tabs", len(prefix))
+}
+
+func describeLineWhitespaceDiff(lineNum int, fileLine, searchLine string) string {
+	fileLead := leadingHorizontal(fileLine)
+	searchLead := leadingHorizontal(searchLine)
+	if fileLead != searchLead {
+		return fmt.Sprintf("line %d has %s, search had %s", lineNum, describeIndent(fileLead), describeIndent(searchLead))
+	}
+	return fmt.Sprintf("line %d differs in trailing whitespace", lineNum)
+}
+
+func formatHintRange(startLine, endLine int) string {
+	if startLine == endLine {
+		return fmt.Sprintf("line %d", startLine)
+	}
+	return fmt.Sprintf("lines %d-%d", startLine, endLine)
+}
+
+// formatWhitespaceMismatchHint locates blocks that match search when ignoring
+// horizontal leading/trailing whitespace so models can self-correct indentation
+// in one turn without guessing.
+func formatWhitespaceMismatchHint(content, search string) string {
+	contentLines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	searchLines := strings.Split(strings.TrimSuffix(search, "\n"), "\n")
+	if len(searchLines) == 0 || len(searchLines) > len(contentLines) {
+		return ""
+	}
+
+	hasNonBlank := false
+	trimmedSearch := make([]string, len(searchLines))
+	for i, line := range searchLines {
+		trimmed := trimHorizontal(line)
+		trimmedSearch[i] = trimmed
+		if trimmed != "" {
+			hasNonBlank = true
+		}
+	}
+	if !hasNonBlank {
+		return ""
+	}
+
+	var matches []int
+	limit := len(contentLines) - len(searchLines)
+	for i := 0; i <= limit; i++ {
+		matched := true
+		for k := 0; k < len(searchLines); k++ {
+			if trimHorizontal(contentLines[i+k]) != trimmedSearch[k] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			matches = append(matches, i)
+		}
+	}
+
+	if len(matches) == 0 {
+		return ""
+	}
+
+	if len(matches) > 1 {
+		shown := min(len(matches), maxTargetEditHintLocations)
+		locs := make([]string, 0, shown+1)
+		for _, start := range matches[:shown] {
+			locs = append(locs, formatHintRange(start+1, start+len(searchLines)))
+		}
+		if len(matches) > maxTargetEditHintLocations {
+			locs = append(locs, "...")
+		}
+		return fmt.Sprintf(
+			"but matched %d locations when ignoring leading/trailing whitespace (%s); include more surrounding lines and match exact indentation",
+			len(matches),
+			strings.Join(locs, ", "),
+		)
+	}
+
+	start := matches[0]
+	startLine := start + 1
+	endLine := start + len(searchLines)
+	loc := formatHintRange(startLine, endLine)
+
+	var diffs []string
+	totalDiffs := 0
+	for k := 0; k < len(searchLines); k++ {
+		if contentLines[start+k] != searchLines[k] {
+			totalDiffs++
+			if len(diffs) < maxTargetEditHintDiffs {
+				diffs = append(diffs, describeLineWhitespaceDiff(startLine+k, contentLines[start+k], searchLines[k]))
+			}
+		}
+	}
+	reason := "differs only in trailing newline"
+	if totalDiffs > 0 {
+		reason = strings.Join(diffs, "; ")
+		if totalDiffs > maxTargetEditHintDiffs {
+			reason += fmt.Sprintf("; ... (+%d more)", totalDiffs-maxTargetEditHintDiffs)
+		}
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "but matched %s when ignoring leading/trailing whitespace (%s). Actual lines (exact content after '|'):\n", loc, reason)
+	emitCount := min(len(searchLines), maxTargetEditHintLines)
+	for k := 0; k < emitCount; k++ {
+		fmt.Fprintf(&sb, "%d|%s\n", startLine+k, contentLines[start+k])
+	}
+	if len(searchLines) > maxTargetEditHintLines {
+		fmt.Fprintf(&sb, "... (%d more lines)\n", len(searchLines)-maxTargetEditHintLines)
+	}
+	return strings.TrimSuffix(sb.String(), "\n")
 }
