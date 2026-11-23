@@ -46,6 +46,12 @@ Instructions:
 3. Once created, use 'list_todos' to check your progress.
 4. Use 'finish_todo' as you complete each step.
 
+Important:
+- Calling this tool again REPLACES the entire list and clears all completion
+  status. To add or revise steps, include the full list every time.
+- Call this tool with an EMPTY todos array to clear the list entirely (e.g.
+  when the work is finished).
+
 Tips:
 - Make steps atomic and verifiable.
 - More granularity is better than less.
@@ -58,7 +64,7 @@ func (t CreateTodosTool) Parameters() json.RawMessage {
 			"todos": {
 				"type": "array",
 				"items": { "type": "string" },
-				"description": "List of todo items in order (first item = first to do)"
+				"description": "List of todo items in order (first item = first to do). Pass an empty array to clear the list."
 			}
 		},
 		"required": ["todos"]
@@ -75,8 +81,21 @@ func (t CreateTodosTool) Execute(ctx context.Context, args json.RawMessage) (str
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid parameters: %w", err)
 	}
+
+	// An empty array clears the list: without this the agent has no way to
+	// empty the todo pane once the work is done — finish_todo only marks
+	// items done, so every clear attempt dead-ended in an error loop.
 	if len(params.Todos) == 0 {
-		return "Error: todos array cannot be empty. Please provide at least one todo item.", nil
+		if t.Mu != nil {
+			t.Mu.Lock()
+			if t.Todos != nil {
+				*t.Todos = nil
+			}
+			t.Mu.Unlock()
+		} else if t.Todos != nil {
+			*t.Todos = nil
+		}
+		return "Cleared all todos. The todo list is now empty.", nil
 	}
 
 	newTodos := make([]Todo, len(params.Todos))
@@ -208,27 +227,33 @@ func (t FinishTodoTool) ResetConversationState() {
 
 func (t FinishTodoTool) Name() string { return "finish_todo" }
 func (t FinishTodoTool) Description() string {
-	return `Mark a todo item as complete by typing its EXACT text.
+	return `Mark a todo item as complete, by INDEX (preferred) or by exact text.
 
 Instructions:
-1. Use 'list_todos' to see your current todo list.
-2. Copy the EXACT text of the todo you want to mark complete.
-3. Pass it to this tool. The match is EXACT — whitespace matters.
-4. If your string does not match, you will get an error telling you to use 'list_todos'.
+1. Use 'list_todos' to see your current todo list with numbered items.
+2. Prefer 'todo_index' — the 1-based number shown by 'list_todos' (e.g. 3
+   for the third item). This is the most reliable way to finish a todo.
+3. Alternatively pass 'todo_text' with the item's text copied EXACTLY
+   (character-for-character: capitalization, punctuation, whitespace).
+   Text matching fails easily after JSON escaping or paraphrasing — if it
+   errors once, switch to 'todo_index' instead of retrying the text.
 
-Important: The string must match character-for-character with the item in your todo list.
-Do not modify capitalization, punctuation, or whitespace.`
+Provide exactly one of 'todo_index' or 'todo_text'.`
 }
 func (t FinishTodoTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
+			"todo_index": {
+				"type": "integer",
+				"description": "1-based index of the todo to mark complete, as numbered by 'list_todos'. Preferred over todo_text."
+			},
 			"todo_text": {
 				"type": "string",
-				"description": "The exact text of the todo to mark as complete. Must match exactly."
+				"description": "The exact text of the todo to mark as complete. Must match character-for-character. Use todo_index instead when possible."
 			}
 		},
-		"required": ["todo_text"]
+		"required": []
 	}`)
 }
 func (t FinishTodoTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
@@ -237,14 +262,11 @@ func (t FinishTodoTool) Execute(ctx context.Context, args json.RawMessage) (stri
 		return "Error: todo tools are restricted to the main agent; subagents cannot modify the todo list.", nil
 	}
 	var params struct {
-		TodoText string `json:"todo_text"`
+		TodoIndex int    `json:"todo_index"`
+		TodoText  string `json:"todo_text"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid parameters: %w", err)
-	}
-	todoText := strings.TrimSpace(params.TodoText)
-	if todoText == "" {
-		return "Error: todo_text cannot be empty. Use 'list_todos' to see your current todos.", nil
 	}
 
 	if t.Mu != nil {
@@ -254,6 +276,27 @@ func (t FinishTodoTool) Execute(ctx context.Context, args json.RawMessage) (stri
 
 	if t.Todos == nil || len(*t.Todos) == 0 {
 		return "Error: No todos have been created yet. Use 'create_todos' to set up your plan.", nil
+	}
+
+	// Index path: the 1-based number 'list_todos' displays. It cannot be
+	// corrupted by JSON escaping or paraphrasing, so it is the preferred
+	// route. An explicit index also disambiguates duplicate texts (text
+	// matching always completes the first).
+	if params.TodoIndex > 0 {
+		idx := params.TodoIndex - 1
+		if idx >= len(*t.Todos) {
+			return fmt.Sprintf("Error: todo_index %d is out of range: the list has %d item(s). Use 'list_todos' to see the numbered list.", params.TodoIndex, len(*t.Todos)), nil
+		}
+		if (*t.Todos)[idx].Done {
+			return fmt.Sprintf("Todo %d ('%s') is already completed.", params.TodoIndex, (*t.Todos)[idx].Text), nil
+		}
+		(*t.Todos)[idx].Done = true
+		return fmt.Sprintf("Completed: %s", (*t.Todos)[idx].Text), nil
+	}
+
+	todoText := strings.TrimSpace(params.TodoText)
+	if todoText == "" {
+		return "Error: provide either 'todo_index' (1-based number from 'list_todos', preferred) or 'todo_text' (exact text).", nil
 	}
 
 	todos := *t.Todos
@@ -271,7 +314,7 @@ func (t FinishTodoTool) Execute(ctx context.Context, args json.RawMessage) (stri
 	if foundCompleted {
 		return fmt.Sprintf("Todo '%s' is already completed.", todoText), nil
 	}
-	return fmt.Sprintf("Error: No todo found matching '%s'. The text must match EXACTLY (including capitalization, punctuation, and whitespace). Use the 'list_todos' tool to see your current todo list and get the correct text.", todoText), nil
+	return fmt.Sprintf("Error: No todo found matching '%s'. The text must match EXACTLY (including capitalization, punctuation, and whitespace). Prefer the reliable 'todo_index' parameter: run 'list_todos' to see the numbered list, then pass the item's number.", todoText), nil
 }
 func (t FinishTodoTool) RequiresConfirmation(args json.RawMessage) bool { return false }
 func (t FinishTodoTool) CallString(args json.RawMessage) string {
