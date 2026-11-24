@@ -34,10 +34,22 @@ func TestCreateTodosEmpty(t *testing.T) {
 	var todos []Todo
 	tool := CreateTodosTool{Todos: &todos}
 
-	args := json.RawMessage(`{"todos": []}`)
-	result, _ := tool.Execute(context.Background(), args)
-	if !strings.Contains(result, "cannot be empty") {
-		t.Fatalf("expected empty error, got: %s", result)
+	// An empty array now CLEARS the list (the only clearing path the agent
+	// has — finish_todo can only mark items done).
+	args := json.RawMessage(`{"todos": ["Existing"]}`)
+	if _, err := tool.Execute(context.Background(), args); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(todos) != 1 {
+		t.Fatalf("setup failed: expected 1 todo, got %d", len(todos))
+	}
+
+	result, _ := tool.Execute(context.Background(), json.RawMessage(`{"todos": []}`))
+	if !strings.Contains(result, "Cleared all todos") {
+		t.Fatalf("expected clear confirmation, got: %s", result)
+	}
+	if len(todos) != 0 {
+		t.Fatalf("expected empty list after clear, got: %v", todos)
 	}
 }
 
@@ -136,6 +148,66 @@ func TestFinishTodoNotFound(t *testing.T) {
 	// Todos should be unchanged
 	if len(todos) != 2 {
 		t.Fatalf("todos should be unchanged, got: %v", todos)
+	}
+}
+
+func TestFinishTodoByIndex(t *testing.T) {
+	todos := []Todo{
+		{Text: "Step 1", Done: false},
+		{Text: "Step 2", Done: false},
+		{Text: "Step 3", Done: true},
+	}
+	tool := FinishTodoTool{Todos: &todos}
+
+	// Index completes the numbered item (1-based, as list_todos shows).
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"todo_index": 2}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "Completed: Step 2") {
+		t.Fatalf("expected completion of item 2, got: %s", result)
+	}
+	if !todos[1].Done || todos[0].Done {
+		t.Fatalf("expected only item 2 done, got: %v", todos)
+	}
+
+	// Already-completed item reports as such.
+	result, _ = tool.Execute(context.Background(), json.RawMessage(`{"todo_index": 3}`))
+	if !strings.Contains(result, "already completed") {
+		t.Fatalf("expected already completed, got: %s", result)
+	}
+
+	// Out-of-range index errors with the list size.
+	result, _ = tool.Execute(context.Background(), json.RawMessage(`{"todo_index": 9}`))
+	if !strings.Contains(result, "out of range") || !strings.Contains(result, "3 item") {
+		t.Fatalf("expected out-of-range error naming the list size, got: %s", result)
+	}
+
+	// Zero index falls through to the text path (and errors when no text).
+	result, _ = tool.Execute(context.Background(), json.RawMessage(`{"todo_index": 0}`))
+	if !strings.Contains(result, "provide either") {
+		t.Fatalf("expected both-empty guidance, got: %s", result)
+	}
+}
+
+func TestFinishTodoByIndexDisambiguatesDuplicates(t *testing.T) {
+	// Text matching always completes the FIRST duplicate; an index can
+	// reach the second one.
+	todos := []Todo{
+		{Text: "Run tests", Done: true},
+		{Text: "Run tests", Done: false},
+	}
+	tool := FinishTodoTool{Todos: &todos}
+
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"todo_index": 2}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "Completed: Run tests") {
+		t.Fatalf("expected completion of second duplicate, got: %s", result)
+	}
+	if !todos[1].Done {
+		t.Fatalf("expected second 'Run tests' done, got: %v", todos)
 	}
 }
 
