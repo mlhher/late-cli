@@ -601,6 +601,67 @@ func TestResolveSaveSubagentHistories(t *testing.T) {
 	}
 }
 
+func TestResolveAutoSwitchViewOnSpawn(t *testing.T) {
+	tests := []struct {
+		name        string
+		cfg         *Config
+		cliExplicit bool
+		cliValue    bool
+		want        bool
+	}{
+		{
+			name:        "explicit flag on wins over config off",
+			cfg:         &Config{AutoSwitchViewOnSpawn: false},
+			cliExplicit: true,
+			cliValue:    true,
+			want:        true,
+		},
+		{
+			name:        "explicit flag off wins over config on",
+			cfg:         &Config{AutoSwitchViewOnSpawn: true},
+			cliExplicit: true,
+			cliValue:    false,
+			want:        false,
+		},
+		{
+			name:        "no flag uses config on",
+			cfg:         &Config{AutoSwitchViewOnSpawn: true},
+			cliExplicit: false,
+			cliValue:    false,
+			want:        true,
+		},
+		{
+			name:        "no flag uses config off",
+			cfg:         &Config{AutoSwitchViewOnSpawn: false},
+			cliExplicit: false,
+			cliValue:    false,
+			want:        false,
+		},
+		{
+			name:        "no flag and nil config defaults to off",
+			cfg:         nil,
+			cliExplicit: false,
+			cliValue:    false,
+			want:        false,
+		},
+		{
+			name:        "explicit flag on with nil config",
+			cfg:         nil,
+			cliExplicit: true,
+			cliValue:    true,
+			want:        true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ResolveAutoSwitchViewOnSpawn(tt.cfg, tt.cliExplicit, tt.cliValue); got != tt.want {
+				t.Fatalf("ResolveAutoSwitchViewOnSpawn() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConfig_GetModelForAgent(t *testing.T) {
 	cfg := &Config{
 		Models: []ModelSetting{

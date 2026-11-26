@@ -1992,11 +1992,23 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			}
 		case common.ChildAddedEvent:
 			label := "subagent"
+			switchedView := false
 			if event.Child != nil {
 				label = formatAgentBreadcrumb(event.Child.ID())
+				if m.AutoSwitchViewOnSpawn {
+					m.Focused = event.Child
+					// Initialize state if missing, the same way the tab
+					// handler does when it reaches this agent.
+					m.GetAgentState(event.Child.ID())
+					switchedView = true
+				}
 			}
 			spawnedToast = func() tea.Msg {
-				return ToastMsg{Text: label + " spawned · tab to view", Duration: 2 * time.Second}
+				text := label + " spawned"
+				if !switchedView {
+					text += " · tab to view"
+				}
+				return ToastMsg{Text: text, Duration: 2 * time.Second}
 			}
 			m.updateViewport()
 		case common.StopRequestedEvent:

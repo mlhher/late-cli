@@ -126,6 +126,7 @@ Late prefers a located error over silently accepting a typo'd config:
 | --- | --- | --- | --- | --- |
 | `save_subagent_histories` | boolean | `false` | `--save-subagent-histories` | Persist subagent conversation histories under `<sessions>/<session-id>/subagents/`. |
 | `max_async_subagents` | number | `1` | `--max-async-subagents` | Maximum number of subagents running at the same time. `LATE_MAX_ASYNC_SUBAGENTS` env overrides the config value; the CLI flag wins over both. Values ≤ 0 fall back to the default. Above 1, `spawn_subagents` replaces `spawn_subagent` (unless disabled via `enabled_tools`). |
+| `auto_switch_view_on_spawn` | boolean | `false` | `--auto-switch-view-on-spawn` | Focus a newly spawned subagent's view automatically, no TAB press needed. When that subagent closes, the view returns to its parent. |
 
 ### Supervision and retries
 
