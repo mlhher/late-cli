@@ -187,6 +187,13 @@ type Model struct {
 	// Per-Orchestrator states
 	AgentStates map[string]*AppState
 
+	// AutoSwitchViewOnSpawn focuses a newly spawned subagent's view on
+	// ChildAddedEvent, so the user does not press TAB to switch manually.
+	// The reverse direction is always on regardless of this flag: when the
+	// focused agent closes, focus returns to its parent (or the root).
+	// Set once from cmd/late/main.go after NewModel.
+	AutoSwitchViewOnSpawn bool
+
 	// Messenger for async tasks
 	Messenger Messenger
 

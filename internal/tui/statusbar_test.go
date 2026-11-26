@@ -194,6 +194,74 @@ func TestChildAddedShowsTransientToast(t *testing.T) {
 	}
 }
 
+// With auto-switch enabled, spawning a subagent focuses its view
+// immediately, the toast drops the "tab to view" hint, and the existing
+// close handler returns focus to the parent — the full auto cycle.
+func TestChildAddedAutoSwitchFocusesSubagent(t *testing.T) {
+	root := &focusTestOrchestrator{id: common.MainAgentID}
+	child := &focusTestOrchestrator{id: "coder-subagent-0", parent: root}
+	m := newStatusBarModel(t, root)
+	m.AutoSwitchViewOnSpawn = true
+
+	updated, cmd := m.Update(OrchestratorEventMsg{Event: common.ChildAddedEvent{ParentID: root.ID(), Child: child}})
+	m = updated.(Model)
+
+	if m.Focused.ID() != child.ID() {
+		t.Fatalf("auto-switch should focus the spawned subagent, got %q", m.Focused.ID())
+	}
+	toast, ok := findToast(cmd)
+	if !ok {
+		t.Fatal("expected a toast among the returned commands")
+	}
+	if toast.Text != "coder #0 spawned" {
+		t.Errorf("unexpected toast: %+v", toast)
+	}
+
+	// The reverse direction is always on: closing the focused subagent
+	// returns focus to its parent (the root here).
+	updated, _ = m.Update(OrchestratorEventMsg{Event: common.StatusEvent{ID: child.ID(), Status: "closed"}})
+	m = updated.(Model)
+	if m.Focused.ID() != root.ID() {
+		t.Errorf("closing the auto-switched subagent should return focus to the root, got %q", m.Focused.ID())
+	}
+
+	// With the flag off (the default), the same spawn keeps focus on the
+	// root and the toast keeps its "tab to view" hint.
+	def := newStatusBarModel(t, root)
+	updated, cmd = def.Update(OrchestratorEventMsg{Event: common.ChildAddedEvent{ParentID: root.ID(), Child: child}})
+	def = updated.(Model)
+	if def.Focused.ID() != root.ID() {
+		t.Errorf("default spawn must not steal focus, got %q", def.Focused.ID())
+	}
+	toast, ok = findToast(cmd)
+	if !ok {
+		t.Fatal("expected a toast among the returned commands")
+	}
+	if toast.Text != "coder #0 spawned · tab to view" {
+		t.Errorf("unexpected toast: %+v", toast)
+	}
+}
+
+func TestChildAddedAutoSwitchNilChildKeepsFocusAndHint(t *testing.T) {
+	root := &focusTestOrchestrator{id: common.MainAgentID}
+	m := newStatusBarModel(t, root)
+	m.AutoSwitchViewOnSpawn = true
+
+	updated, cmd := m.Update(OrchestratorEventMsg{Event: common.ChildAddedEvent{ParentID: root.ID()}})
+	m = updated.(Model)
+
+	if m.Focused.ID() != root.ID() {
+		t.Fatalf("auto-switch must not move focus without a child, got %q", m.Focused.ID())
+	}
+	toast, ok := findToast(cmd)
+	if !ok {
+		t.Fatal("expected a toast among the returned commands")
+	}
+	if toast.Text != "subagent spawned · tab to view" {
+		t.Errorf("unexpected toast: %+v", toast)
+	}
+}
+
 // findToast runs cmd (unwrapping batches) and returns the first ToastMsg.
 func findToast(cmd tea.Cmd) (ToastMsg, bool) {
 	if cmd == nil {

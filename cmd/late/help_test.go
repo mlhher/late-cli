@@ -15,7 +15,7 @@ func newHelpTestFlagSet(t *testing.T) *flag.FlagSet {
 	fs := flag.NewFlagSet("help-test", flag.ContinueOnError)
 	bools := []string{
 		"help", "version", "continue", "continue-project", "show-cwd", "inject-cwd", "gemma-thinking",
-		"suppress-thinking-words", "save-subagent-histories", "enable-sqz",
+		"suppress-thinking-words", "save-subagent-histories", "enable-sqz", "auto-switch-view-on-spawn",
 		"ask-for-user-approval", "i-promise-i-have-backups-and-will-not-file-issues",
 		"enable-images",
 		"use-tools", "enable-bash", "enable-subagents",

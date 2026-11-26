@@ -97,6 +97,13 @@ type Config struct {
 	// Enable via config file or the --save-subagent-histories CLI flag.
 	SaveSubagentHistories bool `json:"save_subagent_histories,omitempty"`
 
+	// AutoSwitchViewOnSpawn makes the TUI focus the view of a newly
+	// spawned subagent, so the user does not have to press TAB to switch
+	// manually. Default false: the spawn toast keeps its "tab to view"
+	// hint. Enable via config file or the --auto-switch-view-on-spawn CLI
+	// flag (an explicitly passed flag wins over the config entry).
+	AutoSwitchViewOnSpawn bool `json:"auto_switch_view_on_spawn,omitempty"`
+
 	// MaxAsyncSubagents caps how many subagents run at the same time.
 	// 0/unset = DefaultMaxAsyncSubagents. The LATE_MAX_ASYNC_SUBAGENTS env
 	// var overrides it and the --max-async-subagents CLI flag wins over both.
@@ -374,6 +381,17 @@ func ResolveSaveSubagentHistories(cfg *Config, cliExplicit bool, cliValue bool, 
 		return cfg.SaveSubagentHistories
 	}
 	return false
+}
+
+// ResolveAutoSwitchViewOnSpawn determines whether the TUI automatically
+// focuses a newly spawned subagent's view. Precedence: explicitly passed
+// CLI flag > config file > false (the default). There is intentionally no
+// environment-variable override.
+func ResolveAutoSwitchViewOnSpawn(cfg *Config, cliExplicit bool, cliValue bool) bool {
+	if cliExplicit {
+		return cliValue
+	}
+	return cfg != nil && cfg.AutoSwitchViewOnSpawn
 }
 
 // ResolvePermissionMode returns the effective permission mode.

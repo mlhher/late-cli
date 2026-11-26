@@ -131,6 +131,7 @@ func main() {
 	suppressThinkingWordsReq := flag.Bool("suppress-thinking-words", false, "Bias anti-overthinking tokens (requires the same model for main agent and subagents).")
 	subagentLogitBiasReq := flag.String("subagent-logit-bias", "", "Subagent token bias: JSON object or comma-separated TOKEN_ID:BIAS pairs.")
 	maxAsyncSubagentsReq := flag.Int("max-async-subagents", 0, "Maximum number of concurrent subagents (default: 1, or from config)")
+	autoSwitchViewOnSpawnReq := flag.Bool("auto-switch-view-on-spawn", false, "Switch the view to a newly spawned subagent automatically (default: off, or from config).")
 
 	flag.Usage = func() {
 		writeHelp(os.Stderr, flag.CommandLine)
@@ -435,9 +436,13 @@ func main() {
 	// Resolve subagent history persistence opt-in
 	// (explicit CLI flag > saved session preference > config file).
 	saveSubagentHistoriesCLI := false
+	autoSwitchViewOnSpawnCLI := false
 	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "save-subagent-histories" {
+		switch f.Name {
+		case "save-subagent-histories":
 			saveSubagentHistoriesCLI = true
+		case "auto-switch-view-on-spawn":
+			autoSwitchViewOnSpawnCLI = true
 		}
 	})
 	var storedSubagentHistoryPreference *bool
@@ -445,6 +450,7 @@ func main() {
 		storedSubagentHistoryPreference = loadedSessionMeta.SaveSubagentHistories
 	}
 	saveSubagentHistories := appconfig.ResolveSaveSubagentHistories(appConfig, saveSubagentHistoriesCLI, *saveSubagentHistoriesReq, storedSubagentHistoryPreference)
+	autoSwitchViewOnSpawn := appconfig.ResolveAutoSwitchViewOnSpawn(appConfig, autoSwitchViewOnSpawnCLI, *autoSwitchViewOnSpawnReq)
 
 	// Resolve the effective permission mode
 	// (explicit CLI flag > config.json permission-mode > ask-for-user-approval).
@@ -757,6 +763,7 @@ func main() {
 		model.SubagentInfo = resolvedSubagentConfig.Model
 	}
 	model.ShowCWD = *showCWDReq
+	model.AutoSwitchViewOnSpawn = autoSwitchViewOnSpawn
 	// Set ShowTodoPane BEFORE the SetSize calls below: SetSize -> updateLayout
 	// reserves the side-pane width for terminals >= 85 cols and silently
 	// closes the pane again below that threshold — the same guard as the
